@@ -283,6 +283,29 @@
 .dd-crosshair.katana .ch-l, .dd-crosshair.katana .ch-r { display: none; }
 .dd-crosshair.ads { opacity: 0; }
 
+/* aiming down sights: the reticle every weapon hands over to */
+.dd-aim { position: absolute; left: 50%; top: 50%; width: 0; height: 0; filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.9)); }
+.dd-aim i { position: absolute; background: #d02030; }
+.dd-aim .a-ring { width: 30px; height: 30px; left: -15px; top: -15px; background: none; border: 1.5px solid rgba(208, 32, 48, 0.5); border-radius: 50%; }
+.dd-aim .a-t { width: 2px; height: 8px; left: -1px; top: -20px; }
+.dd-aim .a-b { width: 2px; height: 8px; left: -1px; top: 12px; }
+.dd-aim .a-l { width: 8px; height: 2px; top: -1px; left: -20px; }
+.dd-aim .a-r { width: 8px; height: 2px; top: -1px; left: 12px; }
+.dd-aim .a-dot { width: 4px; height: 4px; left: -2px; top: -2px; border-radius: 50%; }
+/* the katana draws in blue, like its crosshair */
+.dd-aim.katana i { background: #1a30c0; }
+.dd-aim.katana .a-ring { border-color: rgba(26, 48, 192, 0.5); }
+/* scoped: a long crosshair down the glass, with the paper dimming at the edges */
+.dd-aim.scope::before { content: ""; position: absolute; left: 50%; top: 50%; width: 220vmax; height: 220vmax; transform: translate(-50%, -50%); background: radial-gradient(circle, rgba(246, 244, 231, 0) 0 26vmin, rgba(246, 244, 231, 0.5) 30vmin 100%); }
+.dd-aim.scope .a-ring { width: 240px; height: 240px; left: -120px; top: -120px; border-color: rgba(208, 32, 48, 0.35); }
+.dd-aim.scope .a-t, .dd-aim.scope .a-b { width: 1.5px; height: 16vh; left: -0.75px; }
+.dd-aim.scope .a-t { top: calc(-16vh - 14px); }
+.dd-aim.scope .a-b { top: 14px; }
+.dd-aim.scope .a-l, .dd-aim.scope .a-r { height: 1.5px; width: 16vw; top: -0.75px; }
+.dd-aim.scope .a-l { left: calc(-16vw - 14px); }
+.dd-aim.scope .a-r { left: 14px; }
+.dd-aim.scope .a-dot { width: 5px; height: 5px; left: -2.5px; top: -2.5px; }
+
 .dd-hitmarker { position: absolute; left: 50%; top: 50%; opacity: 0; }
 .dd-hitmarker i {
   position: absolute;
