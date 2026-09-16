@@ -16,6 +16,8 @@ export type HudState = {
   slot: number;
   focus: number;
   focusOn: boolean;
+  /** enemies in the player's own frame: x = right, z = forward, both -1..1 */
+  blips: { x: number; z: number; boss: boolean }[];
 };
 
 export type GameOverStats = {

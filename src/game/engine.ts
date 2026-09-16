@@ -52,6 +52,36 @@ type Enemy = {
   t: number;
   strafe: number;
   dying: number;
+  // ---- reference AI state ----
+  state: "spawn" | "hunt" | "stunned";
+  yaw: number;
+  yawT: number;
+  los: boolean;
+  losT: number;
+  burstLeft: number;
+  burstT: number;
+  aimT: number;
+  aimAmt: number;
+  aimPoint: THREE.Vector3 | null;
+  path: THREE.Vector3[] | null;
+  pathI: number;
+  pathT: number;
+  pathGoal: THREE.Vector3 | null;
+  stuckT: number;
+  hitWall: boolean;
+  appAng: number;
+  appR: number;
+  appT: number;
+  keepMul: number;
+  strafeDir: number;
+  strafeT: number;
+  backoffT: number;
+  attackT: number;
+  attackHit: boolean;
+  stunDur: number;
+  fuseT: number;
+  pathFailT: number;
+  laser: THREE.Mesh | null;
 };
 
 /* ============================== data ============================== */
@@ -359,6 +389,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   };
 
   /* ---------- helpers ---------- */
+  const DOWN = new THREE.Vector3(0, -1, 0);
+  const tmpOffset = new THREE.Vector3();
   const eyePos = () => new THREE.Vector3(player.pos.x, player.pos.y + (player.crouch ? JN * 0.94 : 1.6), player.pos.z);
   const fwdVec = () => new THREE.Vector3(-Math.sin(player.yaw) * Math.cos(player.pitch), Math.sin(player.pitch), -Math.cos(player.yaw) * Math.cos(player.pitch));
 
@@ -646,16 +678,19 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       const r = rand(20, 34);
       pos = new THREE.Vector3(clamp(player.pos.x + Math.cos(a) * r, world.bounds.minX, world.bounds.maxX), rand(4, 9), clamp(player.pos.z + Math.sin(a) * r, world.bounds.minZ, world.bounds.maxZ));
     } else {
-      let best = district.spawnPoints[0];
+      // pick the far point that is actually standing room: a spawn inside a wall
+      // is an enemy nobody can ever reach.
+      let best: THREE.Vector3 | null = null;
       let bestD = -1;
-      for (let i = 0; i < 6; i++) {
+      for (let i = 0; i < 14; i++) {
         const sp = pick(district.spawnPoints);
         const d = sp.distanceTo(player.pos);
-        if (d > bestD) {
-          bestD = d;
-          best = sp;
-        }
+        if (d < 14 || d <= bestD) continue;
+        if (!navOpen(sp.x, sp.z) || pointInSolid(sp.x, 0.2, sp.z, 0.7)) continue;
+        bestD = d;
+        best = sp;
       }
+      if (!best) best = findOpenSpot(player.pos, 22, 40, true) ?? player.pos.clone().setY(0.2);
       pos = best.clone();
       pos.y = 0.2;
     }
@@ -678,10 +713,39 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       maxHp: def.hp * (1 + Math.max(0, wave - 1) * 0.06),
       alive: true,
       onGround: false,
-      cooldown: rand(1, def.cool[1]),
-      t: rand(0, 10),
+      cooldown: rand(0.6, 1.4),
+      t: 0,
       strafe: Math.random() < 0.5 ? 1 : -1,
       dying: 0,
+      state: "spawn",
+      yaw: rand(0, Math.PI * 2),
+      yawT: 0,
+      los: false,
+      losT: 0,
+      burstLeft: 0,
+      burstT: 0,
+      aimT: 0,
+      aimAmt: 0,
+      aimPoint: null,
+      path: null,
+      pathI: 0,
+      pathT: 0,
+      pathGoal: null,
+      stuckT: 0,
+      hitWall: false,
+      appAng: spawnSlot++ * 2.39996,
+      appR: 0,
+      appT: rand(0, 2),
+      keepMul: rand(0.75, 1.35),
+      strafeDir: Math.random() < 0.5 ? 1 : -1,
+      strafeT: rand(1, 2),
+      backoffT: 0,
+      attackT: 0,
+      attackHit: false,
+      stunDur: 0,
+      fuseT: -1,
+      pathFailT: 0,
+      laser: null,
     };
     built.root.position.copy(pos);
     built.root.rotation.y = rand(0, Math.PI * 2);
@@ -689,48 +753,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     enemies.push(e);
     if (def.boss) cb.onBoss(def.name, 1);
     spawnShards(pos.clone().add(new THREE.Vector3(0, 1, 0)), def.ink, 8, 3);
-  }
-
-  function enemyAttack(e: Enemy) {
-    const eye = e.pos.clone().add(new THREE.Vector3(0, 1.6 * e.def.scale, 0));
-    const target = eyePos();
-    const dir = target.clone().sub(eye);
-    const dist = dir.length();
-    dir.normalize();
-    const w = e.def.weapon;
-    const speed = w === "sniper" ? 90 : w === "rifle" ? 55 : 45;
-    const dmg = e.def.dmg * modDmg;
-    const err = w === "sniper" ? 0.008 : 0.05;
-    if (w === "shotgun") {
-      for (let i = 0; i < 7; i++) {
-        const d2 = dir.clone();
-        d2.x += rand(-0.09, 0.09);
-        d2.y += rand(-0.09, 0.09);
-        d2.z += rand(-0.09, 0.09);
-        spawnBullet(eye, d2.normalize().multiplyScalar(40), dmg, false, INK.RED, "enemy");
-      }
-    } else if (w === "rifle" || w === "pistol" || w === "boss") {
-      const n = w === "rifle" ? 3 : w === "boss" ? 5 : 2;
-      for (let i = 0; i < n; i++) {
-        const d2 = dir.clone();
-        d2.x += rand(-err, err) * 3;
-        d2.y += rand(-err, err) * 3;
-        d2.z += rand(-err, err) * 3;
-        spawnBullet(eye, d2.normalize().multiplyScalar(speed), dmg, false, INK.RED, "enemy");
-      }
-    } else if (w === "sniper") {
-      spawnBullet(eye, dir.clone().multiplyScalar(speed), dmg, false, INK.GREEN, "enemy");
-    } else if (w === "blade") {
-      if (dist < 3) damagePlayer(dmg, dir);
-      e.armR.rotation.x = -2.4;
-    } else if (w === "dive") {
-      if (dist < 2.2) {
-        damagePlayer(dmg, dir);
-        e.vel.addScaledVector(dir, -12);
-        e.cooldown = rand(1.5, 2.5);
-      }
-    }
-    fx.enemyShot();
   }
 
   function explode(pos: THREE.Vector3, radius: number, dmg: number, fromPlayer: boolean) {
@@ -741,14 +763,589 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     for (const e of enemies) {
       if (!e.alive) continue;
       const d = e.pos.distanceTo(pos);
-      if (d < radius) {
-        const f = 1 - d / radius;
-        damageEnemy(e, dmg * f, false, fromPlayer ? "blast" : "enemy");
-      }
+      if (d >= radius) continue;
+      // falloff by area, like the original
+      const f = Math.sqrt(Math.max(0, 1 - d / radius));
+      damageEnemy(e, dmg * f * (fromPlayer ? 1.5 : 1), false, fromPlayer ? "blast" : "enemy");
     }
     const pd = player.pos.distanceTo(pos);
     if (pd < radius * 0.8) {
-      damagePlayer(dmg * 0.5 * (1 - pd / (radius * 0.8)));
+      damagePlayer(dmg * Math.sqrt(Math.max(0, 1 - pd / (radius * 0.8))));
+    }
+  }
+
+  // keep bodies from stacking up on top of each other (a cheap version of the
+  // original's separation pass)
+  let sepT = 0;
+  function separateEnemies(dt: number) {
+    sepT -= dt;
+    if (sepT > 0) return;
+    sepT = 0.05;
+    for (let i = 0; i < enemies.length; i++) {
+      const a = enemies[i];
+      if (!a.alive || a.def.flying) continue;
+      for (let j = i + 1; j < enemies.length; j++) {
+        const b = enemies[j];
+        if (!b.alive || b.def.flying) continue;
+        if (Math.abs(b.pos.y - a.pos.y) > 1.5) continue;
+        const dx = b.pos.x - a.pos.x;
+        const dz = b.pos.z - a.pos.z;
+        const d2 = dx * dx + dz * dz;
+        const minD = 0.45 * a.def.scale + 0.45 * b.def.scale + 0.75;
+        if (d2 > minD * minD || d2 < 1e-6) continue;
+        const d = Math.sqrt(d2);
+        const f = (minD - d) * 9 * dt;
+        a.pos.x -= (dx / d) * f;
+        a.pos.z -= (dz / d) * f;
+        b.pos.x += (dx / d) * f;
+        b.pos.z += (dz / d) * f;
+      }
+    }
+  }
+
+  /* ---------- navigation grid ---------- */
+  // A coarse walkability map of the arena, so an enemy routes around a building
+  // instead of leaning into a wall forever. Low geometry (stairs, kerbs) stays
+  // walkable; anything tall at body height blocks a cell.
+  const NAV_CELL = 2;
+  const navMinX = world.bounds.minX - 2;
+  const navMinZ = world.bounds.minZ - 2;
+  const navW = Math.max(2, Math.ceil((world.bounds.maxX + 2 - navMinX) / NAV_CELL));
+  const navH = Math.max(2, Math.ceil((world.bounds.maxZ + 2 - navMinZ) / NAV_CELL));
+  const navBlocked = new Uint8Array(navW * navH);
+  const navG = new Float32Array(navW * navH);
+  const navF = new Float32Array(navW * navH);
+  const navFrom = new Int32Array(navW * navH);
+  const navSeen = new Int32Array(navW * navH);
+  const navDone = new Int32Array(navW * navH);
+  let navEpoch = 0;
+  let spawnSlot = 0;
+
+  const navIdx = (cx: number, cz: number) => cz * navW + cx;
+  const navCellX = (x: number) => clamp(Math.floor((x - navMinX) / NAV_CELL), 0, navW - 1);
+  const navCellZ = (z: number) => clamp(Math.floor((z - navMinZ) / NAV_CELL), 0, navH - 1);
+  function navOpen(x: number, z: number) {
+    return navBlocked[navIdx(navCellX(x), navCellZ(z))] === 0;
+  }
+
+  // is this spot inside a wall/block rather than standing room?
+  function pointInSolid(x: number, y: number, z: number, pad = 0.5) {
+    for (const c of world.colliders) {
+      if (c.maxY - 0.2 <= 0.55) continue; // floor and steps are fine
+      if (x > c.minX - pad && x < c.maxX + pad && z > c.minZ - pad && z < c.maxZ + pad && y > c.minY - pad && y < c.maxY) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // a spot on open ground, a sensible distance from the player and reachable
+  // from there — used to drop an enemy back in when it has been walled away
+  function findOpenSpot(center: THREE.Vector3, minD: number, maxD: number, needPath: boolean) {
+    for (let i = 0; i < 26; i++) {
+      const a = rand(0, Math.PI * 2);
+      const r = rand(minD, maxD);
+      const x = clamp(center.x + Math.cos(a) * r, world.bounds.minX, world.bounds.maxX);
+      const z = clamp(center.z + Math.sin(a) * r, world.bounds.minZ, world.bounds.maxZ);
+      if (!navOpen(x, z) || pointInSolid(x, 0.2, z, 0.7)) continue;
+      const p = new THREE.Vector3(x, 0.2, z);
+      if (needPath && !navFindPath(p, center.clone().setY(0.2))) continue;
+      return p;
+    }
+    return null;
+  }
+
+  for (let cz = 0; cz < navH; cz++) {
+    for (let cx = 0; cx < navW; cx++) {
+      const x0 = navMinX + cx * NAV_CELL;
+      const z0 = navMinZ + cz * NAV_CELL;
+      const x1 = x0 + NAV_CELL;
+      const z1 = z0 + NAV_CELL;
+      let blocked = 0;
+      for (const c of world.colliders) {
+        if (c.maxY - 0.2 <= 0.55) continue; // walkable step or kerb
+        if (c.minY > 2.2) continue; // overhead deck
+        if (c.maxX <= x0 || c.minX >= x1 || c.maxZ <= z0 || c.minZ >= z1) continue;
+        blocked = 1;
+        break;
+      }
+      navBlocked[navIdx(cx, cz)] = blocked;
+    }
+  }
+
+  function navFindPath(from: THREE.Vector3, goal: THREE.Vector3): THREE.Vector3[] | null {
+    const startI = navIdx(navCellX(from.x), navCellZ(from.z));
+    let gx = navCellX(goal.x);
+    let gz = navCellZ(goal.z);
+    let goalI = navIdx(gx, gz);
+    if (navBlocked[goalI]) {
+      let bestD = Infinity;
+      let bestI = -1;
+      for (let r = 1; r <= 5 && bestI < 0; r++) {
+        for (let dz = -r; dz <= r; dz++) {
+          for (let dx = -r; dx <= r; dx++) {
+            const nx = gx + dx;
+            const nz = gz + dz;
+            if (nx < 0 || nz < 0 || nx >= navW || nz >= navH) continue;
+            const i = navIdx(nx, nz);
+            if (navBlocked[i]) continue;
+            const d = dx * dx + dz * dz;
+            if (d < bestD) {
+              bestD = d;
+              bestI = i;
+            }
+          }
+        }
+      }
+      if (bestI < 0) return null;
+      goalI = bestI;
+      gx = goalI % navW;
+      gz = (goalI - gx) / navW;
+    }
+    if (startI === goalI) return null;
+
+    navEpoch++;
+    const heap: number[] = [];
+    const heur = (i: number) => {
+      const cx = i % navW;
+      const cz = (i - cx) / navW;
+      return Math.hypot(cx - gx, cz - gz);
+    };
+    navSeen[startI] = navEpoch;
+    navG[startI] = 0;
+    navF[startI] = heur(startI);
+    navFrom[startI] = -1;
+    heap.push(startI);
+    const push = (i: number) => {
+      heap.push(i);
+      let k = heap.length - 1;
+      while (k > 0) {
+        const par = (k - 1) >> 1;
+        if (navF[heap[k]] < navF[heap[par]]) {
+          const tmp = heap[k];
+          heap[k] = heap[par];
+          heap[par] = tmp;
+          k = par;
+        } else break;
+      }
+    };
+    const pop = () => {
+      const top = heap[0];
+      const last = heap.pop() as number;
+      if (heap.length) {
+        heap[0] = last;
+        let k = 0;
+        for (;;) {
+          const l = k * 2 + 1;
+          const r = l + 1;
+          let m = k;
+          if (l < heap.length && navF[heap[l]] < navF[heap[m]]) m = l;
+          if (r < heap.length && navF[heap[r]] < navF[heap[m]]) m = r;
+          if (m === k) break;
+          const tmp = heap[k];
+          heap[k] = heap[m];
+          heap[m] = tmp;
+          k = m;
+        }
+      }
+      return top;
+    };
+
+    let guard = 0;
+    while (heap.length && guard++ < 4000) {
+      const cur = pop();
+      if (navDone[cur] === navEpoch) continue;
+      navDone[cur] = navEpoch;
+      if (cur === goalI) break;
+      const cx = cur % navW;
+      const cz = (cur - cx) / navW;
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dz === 0) continue;
+          const nx = cx + dx;
+          const nz = cz + dz;
+          if (nx < 0 || nz < 0 || nx >= navW || nz >= navH) continue;
+          const ni = navIdx(nx, nz);
+          if (navBlocked[ni]) continue;
+          // never cut a corner through a blocked cell
+          if (dx !== 0 && dz !== 0 && (navBlocked[navIdx(cx + dx, cz)] || navBlocked[navIdx(cx, cz + dz)])) continue;
+          const ng = navG[cur] + (dx !== 0 && dz !== 0 ? 1.41421 : 1);
+          if (navSeen[ni] === navEpoch && ng >= navG[ni]) continue;
+          navSeen[ni] = navEpoch;
+          navG[ni] = ng;
+          navFrom[ni] = cur;
+          navF[ni] = ng + heur(ni);
+          push(ni);
+        }
+      }
+    }
+    if (navDone[goalI] !== navEpoch) return null;
+
+    const pts: THREE.Vector3[] = [];
+    let i = goalI;
+    while (i !== startI && i >= 0 && pts.length < 200) {
+      const cx = i % navW;
+      const cz = (i - cx) / navW;
+      pts.push(new THREE.Vector3(navMinX + (cx + 0.5) * NAV_CELL, 0.2, navMinZ + (cz + 0.5) * NAV_CELL));
+      i = navFrom[i];
+    }
+    pts.reverse();
+    return pts;
+  }
+
+  const tmpLosFrom = new THREE.Vector3();
+  const tmpLosDir = new THREE.Vector3();
+  function losClear(from: THREE.Vector3, to: THREE.Vector3) {
+    tmpLosDir.copy(to).sub(from);
+    const len = tmpLosDir.length();
+    if (len < 0.2) return true;
+    tmpLosDir.divideScalar(len);
+    for (const c of world.colliders) {
+      if (c.maxY <= 0.35) continue; // the floor never blocks sight
+      const t = rayAABB(from, tmpLosDir, c, len);
+      if (t >= 0 && t < len - 0.15) return false;
+    }
+    return true;
+  }
+
+  function groundAhead(e: Enemy, dx: number, dz: number) {
+    const px = e.pos.x + dx * 0.9;
+    const py = e.pos.y + 0.5;
+    const pz = e.pos.z + dz * 0.9;
+    tmpLosFrom.set(px, py, pz);
+    for (const c of world.colliders) {
+      if (rayAABB(tmpLosFrom, DOWN, c, 3.5) >= 0) return true;
+    }
+    return false;
+  }
+
+  function steer(e: Enemy, dt: number, tx: number, tz: number, speed: number, accel: number) {
+    let dx = tx - e.pos.x;
+    let dz = tz - e.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 1e-4) {
+      e.vel.x *= Math.max(0, 1 - 8 * dt);
+      e.vel.z *= Math.max(0, 1 - 8 * dt);
+      return;
+    }
+    dx /= d;
+    dz /= d;
+    const want = speed * modSpeed;
+    const a = (e.onGround ? accel : accel * 0.3) * dt;
+    e.vel.x += clamp(dx * want - e.vel.x, -a, a);
+    e.vel.z += clamp(dz * want - e.vel.z, -a, a);
+    e.yawT = Math.atan2(dx, dz);
+  }
+
+  // where the enemy wants to be: a spot circling the player, kept at a distance
+  // that depends on its weapon (a rusher closes right in, a rifleman stands off)
+  function approachPoint(e: Enemy, dt: number, target: THREE.Vector3) {
+    e.appT -= dt;
+    if (e.appT <= 0) {
+      e.appT = rand(2.5, 5);
+      e.appAng += rand(-0.7, 0.7);
+      const close = e.def.weapon === "blade" || e.def.weapon === "bomb";
+      e.appR = close ? rand(2, 4.5) : rand(4.5, 9);
+    }
+    const d = Math.hypot(target.x - e.pos.x, target.z - e.pos.z);
+    let r = clamp(d * 0.55, Math.min(2, d * 0.9), e.appR);
+    if (Math.abs(target.y - e.pos.y) > 1.5) r = Math.min(r, 1.1);
+    return new THREE.Vector3(target.x + Math.cos(e.appAng) * r, target.y, target.z + Math.sin(e.appAng) * r);
+  }
+
+  function follow(e: Enemy, dt: number, target: THREE.Vector3, speed: number) {
+    const goal = approachPoint(e, dt, target);
+    e.pathT -= dt;
+    if (e.pathT <= 0 || !e.path || e.pathI >= e.path.length || (e.pathGoal && e.pathGoal.distanceTo(goal) > 3.5)) {
+      if (e.pathT <= 0 || !e.path) {
+        e.pathT = 0.8 + rand(0, 0.6);
+        const p = navFindPath(e.pos, goal);
+        if (p && p.length) {
+          e.path = p;
+          e.pathI = 0;
+          e.pathGoal = goal.clone();
+          while (e.pathI < p.length - 1 && Math.hypot(p[e.pathI].x - e.pos.x, p[e.pathI].z - e.pos.z) < 0.7) e.pathI++;
+        }
+      }
+    }
+    let wp: THREE.Vector3 | null = null;
+    if (e.path && e.pathI < e.path.length) {
+      const h = e.path[e.pathI];
+      if (Math.hypot(h.x - e.pos.x, h.z - e.pos.z) < 0.5) {
+        e.pathI++;
+        if (e.pathI < e.path.length) wp = e.path[e.pathI];
+      } else wp = h;
+    }
+    if (!wp) wp = goal;
+    steer(e, dt, wp.x, wp.z, speed, 40);
+    const wd = Math.hypot(wp.x - e.pos.x, wp.z - e.pos.z);
+    if (e.onGround) {
+      if (wp.y > e.pos.y + 0.6 && wd < 1.7) {
+        e.vel.y = 9;
+        e.onGround = false;
+      } else if (e.hitWall) {
+        e.stuckT += dt;
+        if (e.stuckT > 0.35 && e.stuckT < 0.4) e.pathT = 0;
+        if (e.stuckT > 0.9) {
+          e.vel.y = 9;
+          e.onGround = false;
+          e.stuckT = 0;
+          e.pathT = 0;
+          e.path = null;
+        }
+      } else e.stuckT = 0;
+    } else if (e.hitWall) {
+      e.stuckT += dt;
+    }
+  }
+
+  /* ---------- enemy weapons ---------- */
+  const laserMat = makeInkMaterial(INK.RED, true);
+  const laserGeo = new THREE.BoxGeometry(0.05, 0.05, 1);
+  function showLaser(e: Enemy, aim: THREE.Vector3, progress: number) {
+    if (!e.laser) {
+      e.laser = new THREE.Mesh(laserGeo, laserMat);
+      e.laser.frustumCulled = false;
+      scene.add(e.laser);
+    }
+    const from = e.pos.clone().add(new THREE.Vector3(0, 1.55 * e.def.scale, 0));
+    const dir = aim.clone().sub(from);
+    const len = dir.length();
+    if (len < 2) {
+      e.laser.visible = false;
+      return;
+    }
+    e.laser.visible = true;
+    e.laser.position.copy(from).addScaledVector(dir, 0.5);
+    e.laser.lookAt(aim);
+    const w = 1 + progress * 2;
+    e.laser.scale.set(w, w, len);
+  }
+  function hideLaser(e: Enemy) {
+    if (e.laser) e.laser.visible = false;
+  }
+  function dropLaser(e: Enemy) {
+    if (e.laser) {
+      scene.remove(e.laser);
+      e.laser = null;
+    }
+  }
+
+  function enemyFire(e: Enemy, aim: THREE.Vector3, spread: number, speed: number, dmg: number, ink: InkId) {
+    const from = e.pos.clone().add(new THREE.Vector3(0, 1.55 * e.def.scale, 0));
+    const dir = aim.clone().sub(from).normalize();
+    dir.x += rand(-spread, spread);
+    dir.y += rand(-spread, spread);
+    dir.z += rand(-spread, spread);
+    spawnBullet(from, dir.normalize().multiplyScalar(speed), dmg, false, ink, "enemy");
+  }
+
+  function enemyAttack(e: Enemy, dt: number) {
+    const def = e.def;
+    const w = def.weapon;
+    const aim = eyePos();
+    const speed = def.pspeed ?? 42;
+    const spread = def.spread ?? 0.05;
+    const dmg = def.dmg * modDmg;
+    const ink: InkId = w === "sniper" ? INK.GREEN : INK.RED;
+
+    // the sniper lines you up with a laser first, then takes one hard, accurate shot
+    if (w === "sniper") {
+      if (e.cooldown > 0) {
+        hideLaser(e);
+        return;
+      }
+      const aimTime = def.aimTime ?? 1.7;
+      e.aimT += dt;
+      e.aimPoint = e.aimPoint ? e.aimPoint.lerp(aim, 1 - Math.exp(-2.6 * dt)) : aim.clone();
+      showLaser(e, e.aimPoint, clamp(e.aimT / aimTime, 0, 1));
+      if (e.aimT >= aimTime) {
+        e.aimT = 0;
+        e.cooldown = rand(def.cool[0], def.cool[1]);
+        enemyFire(e, e.aimPoint, spread, speed, dmg, ink);
+        fx.sniper();
+        hideLaser(e);
+        e.aimPoint = null;
+      }
+      return;
+    }
+
+    // everyone else fires a burst, one shot every burstInt
+    if (e.burstLeft > 0) {
+      e.burstT -= dt;
+      if (e.burstT <= 0) {
+        e.burstT = def.burstInt ?? 0.15;
+        e.burstLeft--;
+        enemyFire(e, aim, spread, speed, dmg, ink);
+        fx.enemyShot();
+        if (e.burstLeft === 0) e.cooldown = rand(def.cool[0], def.cool[1]);
+      }
+      return;
+    }
+    if (e.cooldown <= 0) {
+      if (w === "shotgun") {
+        for (let i = 0; i < (def.pellets ?? 7); i++) enemyFire(e, aim, spread, speed * rand(0.85, 1.1), dmg, ink);
+        fx.shotgun();
+        e.cooldown = rand(def.cool[0], def.cool[1]);
+      } else {
+        e.burstLeft = Math.max(1, def.burst ?? 2);
+        e.burstT = 0;
+      }
+    }
+  }
+
+  function updateRanged(e: Enemy, dt: number, dx: number, dz: number, dist: number, dy: number, target: THREE.Vector3) {
+    const def = e.def;
+    const g = Math.atan2(dx, dz);
+    if (e.los && dist < def.range) {
+      e.aimAmt = Math.min(1, e.aimAmt + dt * 8);
+      e.yawT = g;
+      if (!def.stationary) {
+        const ox = dist > 1e-4 ? dx / dist : 0;
+        const oz = dist > 1e-4 ? dz / dist : 0;
+        if (dist > def.stop * e.keepMul) {
+          follow(e, dt, target, def.speed * 0.8);
+          e.yawT = g;
+          enemyAttack(e, dt);
+          return;
+        }
+        if (Math.abs(dy) > 1.2) {
+          follow(e, dt, target, def.speed * 0.85);
+          e.yawT = g;
+          enemyAttack(e, dt);
+          return;
+        }
+        let mx = 0;
+        let mz = 0;
+        if (dist < def.keep * e.keepMul) {
+          mx = -ox;
+          mz = -oz;
+        } else if (dist > def.range * 0.7 && def.weapon === "shotgun") {
+          mx = ox;
+          mz = oz;
+        } else {
+          e.strafeT -= dt;
+          if (e.strafeT <= 0) {
+            e.strafeT = rand(0.8, 2);
+            e.strafeDir *= -1;
+          }
+          mx = -oz * e.strafeDir;
+          mz = ox * e.strafeDir;
+        }
+        const sp = def.weapon === "shotgun" ? def.speed : def.speed * 0.5;
+        if ((mx !== 0 || mz !== 0) && groundAhead(e, mx, mz)) {
+          const a = 30 * dt;
+          e.vel.x += clamp(mx * sp - e.vel.x, -a, a);
+          e.vel.z += clamp(mz * sp - e.vel.z, -a, a);
+        } else {
+          e.vel.x *= Math.max(0, 1 - 8 * dt);
+          e.vel.z *= Math.max(0, 1 - 8 * dt);
+        }
+      }
+      enemyAttack(e, dt);
+    } else {
+      e.aimAmt = Math.max(0, e.aimAmt - dt * 5);
+      e.burstLeft = 0;
+      e.aimT = 0;
+      e.aimPoint = null;
+      hideLaser(e);
+      if (def.stationary && e.t < 5) {
+        e.vel.x *= Math.max(0, 1 - 8 * dt);
+        e.vel.z *= Math.max(0, 1 - 8 * dt);
+        e.yawT = g;
+      } else {
+        follow(e, dt, target, def.speed);
+      }
+    }
+    if (e.los) e.yawT = g;
+  }
+
+  function updateRusher(e: Enemy, dt: number, dx: number, dz: number, dist: number, dy: number, target: THREE.Vector3) {
+    const def = e.def;
+    e.aimAmt = Math.max(0, e.aimAmt - dt * 8);
+    const g = Math.atan2(dx, dz);
+    const d = dist > 1e-4 ? dist : 1;
+    if (e.backoffT > 0) {
+      e.backoffT -= dt;
+      e.yawT = g;
+      const a = 26 * dt;
+      e.vel.x += clamp(-(dx / d) * def.speed * 0.55 - e.vel.x, -a, a);
+      e.vel.z += clamp(-(dz / d) * def.speed * 0.55 - e.vel.z, -a, a);
+      return;
+    }
+    if (e.attackT > 0) {
+      e.attackT -= dt;
+      e.vel.x *= Math.max(0, 1 - 8 * dt);
+      e.vel.z *= Math.max(0, 1 - 8 * dt);
+      e.yawT = g;
+      if (e.attackT < 0.18 && !e.attackHit) {
+        e.attackHit = true;
+        if (dist < (def.reach ?? 3) && Math.abs(dy) < 1.7) {
+          damagePlayer(def.dmg * modDmg, new THREE.Vector3(dx / d, 0.2, dz / d));
+        }
+      }
+      if (e.attackT <= 0) {
+        e.cooldown = rand(def.cool[0], def.cool[1]);
+        e.backoffT = rand(0.45, 0.75);
+      }
+      return;
+    }
+    if (dist < (def.lunge ?? 2.9) && Math.abs(dy) < 1.7 && e.cooldown <= 0 && e.los) {
+      e.attackT = 0.55;
+      e.attackHit = false;
+      e.vel.x += (dx / d) * 2.5;
+      e.vel.z += (dz / d) * 2.5;
+      return;
+    }
+    if (e.los && dist < 9 && Math.abs(dy) < 1.6) {
+      if (dist < (def.standoff ?? 1.9) && Math.abs(dy) < 1.2) {
+        const a = 24 * dt;
+        e.vel.x += clamp(-(dx / d) * def.speed * 0.4 - e.vel.x, -a, a);
+        e.vel.z += clamp(-(dz / d) * def.speed * 0.4 - e.vel.z, -a, a);
+        e.yawT = g;
+      } else {
+        const p = dist > 4.5 ? approachPoint(e, dt, target) : target;
+        steer(e, dt, p.x, p.z, def.speed, 45);
+        if (e.onGround && e.hitWall) {
+          e.stuckT += dt;
+          if (e.stuckT > 0.25) {
+            e.vel.y = 9;
+            e.onGround = false;
+            e.stuckT = 0;
+          }
+        }
+      }
+    } else {
+      follow(e, dt, target, def.speed);
+    }
+  }
+
+  function updateFlyer(e: Enemy, dt: number, dist: number) {
+    const orbit = Math.atan2(e.pos.x - player.pos.x, e.pos.z - player.pos.z) + 0.45;
+    const r = 11;
+    const goal = new THREE.Vector3(
+      player.pos.x + Math.sin(orbit) * r,
+      player.pos.y + 6 + Math.sin(e.t * 1.3) * 1.5,
+      player.pos.z + Math.cos(orbit) * r,
+    );
+    const to = goal.sub(e.pos);
+    const len = to.length();
+    if (len > 0.3) {
+      to.divideScalar(len).multiplyScalar(e.def.speed * modSpeed);
+      e.vel.lerp(to, Math.min(1, dt * 3));
+    } else {
+      e.vel.multiplyScalar(Math.max(0, 1 - 4 * dt));
+    }
+    e.yawT = Math.atan2(e.vel.x, e.vel.z);
+    // dive at the player when the cooldown is up and they are near
+    if (e.cooldown <= 0 && dist < 14) {
+      const dive = player.pos.clone().add(new THREE.Vector3(0, 1, 0)).sub(e.pos).normalize();
+      e.vel.addScaledVector(dive, e.def.speed * dt * 3.4);
+      if (dist < 2.2) {
+        damagePlayer(e.def.dmg * modDmg, dive);
+        e.vel.addScaledVector(dive, -12);
+        e.cooldown = rand(e.def.cool[0], e.def.cool[1]);
+      }
     }
   }
 
@@ -758,90 +1355,133 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       e.dying -= dt;
       e.torso.rotation.x = Math.min(1.5, e.torso.rotation.x + dt * 6);
       e.root.position.y -= dt * 1.2;
-      if (e.dying <= 0) {
-        scene.remove(e.root);
+      hideLaser(e);
+      if (e.dying <= 0) scene.remove(e.root);
+      return;
+    }
+    // pop-in, exactly like the original: a quick scale-up wobble
+    if (e.state === "spawn") {
+      const k = clamp(e.t / 0.6, 0, 1);
+      e.root.scale.setScalar(Math.max(0.001, k * e.def.scale * (1 + Math.sin(e.t * 60) * 0.12 * (1 - k))));
+      e.root.position.copy(e.pos);
+      e.root.rotation.y = e.yaw;
+      if (e.t >= 0.6) {
+        e.state = "hunt";
+        e.root.scale.setScalar(e.def.scale);
       }
       return;
     }
-    const toPlayer = player.pos.clone().sub(e.pos);
-    const dist = toPlayer.length();
-    const dirXZ = new THREE.Vector3(toPlayer.x, 0, toPlayer.z);
-    const flatDist = dirXZ.length();
-    dirXZ.normalize();
-    e.root.rotation.y = Math.atan2(dirXZ.x, dirXZ.z);
 
-    // separation
-    for (const o of enemies) {
-      if (o === e || !o.alive) continue;
-      const d2 = o.pos.distanceTo(e.pos);
-      if (d2 < 1.6 && d2 > 0.001) {
-        const push = e.pos.clone().sub(o.pos).setY(0).normalize().multiplyScalar((1.6 - d2) * 2.2 * dt);
-        e.pos.add(push);
-      }
+    const target = player.pos;
+    const dx = target.x - e.pos.x;
+    const dz = target.z - e.pos.z;
+    const dist = Math.hypot(dx, dz);
+    const dy = target.y - e.pos.y;
+
+    // line of sight, refreshed on a short stagger like the original does
+    e.losT -= dt;
+    if (e.losT <= 0) {
+      e.losT = 0.12 + rand(0, 0.1);
+      tmpLosFrom.copy(e.pos).add(tmpOffset.set(0, 1.55 * e.def.scale, 0));
+      e.los = losClear(tmpLosFrom, eyePos());
     }
+    e.cooldown -= dt;
 
-    const speed = e.def.speed * modSpeed;
-    const stop = e.def.stop;
-    if (e.def.flying) {
-      const hover = 2.6 + Math.sin(e.t * 3) * 0.7;
-      const move = dirXZ.clone().multiplyScalar(speed * dt * (flatDist > 4 ? 1 : -0.4));
-      e.pos.add(move);
-      e.pos.y += (hover - e.pos.y) * Math.min(1, dt * 2);
-      if (e.kind === "flyer" && flatDist < 10) {
-        // dive
-        const diveDir = player.pos.clone().add(new THREE.Vector3(0, 1, 0)).sub(e.pos).normalize();
-        e.pos.addScaledVector(diveDir, speed * dt * 1.4);
-      }
-    } else {
-      if (flatDist > stop + 1) {
-        e.vel.x = dirXZ.x * speed;
-        e.vel.z = dirXZ.z * speed;
+    if (e.state === "stunned") {
+      e.stunDur -= dt;
+      e.vel.x *= Math.max(0, 1 - 6 * dt);
+      e.vel.z *= Math.max(0, 1 - 6 * dt);
+      if (e.stunDur <= 0) e.state = "hunt";
+    } else if (e.def.flying) {
+      updateFlyer(e, dt, dist);
+      e.pos.addScaledVector(e.vel, dt);
+      e.pos.x = clamp(e.pos.x, world.bounds.minX, world.bounds.maxX);
+      e.pos.z = clamp(e.pos.z, world.bounds.minZ, world.bounds.maxZ);
+      e.pos.y = clamp(e.pos.y, 1.6, 15);
+      e.yaw += (e.yawT - e.yaw) * (1 - Math.exp(-8 * dt));
+      e.root.position.copy(e.pos);
+      e.root.rotation.y = e.yaw;
+      e.root.rotation.z = Math.sin(e.t * 12) * 0.12;
+      return;
+    } else if (e.def.weapon === "bomb") {
+      if (e.fuseT >= 0) {
+        e.fuseT -= dt;
+        e.vel.x *= Math.max(0, 1 - 4 * dt);
+        e.vel.z *= Math.max(0, 1 - 4 * dt);
+        e.yawT = Math.atan2(dx, dz);
+        if (e.fuseT <= 0) {
+          explode(e.pos.clone().add(new THREE.Vector3(0, 0.8, 0)), e.def.blast ?? 4.2, e.def.dmg, false);
+          killEnemy(e, "self", false);
+          dropLaser(e);
+          return;
+        }
+      } else if (dist < (e.def.fuseRange ?? 3.4) && Math.abs(dy) < 2.2 && e.los) {
+        e.fuseT = e.def.fuse ?? 1.05;
+      } else if (e.los && dist < 12 && Math.abs(dy) < 1.5) {
+        steer(e, dt, target.x, target.z, e.def.speed, 45);
       } else {
-        e.vel.x *= 0.8;
-        e.vel.z *= 0.8;
-        // strafe
-        const side = new THREE.Vector3(-dirXZ.z, 0, dirXZ.x).multiplyScalar(e.strafe * speed * 0.4);
-        e.vel.x = side.x;
-        e.vel.z = side.z;
-        if (Math.random() < dt * 0.5) e.strafe *= -1;
+        follow(e, dt, target, e.def.speed);
       }
-      e.vel.y -= 22 * dt;
-      const r = resolveMove(e.pos, e.vel, 0.45 * e.def.scale, 1.85 * e.def.scale, world.colliders, dt);
-      e.onGround = r.onGround;
+    } else if (e.def.weapon === "blade") {
+      updateRusher(e, dt, dx, dz, dist, dy, target);
+    } else {
+      updateRanged(e, dt, dx, dz, dist, dy, target);
     }
+
+    // If this one has been walled away from the player — no route, no sight line,
+    // far away — drop it back onto open ground rather than stall the wave.
+    e.pathFailT = e.path && e.pathI < e.path.length ? 0 : e.pathFailT + dt;
+    if (e.pathFailT > 7 && dist > 26 && !e.los) {
+      const spot = findOpenSpot(player.pos, 20, 34, true);
+      if (spot) {
+        e.pos.copy(spot);
+        e.vel.set(0, 0, 0);
+        e.path = null;
+        e.pathGoal = null;
+        e.pathFailT = 0;
+        e.state = "spawn";
+        e.t = 0;
+        e.root.position.copy(e.pos);
+        return;
+      }
+    }
+
+    e.vel.y -= 24 * dt;
+    const rmov = resolveMove(e.pos, e.vel, 0.45 * e.def.scale, 1.85 * e.def.scale, world.colliders, dt);
+    e.onGround = rmov.onGround;
+    e.hitWall = rmov.hitWall;
     e.pos.x = clamp(e.pos.x, world.bounds.minX, world.bounds.maxX);
     e.pos.z = clamp(e.pos.z, world.bounds.minZ, world.bounds.maxZ);
+    if (e.pos.y < -6) {
+      killEnemy(e, "self", false);
+      dropLaser(e);
+      return;
+    }
+
+    e.yaw += (e.yawT - e.yaw) * (1 - Math.exp(-10 * dt));
+
+    // don't stand inside the player
+    const rad = 0.36 + 0.45 * e.def.scale + 0.12;
+    const px = e.pos.x - target.x;
+    const pz = e.pos.z - target.z;
+    const pd = Math.hypot(px, pz);
+    if (pd < rad && pd > 1e-4 && Math.abs(e.pos.y - target.y) < 1.7) {
+      const push = (rad - pd) / pd;
+      e.pos.x += px * push;
+      e.pos.z += pz * push;
+    }
+
     e.root.position.copy(e.pos);
+    e.root.rotation.y = e.yaw;
 
     // limbs
-    const moving = Math.abs(e.vel.x) + Math.abs(e.vel.z) > 0.4;
-    const sw = moving ? Math.sin(e.t * 10) * 0.5 : 0;
+    const spd = Math.hypot(e.vel.x, e.vel.z);
+    const sw = spd > 0.4 ? Math.sin(e.t * 10) * 0.5 : 0;
     e.legL.rotation.x = sw;
     e.legR.rotation.x = -sw;
     e.armL.rotation.x = -sw * 0.6;
     if (e.armR.rotation.x < -0.1) e.armR.rotation.x += dt * 6;
     else e.armR.rotation.x = sw * 0.6;
-
-    // attack
-    e.cooldown -= dt;
-    if (e.cooldown <= 0 && dist < e.def.range) {
-      if (e.def.weapon === "bomb") {
-        // explode on contact
-        explode(e.pos.clone().add(new THREE.Vector3(0, 0.8, 0)), 4.2, e.def.dmg, false);
-        killEnemy(e, "self", false);
-        return;
-      }
-      enemyAttack(e);
-      e.cooldown = rand(e.def.cool[0], e.def.cool[1]);
-      if (e.def.weapon === "boss") {
-        // summon adds
-        const aliveCount = enemies.filter((x) => x.alive).length;
-        if (aliveCount < 10 && Math.random() < 0.3) {
-          spawnEnemy("grunt");
-          spawnEnemy("grunt");
-        }
-      }
-    }
   }
 
   /* ---------- waves ---------- */
@@ -1280,6 +1920,21 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   let hudT = 0;
   function pushHud() {
     const s = slots[curSlot];
+    // minimap: every live enemy in the player's own frame, up = where you look
+    const blips: { x: number; z: number; boss: boolean }[] = [];
+    {
+      const cy = Math.cos(player.yaw);
+      const sy = Math.sin(player.yaw);
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        const dx = e.pos.x - player.pos.x;
+        const dz = e.pos.z - player.pos.z;
+        const fwd = dx * -sy + dz * -cy; // forward is (-sin yaw, -cos yaw)
+        const right = dx * cy - dz * sy;
+        blips.push({ x: clamp(right / 62, -1, 1), z: clamp(-fwd / 62, -1, 1), boss: !!e.def.boss });
+        if (blips.length >= 24) break;
+      }
+    }
     const hud: HudState = {
       score,
       combo: comboCount > 1 ? `combo x${comboCount}` : "",
@@ -1298,13 +1953,17 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       slot: curSlot,
       focus: clamp(katanaStreak / katanaNeed, 0, 1),
       focusOn: slowmoT > 0,
+      blips,
     };
     cb.onHud(hud);
   }
 
   /* ---------- state transitions ---------- */
   function resetRun() {
-    for (const e of enemies) scene.remove(e.root);
+    for (const e of enemies) {
+      scene.remove(e.root);
+      dropLaser(e);
+    }
     enemies.length = 0;
     for (const b of bullets) scene.remove(b.mesh);
     bullets.length = 0;
@@ -1390,9 +2049,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
 
     updatePlayer(dtRaw);
     for (const e of enemies) updateEnemy(e, dt);
+    separateEnemies(dt);
     // cull fully-dead
     for (let i = enemies.length - 1; i >= 0; i--) {
-      if (!enemies[i].alive && enemies[i].dying <= -0.1) enemies.splice(i, 1);
+      if (!enemies[i].alive && enemies[i].dying <= -0.1) {
+        dropLaser(enemies[i]);
+        enemies.splice(i, 1);
+      }
     }
     updateBullets(dt);
     updateGrenades(dt);

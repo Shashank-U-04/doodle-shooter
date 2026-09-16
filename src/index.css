@@ -308,6 +308,54 @@
 .dd-killfeed .kf.hot { color: #d02030; }
 @keyframes dd-kf { 0% { opacity: 0; transform: translateX(30px) rotate(3deg); } 15% { opacity: 1; transform: none; } 75% { opacity: 1; } 100% { opacity: 0; } }
 
+/* minimap: sits under the enemy count in the top-right corner */
+.dd-hud-tr .minimap {
+  position: relative;
+  width: 152px;
+  height: 152px;
+  margin: 10px 0 0 auto;
+  background: rgba(250, 248, 238, 0.72);
+  border: 2px solid #1a30c0;
+  border-radius: 6px 10px 5px 9px / 9px 5px 10px 6px;
+  transform: rotate(0.8deg);
+  overflow: hidden;
+}
+.dd-hud-tr .minimap .mm-cross {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(26, 48, 192, 0.22) 0 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(26, 48, 192, 0.22) 0 1px, transparent 1px);
+  background-position: 50% 0, 0 50%;
+  background-size: 100% 100%;
+}
+.dd-hud-tr .minimap .mm-me {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  margin: -9px 0 0 -7px;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-bottom: 18px solid #d02030;
+}
+.dd-hud-tr .minimap .mm-blip {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  background: #1a30c0;
+  border-radius: 60% 40% 55% 45% / 45% 55% 40% 60%;
+}
+.dd-hud-tr .minimap .mm-blip.boss {
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  background: #d02030;
+  border-radius: 50%;
+}
+
 .dd-bossbar { position: absolute; left: 50%; top: 6%; width: 420px; margin-left: -210px; text-align: center; font-size: 26px; }
 .dd-bossbar.hidden { display: none; }
 .dd-bossbar .bar.big { width: 420px; height: 20px; margin-top: 4px; }

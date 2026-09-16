@@ -22,6 +22,7 @@ const EMPTY_HUD: HudState = {
   slot: 0,
   focus: 0,
   focusOn: false,
+  blips: [],
 };
 
 type Overlay =
@@ -192,6 +193,19 @@ export default function Game() {
           <div className="modifier">{hud.modifier}</div>
           <div className="left">
             <b>{hud.left}</b> enemies left
+          </div>
+
+          {/* minimap: up is where you are looking */}
+          <div className="minimap">
+            <div className="mm-cross" />
+            <div className="mm-me" />
+            {hud.blips.map((b, i) => (
+              <span
+                key={i}
+                className={`mm-blip${b.boss ? " boss" : ""}`}
+                style={{ left: `${50 + b.x * 45}%`, top: `${50 + b.z * 45}%` }}
+              />
+            ))}
           </div>
         </div>
 
