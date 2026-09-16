@@ -2131,6 +2131,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const now = performance.now();
     const dt = Math.min(0.033, (now - last) / 1000);
     last = now;
+    district.update(now * 0.001);
     step(dt);
   };
 
