@@ -1321,6 +1321,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     enemiesLeft = 0;
     reloadT = 0;
     fireCd = 0;
+    intermissionT = 3;
+    // Re-sync the React HUD (it is only pushed from the game loop while
+    // playing, so without this the menu overlay — which renders when
+    // hud.wave === 0 — never appears after leaving a run).
+    pushHud();
   }
 
   function gameOver() {
@@ -1550,13 +1555,24 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     e.preventDefault();
     switchSlot((curSlot + (e.deltaY > 0 ? 1 : slots.length - 1)) % slots.length);
   };
+  // requestPointerLock returns a Promise in modern browsers; it rejects when
+  // called too soon after an Escape-triggered unlock (browser cooldown), so
+  // swallow rejections instead of throwing unhandled errors.
+  const lockPointer = () => {
+    try {
+      const p = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+      if (p && typeof p.catch === "function") p.catch(() => void 0);
+    } catch {
+      /* older browsers may throw synchronously */
+    }
+  };
   const onContext = (e: Event) => e.preventDefault();
   const onPointerLockChange = () => {
     locked = document.pointerLockElement === canvas;
     if (!locked && state === "playing") handleRef.current.pause();
   };
   const onCanvasClick = () => {
-    if (state === "playing" && !locked) void canvas.requestPointerLock();
+    if (state === "playing" && !locked) lockPointer();
   };
   const onBlur = () => {
     keys.clear();
@@ -1585,7 +1601,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       state = "playing";
       intermissionT = 3;
       fx.ensure();
-      void canvas.requestPointerLock();
+      lockPointer();
       startWave(1);
     },
     pause() {
@@ -1602,13 +1618,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       state = "playing";
       last = performance.now();
       cb.onResume();
-      void canvas.requestPointerLock();
+      lockPointer();
     },
     restart() {
       resetRun();
       state = "playing";
       cb.onResume();
-      void canvas.requestPointerLock();
+      lockPointer();
       startWave(1);
     },
     toMenu() {
@@ -1619,7 +1635,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       cb.onResume();
     },
     requestLock() {
-      if (state === "playing" && !locked) void canvas.requestPointerLock();
+      if (state === "playing" && !locked) lockPointer();
     },
     setSensitivity(v: number) {
       sensitivity = v;
