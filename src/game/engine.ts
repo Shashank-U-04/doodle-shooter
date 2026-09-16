@@ -7,19 +7,16 @@ import * as THREE from "three";
 import { AudioFX } from "./audio";
 import { PAPER_FRAG } from "./shaders";
 import {
-  ENEMY_DEFS,
   INK,
   PAPER,
-  buildWorld,
-  makeEnemyMesh,
   makeInkMaterial,
   resolveMove,
   type Collider,
-  type Enemy,
-  type EnemyKind,
   type InkId,
-  type World,
 } from "./world";
+import { buildDistrict, type District } from "./district";
+import { makeBlobRig, makeRig, makeWaspRig, type Rig } from "./rig";
+import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
 import type { EngineCallbacks, GameHandle, HudState } from "./types";
 
 THREE.ColorManagement.enabled = false;
@@ -27,6 +24,31 @@ THREE.ColorManagement.enabled = false;
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+type EnemyDefX = { bodyW?: number; headS?: number; limbR?: number };
+type Enemy = {
+  kind: EnemyKind;
+  def: EnemyDef;
+  root: THREE.Group;
+  head: THREE.Object3D;
+  torso: THREE.Object3D;
+  legL: THREE.Object3D;
+  legR: THREE.Object3D;
+  armL: THREE.Object3D;
+  armR: THREE.Object3D;
+  hatMesh: THREE.Object3D | null;
+  shieldMesh: THREE.Object3D | null;
+  headY: number;
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  hp: number;
+  maxHp: number;
+  alive: boolean;
+  onGround: boolean;
+  cooldown: number;
+  t: number;
+  strafe: number;
+  dying: number;
+};
 
 /* ============================== data ============================== */
 
@@ -50,11 +72,11 @@ type WeaponDef = {
 };
 
 const WEAPONS: WeaponDef[] = [
-  { name: "RIFLE", kind: "rifle", hint: "auto · put the red dot on them", magSize: 35, reserve: 175, maxReserve: 350, interval: 1 / 11, damage: 24, headMul: 2.6, pellets: 1, spread: 0.016, adsSpread: 0.0034, reloadTime: 1.7, auto: true, zoom: 0.62 },
-  { name: "SHOTGUN", kind: "shotgun", hint: "pump · devastating up close", magSize: 6, reserve: 36, maxReserve: 72, interval: 0.78, damage: 19, headMul: 1.8, pellets: 10, spread: 0.062, adsSpread: 0.034, reloadTime: 2.2, auto: false, zoom: 0.74 },
-  { name: "SNIPER", kind: "sniper", hint: "scoped bolt action · one shot, one erasure", magSize: 5, reserve: 25, maxReserve: 50, interval: 1.15, damage: 150, headMul: 3, pellets: 1, spread: 0.075, adsSpread: 0.0004, reloadTime: 2.6, auto: false, zoom: 0.24 },
-  { name: "KATANA", kind: "katana", hint: "slash · 3 kills without a miss = focus", magSize: Infinity, reserve: Infinity, maxReserve: Infinity, interval: 0.45, damage: 90, headMul: 1.2, pellets: 1, spread: 0, adsSpread: 0, reloadTime: 0, auto: false, zoom: 0.8, katana: true },
-  { name: "REVOLVER", kind: "revolver", hint: "hand cannon · headshots erase", magSize: 6, reserve: 36, maxReserve: 72, interval: 0.3, damage: 62, headMul: 3, pellets: 1, spread: 0.006, adsSpread: 0.002, reloadTime: 2.0, auto: false, zoom: 0.66 },
+  { name: "RIFLE", kind: "rifle", hint: "auto · put the red dot on them", magSize: 35, reserve: 175, maxReserve: 350, interval: 1 / 11, damage: 24, headMul: 2.6, pellets: 1, spread: 0.016, adsSpread: 0.0034, reloadTime: 1.45, auto: true, zoom: 58 },
+  { name: "SHOTGUN", kind: "shotgun", hint: "pump · devastating up close", magSize: 6, reserve: 36, maxReserve: 72, interval: 0.78, damage: 19, headMul: 1.8, pellets: 10, spread: 0.062, adsSpread: 0.034, reloadTime: 2.0, auto: false, zoom: 68 },
+  { name: "SNIPER", kind: "sniper", hint: "scoped bolt action · one shot, one erasure", magSize: 5, reserve: 25, maxReserve: 50, interval: 0.9, damage: 150, headMul: 3, pellets: 1, spread: 0.075, adsSpread: 0.0004, reloadTime: 2.1, auto: false, zoom: 20 },
+  { name: "KATANA", kind: "katana", hint: "slash · hold aim to block & return bullets", magSize: Infinity, reserve: Infinity, maxReserve: Infinity, interval: 0.27, damage: 75, headMul: 1.6, pellets: 1, spread: 0, adsSpread: 0, reloadTime: 0, auto: false, zoom: 82, katana: true },
+  { name: "REVOLVER", kind: "revolver", hint: "hand cannon · headshots erase", magSize: 6, reserve: 36, maxReserve: 72, interval: 0.3, damage: 62, headMul: 3, pellets: 1, spread: 0.006, adsSpread: 0.002, reloadTime: 1.9, auto: false, zoom: 52 },
 ];
 
 const SPAWN_TABLE: { t: EnemyKind; from: number; w: number }[] = [
@@ -113,7 +135,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(PAPER);
-  const camera = new THREE.PerspectiveCamera(78, 1, 0.05, 300);
+  const camera = new THREE.PerspectiveCamera(BASE_FOV, 1, 0.05, 300);
   scene.add(camera);
 
   const rt = new THREE.WebGLRenderTarget(4, 4, {
@@ -151,7 +173,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   });
   postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
 
-  const world: World = buildWorld(scene);
+  const district: District = buildDistrict(scene);
+  const world = { colliders: district.colliders, bounds: district.bounds };
   const fx = new AudioFX();
 
   /* ---------- input state ---------- */
@@ -316,7 +339,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   };
 
   /* ---------- helpers ---------- */
-  const eyePos = () => new THREE.Vector3(player.pos.x, player.pos.y + (player.crouch ? 1.0 : 1.62), player.pos.z);
+  const eyePos = () => new THREE.Vector3(player.pos.x, player.pos.y + (player.crouch ? JN * 0.94 : 1.6), player.pos.z);
   const fwdVec = () => new THREE.Vector3(-Math.sin(player.yaw) * Math.cos(player.pitch), Math.sin(player.pitch), -Math.cos(player.yaw) * Math.cos(player.pitch));
 
   function rayAABB(origin: THREE.Vector3, dir: THREE.Vector3, c: Collider, maxDist: number): number {
@@ -575,19 +598,38 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   }
 
   /* ---------- enemies ---------- */
+  function makeLocalRig(def: EnemyDef) {
+    let rigB: Rig;
+    if (def.model === "flyer") rigB = makeWaspRig({ ink: def.ink, bodyW: 1, headS: 1, limbR: 0.03, scale: def.scale });
+    else if (def.model === "blob") rigB = makeBlobRig({ ink: def.ink, bodyW: 1, headS: 1, limbR: 0.03, scale: def.scale, weapon: def.weapon }, def.bossKind);
+    else rigB = makeRig({ ink: def.ink, bodyW: (def as EnemyDefX).bodyW ?? 1, headS: (def as EnemyDefX).headS ?? 1, limbR: (def as EnemyDefX).limbR ?? 0.032, hat: def.hat, shield: def.shield, weapon: def.weapon, scale: def.scale, smile: def.weapon === "blade" });
+    const P = rigB.parts;
+    return {
+      root: rigB.root,
+      head: P.head,
+      torso: P.torso,
+      legL: P.legL,
+      legR: P.legR,
+      armL: P.armL,
+      armR: P.armR,
+      hatMesh: null,
+      shieldMesh: P.shield,
+      headY: rigB.headWorldY,
+    };
+  }
   function spawnEnemy(kind: EnemyKind) {
-    const def = ENEMY_DEFS[kind];
-    const built = makeEnemyMesh(kind, def);
+    const def = ED[kind];
+    const built = makeLocalRig(def);
     let pos: THREE.Vector3;
     if (def.flying) {
       const a = rand(0, Math.PI * 2);
       const r = rand(20, 34);
       pos = new THREE.Vector3(clamp(player.pos.x + Math.cos(a) * r, world.bounds.minX, world.bounds.maxX), rand(4, 9), clamp(player.pos.z + Math.sin(a) * r, world.bounds.minZ, world.bounds.maxZ));
     } else {
-      let best = world.spawnPoints[0];
+      let best = district.spawnPoints[0];
       let bestD = -1;
       for (let i = 0; i < 6; i++) {
-        const sp = pick(world.spawnPoints);
+        const sp = pick(district.spawnPoints);
         const d = sp.distanceTo(player.pos);
         if (d > bestD) {
           bestD = d;
@@ -609,6 +651,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       armR: built.armR,
       hatMesh: built.hatMesh,
       shieldMesh: built.shieldMesh,
+      headY: built.headY,
       pos,
       vel: new THREE.Vector3(),
       hp: def.hp * (1 + Math.max(0, wave - 1) * 0.06),
@@ -693,8 +736,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     e.t += dt;
     if (!e.alive) {
       e.dying -= dt;
-      e.root.rotation.x += dt * 2.4;
-      e.root.position.y -= dt * 1.6;
+      e.torso.rotation.x = Math.min(1.5, e.torso.rotation.x + dt * 6);
+      e.root.position.y -= dt * 1.2;
       if (e.dying <= 0) {
         scene.remove(e.root);
       }
@@ -954,7 +997,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const p = player;
     p.crouch = keys.has("ControlLeft") || keys.has("KeyC");
     p.sprint = keys.has("ShiftLeft") || keys.has("ShiftRight");
-    p.height = p.crouch ? 1.2 : 1.7;
+    p.height = p.crouch ? JN : CI;
 
     let ix = 0;
     let iz = 0;
@@ -965,10 +1008,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const move = new THREE.Vector3(ix, 0, iz);
     if (move.lengthSq() > 0) move.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), p.yaw);
 
-    let speed = 6.2;
-    if (p.sprint && iz < 0) speed *= 1.42;
-    if (p.crouch) speed *= 0.5;
-    if (mouseAim) speed *= 0.72;
+    let speed = p.crouch ? VR : p.sprint && iz < 0 ? QR : PR;
+    if (mouseAim) speed *= 0.8;
     if (p.dashT > 0) {
       speed *= 3.4;
       p.dashT -= dt;
@@ -1018,7 +1059,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const moving = move.lengthSq() > 0 && p.onGround;
     const bobY = moving ? Math.sin(bobT) * 0.035 : 0;
     const bobX = moving ? Math.cos(bobT * 0.5) * 0.02 : 0;
-    camera.position.set(p.pos.x + bobX, p.pos.y + (p.crouch ? 1.0 : 1.62) + bobY, p.pos.z);
+    camera.position.set(p.pos.x + bobX, p.pos.y + (p.crouch ? JN * 0.94 : 1.6) + bobY, p.pos.z);
     camera.rotation.order = "YXZ";
     camera.rotation.y = p.yaw;
     camera.rotation.x = p.pitch;
@@ -1032,7 +1073,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
 
     // fov / ads
     const def = slots[curSlot].def;
-    const targetFov = mouseAim ? 78 * def.zoom : 78;
+    const targetFov = mouseAim ? def.zoom : BASE_FOV;
     camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 12);
     camera.updateProjectionMatrix();
 
@@ -1112,7 +1153,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   function hitEnemySegment(from: THREE.Vector3, to: THREE.Vector3, e: Enemy, b: Bullet): boolean {
     const s = e.def.scale;
     // head sphere
-    const headC = e.pos.clone().add(new THREE.Vector3(0, 1.95 * s, 0));
+    const headC = e.pos.clone().add(new THREE.Vector3(0, e.headY, 0));
     const seg = to.clone().sub(from);
     const segLen = seg.length();
     const segDir = seg.clone().divideScalar(segLen);
@@ -1126,7 +1167,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       }
     }
     // body AABB
-    const c: Collider = { minX: e.pos.x - 0.55 * s, maxX: e.pos.x + 0.55 * s, minY: e.pos.y, maxY: e.pos.y + 1.75 * s, minZ: e.pos.z - 0.4 * s, maxZ: e.pos.z + 0.4 * s };
+    const c: Collider = { minX: e.pos.x - 0.5 * s, maxX: e.pos.x + 0.5 * s, minY: e.pos.y, maxY: e.pos.y + 1.85 * s, minZ: e.pos.z - 0.35 * s, maxZ: e.pos.z + 0.35 * s };
     const t = rayAABB(from, segDir, c, segLen);
     if (t >= 0) {
       damageEnemy(e, b.dmg, false, b.source, segDir);
@@ -1423,10 +1464,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     switch (code) {
       case "Space":
         if (player.onGround) {
-          player.vel.y = 8.4;
+          player.vel.y = XN;
           player.jumps = 1;
         } else if (player.jumps < 2) {
-          player.vel.y = 7.6;
+          player.vel.y = XN_AIR;
           player.jumps = 2;
         }
         break;

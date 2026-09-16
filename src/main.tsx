@@ -123,7 +123,7 @@ createRoot(document.getElementById("root")!).render(
               <Route path="/" element={<Landing />} />
               <Route
                 path="/auth"
-                element={<AuthPage redirectAfterAuth="/game" />}
+                element={<AuthPage redirectAfterAuth="/" />}
               />
               <Route
                 path="/dashboard"
@@ -133,14 +133,7 @@ createRoot(document.getElementById("root")!).render(
                   </RequireAuth>
                 }
               />
-              <Route
-                path="/game"
-                element={
-                  <RequireAuth>
-                    <Game />
-                  </RequireAuth>
-                }
-              />
+              <Route path="/game" element={<Game />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </Suspense>

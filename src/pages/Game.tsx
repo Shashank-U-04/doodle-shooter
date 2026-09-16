@@ -152,7 +152,7 @@ export default function Game() {
 
       {/* HUD */}
       <div className="dd-hud" style={{ visibility: overlay.kind === "menu" && hud.wave === 0 ? "hidden" : "visible" }}>
-        <div className={`dd-crosshair ${ads ? "ads" : ""}`} style={{ display: overlay.kind === "menu" && hud.wave > 0 ? undefined : "none" }}>
+        <div className={`dd-crosshair ${hud.weapon === "KATANA" ? "katana" : ""} ${ads ? "ads" : ""}`} style={{ display: overlay.kind === "menu" && hud.wave > 0 ? undefined : "none" }}>
           <i className="ch-t" />
           <i className="ch-b" />
           <i className="ch-l" />
@@ -182,14 +182,12 @@ export default function Game() {
           </div>
         </div>
 
-        {boss && (
-          <div className="dd-bossbar">
-            <div className="bossname">{boss.name}</div>
-            <div className="bar" style={{ width: "100%", height: 12 }}>
-              <div className="fill red" style={{ width: `${Math.max(0, boss.frac * 100)}%` }} />
-            </div>
+        <div className={`dd-bossbar ${boss ? "" : "hidden"}`}>
+          <div className="bossname">{boss ? boss.name : ""}</div>
+          <div className="bar big">
+            <div className="fill red" style={{ width: `${boss ? Math.max(0, boss.frac * 100) : 0}%` }} />
           </div>
-        )}
+        </div>
 
         <div className="dd-killfeed">
           {feed.map((f) => (
@@ -217,8 +215,8 @@ export default function Game() {
             <span className="hpnum">{hud.hp}</span>
           </div>
           {hud.weapon === "KATANA" && (
-            <div className="focusmeter">
-              <span>FOCUS</span>
+            <div className="dd-focusmeter">
+              <span>KATANA</span>
               <div className="bar">
                 <div className={`fill ${hud.focusOn ? "ready" : ""}`} style={{ width: `${hud.focusOn ? 100 : hud.focus * 100}%` }} />
               </div>
@@ -236,7 +234,8 @@ export default function Game() {
           <div className="slots">
             {hud.slots.map((name, i) => (
               <span key={name} className={`slot ${i === hud.slot ? "on" : ""}`}>
-                {i + 1} {name}
+                <span className="num">{i + 1}</span>
+                {name}
               </span>
             ))}
           </div>
@@ -253,10 +252,7 @@ export default function Game() {
             <h2>a scribbled survival shooter</h2>
             <div className="mainbtns">
               <button type="button" className="start" onClick={start} disabled={!ready}>
-                START<i>solo · survive the waves · boss every 5</i>
-              </button>
-              <button type="button" onClick={toMenu} disabled>
-                PLAY ONLINE<i>free for all · coming soon</i>
+                START<i>solo · survive the waves</i>
               </button>
             </div>
             <div className="settings">

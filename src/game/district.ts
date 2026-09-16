@@ -266,7 +266,7 @@ export function buildDistrict(scene: THREE.Scene): District {
   bx(11, 3.2, 2.8, 24, 0.6, 40, INK.BLUE, false);
   bx(10, 0.6, 2.6, 24, 0, 40, INK.BLUE, false, false);
   for (const x of [20, 28]) {
-    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.4, 10), mat(INK.BLACK, false, THREE.DoubleSide, true));
+    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.4, 10), mat(INK.BLACK, false));
     wheel.rotation.x = Math.PI / 2;
     wheel.position.set(x, 0.55, 41.5);
     scene.add(wheel);
