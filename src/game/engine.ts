@@ -8,9 +8,13 @@ import { AudioFX } from "./audio";
 import { PAPER_FRAG } from "./shaders";
 import {
   INK,
+  INK_RGB,
+  LIGHT_DIR_WORLD,
   PAPER,
+  PAPER_RGB,
   makeInkMaterial,
   resolveMove,
+  shared,
   type Collider,
   type InkId,
 } from "./world";
@@ -130,21 +134,29 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   canvas.className = "dd-canvas";
   container.appendChild(canvas);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, stencil: false, powerPreference: "high-performance" });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(PAPER);
-  const camera = new THREE.PerspectiveCamera(BASE_FOV, 1, 0.05, 300);
+  const camera = new THREE.PerspectiveCamera(BASE_FOV, 1, 0.08, 420);
   scene.add(camera);
 
+  // The scene target is data, not colour: shading, ink id and the surface normal
+  // all have to survive the round trip, so it needs a float target at point
+  // sampling with a float depth buffer.
   const rt = new THREE.WebGLRenderTarget(4, 4, {
-    minFilter: THREE.LinearFilter,
-    magFilter: THREE.LinearFilter,
-    type: THREE.UnsignedByteType,
+    type: THREE.HalfFloatType,
+    format: THREE.RGBAFormat,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    depthBuffer: true,
+    stencilBuffer: false,
+    generateMipmaps: false,
   });
   rt.depthTexture = new THREE.DepthTexture(4, 4);
-  rt.depthTexture.type = THREE.UnsignedIntType;
+  rt.depthTexture.format = THREE.DepthFormat;
+  rt.depthTexture.type = THREE.FloatType;
 
   const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const postScene = new THREE.Scene();
@@ -159,12 +171,19 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       uSlow: { value: 0 },
       uLowHp: { value: 0 },
       uOutline: { value: 1 },
-      uPaper: { value: new THREE.Color(PAPER) },
+      uPaper: { value: new THREE.Vector3(...PAPER_RGB) },
       uInks: {
-        value: [INK.BLUE, INK.RED, INK.BLACK, INK.ORANGE, INK.GREEN, INK.PINK].map((i) => new THREE.Color(i)),
+        value: [INK.BLUE, INK.RED, INK.BLACK, INK.ORANGE, INK.GREEN, INK.PINK].map(
+          (i) => new THREE.Vector3(...INK_RGB[i]),
+        ),
       },
       uNear: { value: camera.near },
       uFar: { value: camera.far },
+      uAspect: { value: 1 },
+      uLineSpacing: { value: 60 },
+      uLineMode: { value: 0 },
+      uInvProj: { value: new THREE.Matrix4() },
+      uInvView: { value: new THREE.Matrix4() },
     },
     vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.,1.); }`,
     fragmentShader: PAPER_FRAG,
@@ -184,6 +203,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   let mouseAim = false;
   let locked = false;
   let sensitivity = 100; // slider percentage; 100 = default look speed
+  let invertY = false;
 
   /* ---------- player ---------- */
   const player = {
@@ -1142,10 +1162,12 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   }
 
   function rayAABBall(origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number): number {
-    let best = maxDist;
+    // -1 when nothing is hit: callers treat "no hit" as a miss, so bullets keep
+    // flying instead of dying on the end of their own step.
+    let best = -1;
     for (const c of world.colliders) {
-      const t = rayAABB(origin, dir, c, best);
-      if (t >= 0 && t < best) best = t;
+      const t = rayAABB(origin, dir, c, best < 0 ? maxDist : best);
+      if (t >= 0 && (best < 0 || t < best)) best = t;
     }
     return best;
   }
@@ -1420,9 +1442,21 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   }
 
   function renderFrame() {
+    const t = performance.now() * 0.001;
+    shared.uTime.value = t;
+    camera.updateMatrixWorld();
+    camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+    // the sketch light lives in view space, so shading is anchored to the camera
+    shared.uLightDir.value.copy(LIGHT_DIR_WORLD).transformDirection(camera.matrixWorldInverse);
     renderer.setRenderTarget(rt);
     renderer.render(scene, camera);
     renderer.setRenderTarget(null);
+    const u = postMat.uniforms;
+    u.uTime.value = t;
+    u.uNear.value = camera.near;
+    u.uFar.value = camera.far;
+    u.uInvProj.value.copy(camera.projectionMatrixInverse);
+    u.uInvView.value.copy(camera.matrixWorld);
     renderer.render(postScene, postCam);
   }
 
@@ -1444,10 +1478,14 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
     rt.setSize(size.x, size.y);
     if (rt.depthTexture) rt.depthTexture.dispose();
-    rt.depthTexture = new THREE.DepthTexture(size.x, size.y);
-    rt.depthTexture.type = THREE.UnsignedIntType;
-    postMat.uniforms.tDepth.value = rt.depthTexture;
+    const depth = new THREE.DepthTexture(size.x, size.y);
+    depth.format = THREE.DepthFormat;
+    depth.type = THREE.FloatType;
+    rt.depthTexture = depth;
+    postMat.uniforms.tDepth.value = depth;
     postMat.uniforms.uRes.value.set(size.x, size.y);
+    postMat.uniforms.uAspect.value = w / h;
+    postMat.uniforms.uLineSpacing.value = size.y / 13.5;
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   };
@@ -1549,7 +1587,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // halving the slider halves the look speed.
     const s = (0.0021 * sensitivity) / 100;
     player.yaw -= e.movementX * s;
-    player.pitch -= e.movementY * s * (false ? -1 : 1);
+    player.pitch -= e.movementY * s * (invertY ? -1 : 1);
     player.pitch = clamp(player.pitch, -1.5, 1.5);
   };
   const onWheel = (e: WheelEvent) => {
@@ -1641,6 +1679,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     },
     setSensitivity(v: number) {
       sensitivity = v;
+    },
+    setInvert(on: boolean) {
+      invertY = on;
     },
     setMusic(on: boolean) {
       fx.musicOn = on;

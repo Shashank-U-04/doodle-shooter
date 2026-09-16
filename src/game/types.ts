@@ -47,6 +47,7 @@ export interface GameHandle {
   toMenu(): void;
   requestLock(): void;
   setSensitivity(v: number): void;
+  setInvert(on: boolean): void;
   setMusic(on: boolean): void;
   dispose(): void;
 }

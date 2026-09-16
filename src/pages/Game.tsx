@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { ArrowLeft } from "lucide-react";
 import { createGame } from "@/game/engine";
 import type { GameHandle } from "@/game/types";
 import type { GameOverStats, HudState } from "@/game/types";
@@ -61,9 +60,19 @@ export default function Game() {
   const [boss, setBoss] = useState<{ name: string; frac: number } | null>(null);
   const [ads, setAds] = useState(false);
   const [sens, setSens] = useState(() => Number(localStorage.getItem("dd_sens") || 100));
+  const [invert, setInvert] = useState(() => localStorage.getItem("dd_invert") === "1");
   const [sound, setSound] = useState(() => localStorage.getItem("dd_music") !== "0");
   const [best, setBest] = useState(() => Number(localStorage.getItem("dd_best") || 0));
   const [ready, setReady] = useState(false);
+  const [locked, setLocked] = useState(false);
+
+  // track pointer lock so we can prompt when the browser refused to recapture it
+  useEffect(() => {
+    const onPlc = () => setLocked(document.pointerLockElement !== null);
+    document.addEventListener("pointerlockchange", onPlc);
+    onPlc();
+    return () => document.removeEventListener("pointerlockchange", onPlc);
+  }, []);
 
   const msgTimer = useRef<number | null>(null);
   const tipTimer = useRef<number | null>(null);
@@ -116,8 +125,11 @@ export default function Game() {
     }
     gameRef.current = handle;
     handle.setSensitivity(sens);
+    handle.setInvert(invert);
     handle.setMusic(sound);
     setReady(true);
+    // arriving from the title screen's START: begin the run straight away
+    handle.start();
 
     return () => {
       disposed = true;
@@ -139,10 +151,11 @@ export default function Game() {
     setOverlay({ kind: "menu" });
     gameRef.current?.restart();
   }, []);
+  // MAIN MENU goes back to the title screen (the same menu the reference shows).
   const toMenu = useCallback(() => {
     gameRef.current?.toMenu();
-    setOverlay({ kind: "menu" });
-  }, []);
+    navigate("/");
+  }, [navigate]);
 
   const hpFrac = Math.max(0, hud.hp / hud.maxHp);
 
@@ -255,6 +268,17 @@ export default function Game() {
                 START<i>solo · survive the waves</i>
               </button>
             </div>
+            <div className="cols">
+              <div>
+                <div className="colhead">MOUSE + KEYBOARD</div>
+                {CONTROLS.map(([k, v]) => (
+                  <div key={k}>
+                    <b>{k}</b> {v}
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div className="settings">
               <label>
                 look sensitivity
@@ -274,7 +298,19 @@ export default function Game() {
                 <b>{sens}%</b>
               </label>
               <label>
-                sound
+                <input
+                  type="checkbox"
+                  checked={invert}
+                  onChange={(e) => {
+                    setInvert(e.target.checked);
+                    localStorage.setItem("dd_invert", e.target.checked ? "1" : "0");
+                    gameRef.current?.setInvert(e.target.checked);
+                  }}
+                />
+                invert vertical look
+              </label>
+              <label>
+                music
                 <input
                   type="checkbox"
                   checked={sound}
@@ -287,16 +323,18 @@ export default function Game() {
                 <span className="k">(M)</span>
               </label>
             </div>
-            <div className="controls-note" style={{ marginTop: 14, textAlign: "left", fontSize: 12.5, color: "#8a8aa0", columnCount: 2 }}>
-              {CONTROLS.map(([k, v]) => (
-                <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                  <b style={{ color: "#4c4c60" }}>{k}</b>
-                  <span>{v}</span>
-                </div>
-              ))}
-            </div>
             {best > 0 && <div className="beststat">best score: {best}</div>}
             <div className="go">CLICK START — the mouse will be captured</div>
+          </div>
+        </div>
+      )}
+
+      {overlay.kind === "menu" && hud.wave > 0 && !locked && (
+        <div className="dd-screen" onClick={() => gameRef.current?.requestLock()}>
+          <div className="panel">
+            <h1>READY</h1>
+            <h2>wave {hud.wave} · score {hud.score}</h2>
+            <div className="go">CLICK ANYWHERE TO CAPTURE THE MOUSE</div>
           </div>
         </div>
       )}
@@ -342,15 +380,6 @@ export default function Game() {
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => navigate("/")}
-        className="dd-exit"
-        aria-label="Back to gallery"
-      >
-        <ArrowLeft className="size-4" />
-        Gallery
-      </button>
     </div>
   );
 }

@@ -5,20 +5,38 @@ import { INK_FRAG, INK_VERT } from "./shaders";
 
 export const INK = { BLUE: 0, RED: 1, BLACK: 2, ORANGE: 3, GREEN: 4, PINK: 5 } as const;
 export type InkId = (typeof INK)[keyof typeof INK];
-export const INK_HEX: Record<InkId, string> = {
-  [INK.BLUE]: "#1a2fc2",
-  [INK.RED]: "#c22f2f",
-  [INK.BLACK]: "#2e2e2e",
-  [INK.ORANGE]: "#e08c14",
-  [INK.GREEN]: "#1f7a4d",
-  [INK.PINK]: "#e066a8",
+
+// The reference game's ink palette, verbatim.
+export const INK_RGB: Record<InkId, [number, number, number]> = {
+  [INK.BLUE]: [0.1, 0.19, 0.76],
+  [INK.RED]: [0.86, 0.12, 0.2],
+  [INK.BLACK]: [0.18, 0.2, 0.26],
+  [INK.ORANGE]: [0.92, 0.55, 0.08],
+  [INK.GREEN]: [0.12, 0.6, 0.3],
+  [INK.PINK]: [0.9, 0.4, 0.66],
 };
-export const PAPER = 0xfaf5e9;
-export const PAPER_HEX = "#faf5e9";
+
+export const INK_HEX: Record<InkId, string> = {
+  [INK.BLUE]: "#1a30c2",
+  [INK.RED]: "#db1f33",
+  [INK.BLACK]: "#2e3342",
+  [INK.ORANGE]: "#eb8c14",
+  [INK.GREEN]: "#1f994d",
+  [INK.PINK]: "#e666a8",
+};
+
+// paper: (0.965, 0.955, 0.905) in the reference renderer
+export const PAPER_RGB: [number, number, number] = [0.965, 0.955, 0.905];
+export const PAPER = 0xf6f4e7;
+export const PAPER_HEX = "#f6f4e7";
+
+// The sketch "studio light": kept in view space, so the shading is anchored
+// to the camera the way the reference game does it.
+export const LIGHT_DIR_WORLD = new THREE.Vector3(0.38, 0.82, 0.42).normalize();
 
 export const shared = {
   uTime: { value: 0 },
-  uLightDir: { value: new THREE.Vector3(0.35, 1, 0.2).normalize() },
+  uLightDir: { value: new THREE.Vector3(0, 1, 0) },
 };
 
 export function makeInkMaterial(

@@ -380,6 +380,32 @@
 .dd-screen .settings b { color: #d02030; min-width: 56px; text-align: left; }
 .dd-screen .settings .k { opacity: 0.6; font-size: 17px; }
 
+.dd-screen .cols { display: flex; gap: 46px; justify-content: center; text-align: left; font-size: 22px; line-height: 1.4; margin-top: 16px; }
+.dd-screen .cols b { color: #d02030; }
+.dd-screen .colhead { font-size: 26px; border-bottom: 2px solid #1a30c0; margin-bottom: 6px; }
+
+/* ---- title screen: the same paper sheet the game draws, ruled lines and all ---- */
+.dd-landing {
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  background-color: #f6f3e6;
+  background-image:
+    repeating-linear-gradient(to bottom, rgba(126, 158, 224, 0.32) 0 1px, transparent 1px 60px),
+    linear-gradient(
+      to right,
+      transparent 0 6.8%,
+      rgba(216, 106, 122, 0.42) 6.8% calc(6.8% + 1.5px),
+      transparent calc(6.8% + 1.5px) 100%
+    );
+  font-family: "Patrick Hand", "Caveat", "Comic Sans MS", "Marker Felt", "Segoe Print", cursive;
+  color: #1a30c0;
+}
+.dd-landing .dd-screen { background: transparent; }
+@media (max-width: 900px) {
+  .dd-screen .cols { flex-direction: column; gap: 10px; font-size: 18px; }
+}
+
 @media (max-width: 900px) {
   .dd-screen h1 { font-size: 56px; }
   .dd-screen .panel { padding: 20px 22px; }
