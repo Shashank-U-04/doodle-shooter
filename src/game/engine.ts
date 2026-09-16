@@ -183,7 +183,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   let mouseFire = false;
   let mouseAim = false;
   let locked = false;
-  let sensitivity = 1;
+  let sensitivity = 100; // slider percentage; 100 = default look speed
 
   /* ---------- player ---------- */
   const player = {
@@ -1545,7 +1545,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   };
   const onMouseMove = (e: MouseEvent) => {
     if (!locked || state !== "playing") return;
-    const s = 0.0021 * sensitivity;
+    // slider is a percentage: 100% -> 0.0021 rad per mouse count (~1 deg/inch on 800dpi),
+    // halving the slider halves the look speed.
+    const s = (0.0021 * sensitivity) / 100;
     player.yaw -= e.movementX * s;
     player.pitch -= e.movementY * s * (false ? -1 : 1);
     player.pitch = clamp(player.pitch, -1.5, 1.5);
