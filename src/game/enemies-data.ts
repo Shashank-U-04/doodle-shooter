@@ -50,6 +50,15 @@ export type EnemyDef = {
   limbR: number;
   model?: "blob" | "bomber" | "flyer";
   bossKind?: string;
+  // ---- kit: what the figure is wearing, so each class reads at a glance ----
+  /** secondary ink for gear (boots, gloves, helmet, vest) */
+  accent?: InkId;
+  vest?: boolean;
+  coat?: boolean;
+  visor?: boolean;
+  /** >1 means a heavier, armoured build */
+  bulky?: number;
+  backpack?: string;
   /** projectile spread (radians) and speed, per weapon */
   spread?: number;
   pspeed?: number;
@@ -69,14 +78,14 @@ export type EnemyDef = {
 
 // Values copied from the reference's own table, so the enemies behave identically.
 export const ED: Record<EnemyKind, EnemyDef> = {
-  grunt: { hp: 100, speed: 5.2, weapon: "rifle", range: 28, stop: 16, keep: 7, burst: 3, burstInt: 0.15, cool: [1.6, 2.6], dmg: 6, spread: 0.055, pspeed: 36, score: 100, scale: 1, name: "GRUNT", ink: INK.BLUE, hat: "cap", bodyW: 1, headS: 1, limbR: 0.032 },
-  rusher: { hp: 70, speed: 7.6, weapon: "blade", range: 3, stop: 1.9, keep: 0, lunge: 2.9, reach: 3, standoff: 1.9, cool: [1, 1.5], dmg: 15, score: 120, scale: 0.95, name: "RUSHER", ink: INK.RED, hat: "band", bodyW: 0.82, headS: 0.95, limbR: 0.027 },
+  grunt: { hp: 100, speed: 5.2, weapon: "rifle", range: 28, stop: 16, keep: 7, burst: 3, burstInt: 0.15, cool: [1.6, 2.6], dmg: 6, spread: 0.055, pspeed: 36, score: 100, scale: 1, name: "GRUNT", ink: INK.BLUE, hat: "cap", bodyW: 1, headS: 1, limbR: 0.032, vest: true, accent: INK.BLACK, backpack: "small" },
+  rusher: { hp: 70, speed: 7.6, weapon: "blade", range: 3, stop: 1.9, keep: 0, lunge: 2.9, reach: 3, standoff: 1.9, cool: [1, 1.5], dmg: 15, score: 120, scale: 0.95, name: "RUSHER", ink: INK.RED, hat: "band", bodyW: 0.82, headS: 0.95, limbR: 0.027, accent: INK.BLACK },
   bomber: { hp: 26, speed: 6.5, weapon: "bomb", range: 3.4, stop: 0, keep: 0, fuseRange: 3.4, fuse: 1.05, blast: 4.2, cool: [1.05, 1.05], dmg: 24, score: 150, scale: 0.9, name: "INK BOMB", ink: INK.BLACK, model: "bomber", bodyW: 1, headS: 1, limbR: 0.03 },
-  sniper: { hp: 60, speed: 3.6, weapon: "sniper", range: 90, stop: 90, keep: 15, aimTime: 1.7, stationary: true, cool: [2.8, 3.8], dmg: 22, spread: 0.006, pspeed: 95, score: 180, scale: 1.05, name: "SNIPER", ink: INK.GREEN, hat: "hood", bodyW: 0.78, headS: 0.92, limbR: 0.026 },
+  sniper: { hp: 60, speed: 3.6, weapon: "sniper", range: 90, stop: 90, keep: 15, aimTime: 1.7, stationary: true, cool: [2.8, 3.8], dmg: 22, spread: 0.006, pspeed: 95, score: 180, scale: 1.05, name: "SNIPER", ink: INK.GREEN, hat: "hood", bodyW: 0.78, headS: 0.92, limbR: 0.026, coat: true, accent: INK.BLACK, backpack: "small" },
   flyer: { hp: 40, speed: 6.2, weapon: "dive", range: 2.2, stop: 0, keep: 0, cool: [2.8, 4.2], dmg: 10, score: 140, scale: 1.5, name: "PAPER WASP", ink: INK.PINK, flying: true, model: "flyer", bodyW: 1, headS: 1, limbR: 0.03 },
-  heavy: { hp: 320, speed: 3, weapon: "shotgun", range: 18, stop: 9, keep: 5, pellets: 7, cool: [2.4, 3.2], dmg: 5, spread: 0.13, pspeed: 32, score: 260, scale: 1.25, name: "HEAVY", ink: INK.ORANGE, hat: "helmet", bodyW: 1.55, headS: 0.88, limbR: 0.05 },
-  shield: { hp: 150, speed: 3.8, weapon: "pistol", range: 20, stop: 8, keep: 4, burst: 2, burstInt: 0.2, cool: [1.8, 2.6], dmg: 5, spread: 0.06, pspeed: 34, score: 200, scale: 1.05, name: "SHIELDBEARER", ink: INK.BLUE, shield: true, hat: "helmet", bodyW: 1.2, headS: 0.9, limbR: 0.042 },
-  boss: { hp: 2600, speed: 3.2, weapon: "boss", range: 32, stop: 6, keep: 0, cool: [2.6, 3.6], dmg: 22, spread: 0.055, pspeed: 45, score: 2500, scale: 2.7, name: "THE DOODLER", ink: INK.BLACK, boss: true, bossKind: "doodler", hat: "crown", bodyW: 1.35, headS: 1.15, limbR: 0.06 },
+  heavy: { hp: 320, speed: 3, weapon: "shotgun", range: 18, stop: 9, keep: 5, pellets: 7, cool: [2.4, 3.2], dmg: 5, spread: 0.13, pspeed: 32, score: 260, scale: 1.25, name: "HEAVY", ink: INK.ORANGE, hat: "helmet", bodyW: 1.55, headS: 0.88, limbR: 0.05, vest: true, bulky: 1.4, accent: INK.BLACK, backpack: "tank" },
+  shield: { hp: 150, speed: 3.8, weapon: "pistol", range: 20, stop: 8, keep: 4, burst: 2, burstInt: 0.2, cool: [1.8, 2.6], dmg: 5, spread: 0.06, pspeed: 34, score: 200, scale: 1.05, name: "SHIELDBEARER", ink: INK.BLUE, shield: true, hat: "helmet", bodyW: 1.2, headS: 0.9, limbR: 0.042, vest: true, visor: true, bulky: 1.1, accent: INK.BLACK },
+  boss: { hp: 2600, speed: 3.2, weapon: "boss", range: 32, stop: 6, keep: 0, cool: [2.6, 3.6], dmg: 22, spread: 0.055, pspeed: 45, score: 2500, scale: 2.7, name: "THE DOODLER", ink: INK.BLACK, boss: true, bossKind: "doodler", hat: "crown", bodyW: 1.35, headS: 1.15, limbR: 0.06, vest: true, coat: true, bulky: 1.2, accent: INK.ORANGE, backpack: "small" },
   eraser: { hp: 3400, speed: 4.2, weapon: "boss", range: 30, stop: 8, keep: 0, cool: [2.2, 3.2], dmg: 26, spread: 0.06, pspeed: 45, score: 3200, scale: 2.6, name: "THE ERASER", ink: INK.PINK, boss: true, model: "blob", bossKind: "eraser", bodyW: 1, headS: 1, limbR: 0.04 },
   inkblot: { hp: 3000, speed: 3, weapon: "boss", range: 34, stop: 10, keep: 0, cool: [2.4, 3.4], dmg: 20, spread: 0.06, pspeed: 45, score: 3600, scale: 2.4, name: "THE INKBLOT", ink: INK.BLACK, boss: true, model: "blob", bossKind: "inkblot", bodyW: 1, headS: 1, limbR: 0.04 },
 };

@@ -37,8 +37,13 @@ type Enemy = {
   torso: THREE.Object3D;
   legL: THREE.Object3D;
   legR: THREE.Object3D;
+  shinL: THREE.Object3D;
+  shinR: THREE.Object3D;
   armL: THREE.Object3D;
   armR: THREE.Object3D;
+  foreL: THREE.Object3D;
+  foreR: THREE.Object3D;
+  hips: THREE.Object3D;
   hatMesh: THREE.Object3D | null;
   shieldMesh: THREE.Object3D | null;
   headY: number;
@@ -308,38 +313,156 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   /* ---------- viewmodel rig ---------- */
   const rig = new THREE.Group();
   camera.add(rig);
-  const matGun = makeInkMaterial(INK.BLUE, false);
-  const matGunDark = makeInkMaterial(INK.BLACK, true);
+  // The first-person weapon is the thing the player looks at most, so it gets
+  // the same treatment as the enemy rigs: real part-by-part models with gloved
+  // hands and sleeves, drawn in the same two inks as the rest of the world.
+  const matBody = makeInkMaterial(INK.BLUE, false); // hatched ink: the weapon body
+  const matLine = makeInkMaterial(INK.BLACK, false);
+  const matMetal = makeInkMaterial(INK.BLACK, true);
+  const matAccent = makeInkMaterial(INK.ORANGE, true);
+  const matLens = makeInkMaterial(INK.GREEN, true);
+  const matGlove = makeInkMaterial(INK.BLACK, true);
+  const matSleeve = makeInkMaterial(INK.BLUE, false);
   const viewModels: THREE.Group[] = [];
-  const gunPart = (parent: THREE.Object3D, w: number, h: number, d: number, x: number, y: number, z: number, dark: boolean) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), dark ? matGunDark : matGun);
+
+  const part = (
+    parent: THREE.Object3D,
+    geo: THREE.BufferGeometry,
+    mat: THREE.Material,
+    x: number,
+    y: number,
+    z: number,
+    rx = 0,
+    ry = 0,
+    rz = 0,
+  ) => {
+    const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
+    m.rotation.set(rx, ry, rz);
     parent.add(m);
     return m;
   };
+  const pbox = (
+    p: THREE.Object3D,
+    w: number,
+    h: number,
+    d: number,
+    mat: THREE.Material,
+    x: number,
+    y: number,
+    z: number,
+    rx = 0,
+    ry = 0,
+    rz = 0,
+  ) => part(p, new THREE.BoxGeometry(w, h, d), mat, x, y, z, rx, ry, rz);
+  const pcyl = (
+    p: THREE.Object3D,
+    r1: number,
+    r2: number,
+    h: number,
+    mat: THREE.Material,
+    x: number,
+    y: number,
+    z: number,
+    rx = 0,
+    ry = 0,
+    rz = 0,
+    seg = 10,
+  ) => part(p, new THREE.CylinderGeometry(r1, r2, h, seg), mat, x, y, z, rx, ry, rz);
+  const ptor = (p: THREE.Object3D, r: number, tube: number, mat: THREE.Material, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0) =>
+    part(p, new THREE.TorusGeometry(r, tube, 6, 14), mat, x, y, z, rx, ry, rz);
+
+  /** a gloved fist, with the forearm and cuff running back down toward the camera */
+  const hand = (p: THREE.Object3D, x: number, y: number, z: number, flip: number) => {
+    pbox(p, 0.082, 0.105, 0.09, matGlove, x, y, z, 0.12, flip * 0.2, 0);
+    pbox(p, 0.088, 0.032, 0.108, matGlove, x, y - 0.05, z - 0.012, 0.2, flip * 0.2, 0);
+    pbox(p, 0.048, 0.028, 0.05, matMetal, x + flip * 0.03, y + 0.032, z - 0.03, 0.3, 0, 0);
+    pcyl(p, 0.058, 0.07, 0.34, matSleeve, x, y - 0.113, z + 0.127, 2.3, flip * 0.22, flip * 0.08);
+    pcyl(p, 0.072, 0.078, 0.05, matAccent, x, y - 0.226, z + 0.253, 2.3, flip * 0.22, flip * 0.08);
+  };
+
   const buildViewModel = (kind: string): THREE.Group => {
     const g = new THREE.Group();
     if (kind === "rifle") {
-      gunPart(g, 0.09, 0.12, 0.62, 0, 0, -0.28, false);
-      gunPart(g, 0.05, 0.2, 0.1, 0, -0.12, -0.05, true);
-      gunPart(g, 0.06, 0.06, 0.18, 0, 0.07, -0.42, true);
+      pbox(g, 0.078, 0.1, 0.44, matBody, 0, 0, -0.16);
+      pbox(g, 0.07, 0.08, 0.28, matLine, 0, -0.005, -0.48);
+      pbox(g, 0.04, 0.02, 0.3, matMetal, 0, 0.05, -0.44);
+      pcyl(g, 0.015, 0.015, 0.34, matMetal, 0, 0.005, -0.78, Math.PI / 2);
+      pcyl(g, 0.024, 0.024, 0.07, matMetal, 0, 0.005, -0.97, Math.PI / 2);
+      pbox(g, 0.02, 0.05, 0.02, matMetal, 0, 0.045, -0.9);
+      pbox(g, 0.055, 0.2, 0.095, matMetal, 0, -0.145, -0.14, 0.16);
+      pbox(g, 0.05, 0.13, 0.07, matMetal, 0, -0.1, 0.03, -0.25);
+      pbox(g, 0.06, 0.09, 0.22, matBody, 0, -0.015, 0.14);
+      pbox(g, 0.07, 0.13, 0.04, matMetal, 0, -0.03, 0.25);
+      pbox(g, 0.042, 0.05, 0.16, matMetal, 0, 0.095, -0.14);
+      pcyl(g, 0.02, 0.02, 0.02, matLens, 0, 0.095, -0.22, Math.PI / 2);
+      pcyl(g, 0.018, 0.018, 0.02, matMetal, 0, 0.095, -0.06, Math.PI / 2);
+      pbox(g, 0.03, 0.032, 0.1, matMetal, 0, 0.063, -0.14);
+      pbox(g, 0.02, 0.02, 0.06, matMetal, 0.045, 0.028, -0.06);
+      hand(g, 0.006, -0.105, 0.025, 1);
+      hand(g, -0.012, -0.024, -0.44, -1);
     } else if (kind === "shotgun") {
-      gunPart(g, 0.12, 0.13, 0.55, 0, 0, -0.26, false);
-      gunPart(g, 0.09, 0.09, 0.5, 0, 0.09, -0.32, true);
-      gunPart(g, 0.06, 0.18, 0.1, 0, -0.13, -0.02, true);
+      pbox(g, 0.09, 0.11, 0.36, matBody, 0, -0.01, -0.1);
+      pcyl(g, 0.026, 0.026, 0.6, matMetal, 0, 0.035, -0.62, Math.PI / 2);
+      pcyl(g, 0.021, 0.021, 0.44, matMetal, 0, -0.022, -0.55, Math.PI / 2);
+      pbox(g, 0.086, 0.075, 0.16, matAccent, 0, -0.026, -0.5);
+      for (let i = 0; i < 4; i++) pbox(g, 0.014, 0.03, 0.05, matAccent, 0.05, -0.03 + i * 0.001, -0.2 - i * 0.055);
+      pbox(g, 0.06, 0.1, 0.26, matBody, 0, -0.045, 0.16);
+      pbox(g, 0.07, 0.14, 0.04, matMetal, 0, -0.055, 0.3);
+      pbox(g, 0.05, 0.13, 0.075, matMetal, 0, -0.11, -0.02, -0.22);
+      pcyl(g, 0.011, 0.011, 0.03, matMetal, 0, 0.078, -0.9);
+      pbox(g, 0.05, 0.026, 0.06, matMetal, 0, 0.062, -0.05, 0, 0, 0.2);
+      hand(g, 0.006, -0.115, 0.015, 1);
+      hand(g, -0.012, -0.05, -0.5, -1);
     } else if (kind === "sniper") {
-      gunPart(g, 0.08, 0.11, 0.9, 0, 0, -0.4, false);
-      gunPart(g, 0.07, 0.07, 0.26, 0, 0.11, -0.3, true);
-      gunPart(g, 0.05, 0.18, 0.09, 0, -0.12, -0.02, true);
+      pbox(g, 0.07, 0.1, 0.5, matBody, 0, 0, -0.16);
+      pcyl(g, 0.017, 0.017, 0.72, matMetal, 0, 0.005, -0.9, Math.PI / 2);
+      pcyl(g, 0.028, 0.028, 0.09, matMetal, 0, 0.005, -1.29, Math.PI / 2);
+      pcyl(g, 0.028, 0.028, 0.34, matMetal, 0, 0.1, -0.2, Math.PI / 2);
+      pcyl(g, 0.038, 0.038, 0.05, matMetal, 0, 0.1, -0.38, Math.PI / 2);
+      pcyl(g, 0.031, 0.031, 0.012, matLens, 0, 0.1, -0.41, Math.PI / 2);
+      pcyl(g, 0.032, 0.032, 0.05, matMetal, 0, 0.1, -0.02, Math.PI / 2);
+      pcyl(g, 0.016, 0.016, 0.045, matMetal, 0, 0.142, -0.2);
+      pcyl(g, 0.014, 0.014, 0.04, matMetal, 0.034, 0.1, -0.2, 0, 0, Math.PI / 2);
+      pbox(g, 0.03, 0.05, 0.06, matMetal, 0, 0.058, -0.3);
+      pbox(g, 0.03, 0.05, 0.06, matMetal, 0, 0.058, -0.11);
+      pbox(g, 0.018, 0.018, 0.09, matMetal, 0.048, 0.022, -0.04, 0.5, 0, 0.4);
+      pbox(g, 0.05, 0.1, 0.08, matMetal, 0, -0.1, -0.1);
+      pbox(g, 0.055, 0.1, 0.3, matBody, 0, -0.035, 0.2);
+      pbox(g, 0.062, 0.045, 0.17, matMetal, 0, 0.038, 0.19);
+      pbox(g, 0.05, 0.13, 0.07, matMetal, 0, -0.1, 0.03, -0.22);
+      pbox(g, 0.016, 0.016, 0.2, matMetal, -0.045, -0.06, -0.6, 0.35);
+      pbox(g, 0.016, 0.016, 0.2, matMetal, 0.045, -0.06, -0.6, 0.35);
+      hand(g, 0.006, -0.105, 0.025, 1);
+      hand(g, -0.012, -0.03, -0.5, -1);
     } else if (kind === "revolver") {
-      gunPart(g, 0.08, 0.12, 0.3, 0, 0, -0.14, false);
-      gunPart(g, 0.09, 0.09, 0.1, 0, -0.02, -0.06, true);
-      gunPart(g, 0.05, 0.14, 0.07, 0, -0.11, 0.02, true);
+      pbox(g, 0.036, 0.05, 0.24, matMetal, 0, 0.022, -0.2);
+      pbox(g, 0.016, 0.018, 0.22, matMetal, 0, 0.05, -0.2);
+      pbox(g, 0.046, 0.07, 0.18, matBody, 0, 0, -0.04);
+      pcyl(g, 0.045, 0.045, 0.1, matMetal, 0, 0.006, -0.13, Math.PI / 2, 0, 0, 12);
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        pcyl(g, 0.009, 0.009, 0.11, matAccent, 0, 0.006 + Math.cos(a) * 0.028, -0.13 + Math.sin(a) * 0.028, Math.PI / 2, 0, 0, 6);
+      }
+      pbox(g, 0.05, 0.14, 0.075, matBody, 0, -0.105, 0.05, -0.3);
+      pbox(g, 0.02, 0.04, 0.02, matMetal, 0, 0.048, 0.045);
+      ptor(g, 0.032, 0.008, matMetal, 0, -0.05, -0.02, Math.PI / 2);
+      pbox(g, 0.012, 0.02, 0.012, matMetal, 0, 0.06, -0.31);
+      hand(g, 0.01, -0.1, 0.06, 1);
+      hand(g, -0.072, -0.072, 0.035, -1);
     } else {
-      // katana
-      gunPart(g, 0.04, 0.05, 0.24, 0, 0, 0.1, true);
-      const blade = gunPart(g, 0.025, 0.09, 1.05, 0, 0.02, -0.5, false);
-      blade.rotation.x = 0.06;
+      // katana: wrapped tsuka, tsuba, curved blade
+      pcyl(g, 0.02, 0.02, 0.28, matMetal, 0, 0.02, 0.15, Math.PI / 2);
+      for (let i = 0; i < 6; i++) pbox(g, 0.03, 0.012, 0.022, matAccent, 0, 0.038, 0.045 + i * 0.042, 0, 0, 0.5);
+      pcyl(g, 0.05, 0.05, 0.018, matMetal, 0, 0.02, 0.0, Math.PI / 2, 0, 0, 14);
+      pbox(g, 0.03, 0.05, 0.05, matAccent, 0, 0.02, -0.035);
+      const blade = pbox(g, 0.018, 0.046, 1.02, matBody, 0, 0.034, -0.55);
+      blade.rotation.x = 0.03;
+      const edge = pbox(g, 0.008, 0.012, 1.0, matMetal, 0, 0.014, -0.55);
+      edge.rotation.x = 0.03;
+      pbox(g, 0.014, 0.02, 0.05, matMetal, 0, 0.046, -1.06, 0.03);
+      hand(g, 0.004, -0.04, 0.09, 1);
+      hand(g, -0.004, -0.05, 0.24, -1);
     }
     g.visible = false;
     rig.add(g);
@@ -663,16 +786,21 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     let rigB: Rig;
     if (def.model === "flyer") rigB = makeWaspRig({ ink: def.ink, bodyW: 1, headS: 1, limbR: 0.03, scale: def.scale });
     else if (def.model === "blob") rigB = makeBlobRig({ ink: def.ink, bodyW: 1, headS: 1, limbR: 0.03, scale: def.scale, weapon: def.weapon }, def.bossKind);
-    else rigB = makeRig({ ink: def.ink, bodyW: (def as EnemyDefX).bodyW ?? 1, headS: (def as EnemyDefX).headS ?? 1, limbR: (def as EnemyDefX).limbR ?? 0.032, hat: def.hat, shield: def.shield, weapon: def.weapon, scale: def.scale, smile: def.weapon === "blade" });
+    else rigB = makeRig({ ink: def.ink, accent: def.accent ?? INK.BLACK, bodyW: def.bodyW ?? 1, headS: def.headS ?? 1, limbR: def.limbR ?? 0.032, hat: def.hat, shield: def.shield, weapon: def.weapon, scale: def.scale, smile: def.weapon === "blade", vest: def.vest, coat: def.coat, visor: def.visor, bulky: def.bulky, backpack: def.backpack });
     const P = rigB.parts;
     return {
       root: rigB.root,
       head: P.head,
       torso: P.torso,
+      hips: P.hips,
       legL: P.legL,
       legR: P.legR,
+      shinL: P.shinL,
+      shinR: P.shinR,
       armL: P.armL,
       armR: P.armR,
+      foreL: P.foreL,
+      foreR: P.foreR,
       hatMesh: null,
       shieldMesh: P.shield,
       headY: rigB.headWorldY,
@@ -709,10 +837,15 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       root: built.root,
       head: built.head,
       torso: built.torso,
+      hips: built.hips,
       legL: built.legL,
       legR: built.legR,
+      shinL: built.shinL,
+      shinR: built.shinR,
       armL: built.armL,
       armR: built.armR,
+      foreL: built.foreL,
+      foreR: built.foreR,
       hatMesh: built.hatMesh,
       shieldMesh: built.shieldMesh,
       headY: built.headY,
@@ -1364,6 +1497,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       e.dying -= dt;
       e.torso.rotation.x = Math.min(1.5, e.torso.rotation.x + dt * 6);
       e.root.position.y -= dt * 1.2;
+      for (const j of [e.legL, e.legR, e.armL, e.armR, e.shinL, e.shinR]) {
+        j.rotation.x += (rand(-0.6, 0.6) - j.rotation.x) * dt * 2.5;
+      }
       hideLaser(e);
       if (e.dying <= 0) scene.remove(e.root);
       return;
@@ -1483,14 +1619,63 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     e.root.position.copy(e.pos);
     e.root.rotation.y = e.yaw;
 
-    // limbs
+    animateRig(e, dt, dist, dy);
+  }
+
+  // Walk cycle with real joints: hips and shoulders swing, knees only bend
+  // backwards and elbows forward, and the weapon arm rises to aim. Weight shift
+  // comes from a small hip roll and a torso counter-rotation.
+  function animateRig(e: Enemy, dt: number, dist: number, dy: number) {
     const spd = Math.hypot(e.vel.x, e.vel.z);
-    const sw = spd > 0.4 ? Math.sin(e.t * 10) * 0.5 : 0;
-    e.legL.rotation.x = sw;
-    e.legR.rotation.x = -sw;
-    e.armL.rotation.x = -sw * 0.6;
-    if (e.armR.rotation.x < -0.1) e.armR.rotation.x += dt * 6;
-    else e.armR.rotation.x = sw * 0.6;
+    // blobs and the wasp have no skeleton to pose: a wobble and a few wiggling
+    // limbs read better than a walk cycle on a body with no knees.
+    if (e.def.model) {
+      const w = Math.sin(e.t * (e.def.model === "flyer" ? 16 : 7));
+      if (e.def.model !== "flyer") {
+        e.legL.rotation.x = w * 0.55;
+        e.legR.rotation.x = -w * 0.55;
+        e.armL.rotation.x = -w * 0.45;
+        e.armR.rotation.x = w * 0.45;
+      }
+      e.torso.rotation.z = w * 0.09;
+      e.torso.position.y = Math.abs(w) * 0.03;
+      return;
+    }
+    const gait = clamp(spd / 6.5, 0, 1);
+    const ph = e.t * (5.5 + spd * 0.75);
+    const amp = 0.12 + gait * 0.62;
+    const sw = Math.sin(ph);
+    const swB = Math.sin(ph + Math.PI);
+
+    e.legL.rotation.x = -sw * amp;
+    e.legR.rotation.x = -swB * amp;
+    e.shinL.rotation.x = Math.max(0, Math.sin(ph - 1.1)) * amp * 1.25;
+    e.shinR.rotation.x = Math.max(0, Math.sin(ph + Math.PI - 1.1)) * amp * 1.25;
+
+    // arms: the left swings, the right rides the weapon
+    e.armL.rotation.x = swB * amp * 0.7 - 0.05;
+    e.foreL.rotation.x = -0.25 - Math.max(0, swB) * 0.35;
+    const aim = e.aimAmt ?? 0;
+    if (e.def.weapon === "blade") {
+      e.armR.rotation.x = -0.4 - sw * amp * 0.5;
+      e.foreR.rotation.x = -1.15 - (e.attackT > 0 ? 0.5 : 0);
+      e.armR.rotation.z = -0.35;
+    } else {
+      const raised = e.def.weapon === "bomb" ? -0.2 : -1.35 - aim * 0.25;
+      e.armR.rotation.x += (raised - e.armR.rotation.x) * (1 - Math.exp(-7 * dt));
+      e.armR.rotation.z = 0;
+      e.foreR.rotation.x = -0.35 + swB * amp * 0.15;
+    }
+
+    // weight shift and head tracking
+    e.hips.rotation.z = Math.sin(ph * 0.5) * 0.06 * gait;
+    e.torso.rotation.y = -sw * 0.1 * gait;
+    e.torso.position.y = Math.abs(Math.sin(ph)) * 0.025 * gait;
+    if (e.alive) {
+      const wantPitch = clamp(-Math.atan2(dy, Math.max(1, dist)) * 0.8, -0.45, 0.45);
+      e.head.rotation.x += (wantPitch - e.head.rotation.x) * (1 - Math.exp(-6 * dt));
+      e.head.rotation.y = Math.sin(e.t * 0.7) * 0.06 * (1 - gait);
+    }
   }
 
   /* ---------- waves ---------- */

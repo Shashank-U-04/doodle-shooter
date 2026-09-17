@@ -264,7 +264,8 @@ export function buildDistrict(scene: THREE.Scene): District {
     rail(-7, 7, -1.5, 7, y);
     rail(1.5, 7, 7, 7, y);
     rail(-7, -7, 7, -7, y);
-    rail(7, -7, 7, 7, y);
+    rail(7, -7, 7, -6, y);
+    rail(7, 0, 7, 7, y);
     rail(-7, -7, -6.5, -7, y);
     rail(3.5, -7, 7, -7, y);
   }
@@ -337,7 +338,7 @@ export function buildDistrict(scene: THREE.Scene): District {
     for (let x = 0; x <= Math.floor(len); x++) box(-25 + x, 12, 5, 0.06, 0.02, x % 5 === 0 ? 0.6 : 0.35, { ink: INK.BLACK, noCollide: true });
     rail(-25, 7.2, armEnd, 7.2, 12, { ink: INK.ORANGE });
   }
-  spawn(-34, 12, 12);
+  spawn(-34, 0, 10);
   spawn(-40, 0, 18);
   sniper(-27, 12, 6);
   pickup(-34, 4, 12);
@@ -406,8 +407,8 @@ export function buildDistrict(scene: THREE.Scene): District {
   stairs(-46.5, 0, -24.5, "+x", 25, 2, { rise: 0.28, run: 0.45 });
   stairs(46.5, 0, -24.5, "-x", 25, 2, { rise: 0.28, run: 0.45 });
   for (let x = -50; x < 50; x += 4) box(x + 1, 7, -30, 2, 0.02, 0.2, { ink: INK.BLACK, noCollide: true });
-  spawn(-48, 7, -30);
-  spawn(48, 7, -30);
+  spawn(-46, 0, -30);
+  spawn(46, 0, -30);
   sniper(0, 7, -30);
   pickup(-10, 7, -30);
   pickup(24, 7, -30);
@@ -431,9 +432,9 @@ export function buildDistrict(scene: THREE.Scene): District {
   box(19, 7, -42, 1.2, 1.4, 1.2);
   cyl(-10, 11, -47.5, 1.4, 2.6, { seg: 14 });
   box(-5, 11, -42, 0.1, 4, 0.1, { ink: INK.BLACK, noCollide: true });
-  spawn(-8, 11, -45);
-  spawn(-30, 7, -48);
-  spawn(16, 7, -45);
+  spawn(-8, 0, -37);
+  spawn(-30, 0, -37);
+  spawn(16, 0, -37);
   sniper(-8, 11, -48);
   sniper(16, 7, -43);
   pickup(-8, 11, -43);
@@ -493,6 +494,137 @@ export function buildDistrict(scene: THREE.Scene): District {
   pickup(-30, 1.6, 44);
   pickup(38, 3, 40);
   pickup(0, 0, 10);
+
+  /* ------------------------------------------------------------------ *
+   * WEST WORKS — a two-storey workshop you can fight through, with a
+   * walkable roof. Footprint x -45..-27, z -22..-6.
+   * ------------------------------------------------------------------ */
+  slab(-45, -22, -27, -6, 9, 0.4); // roof plate
+  slab(-45, -22, -27, -6, 4.5, 0.35); // mezzanine floor
+  wallX(-45, -27, -22, 0, 9, 0.4, [[-40, -36, 0, 3.6], [-33, -29, 0, 3.6]]);
+  wallX(-45, -27, -6, 0, 9, 0.4, [[-38, -34, 0, 3.6], [-31, -27, 4.6, 8.2]]);
+  wallZ(-22, -6, -45, 0, 9, 0.4, [[-19, -15, 0, 3.6], [-13, -9, 4.6, 8.2]]);
+  wallZ(-22, -6, -27, 0, 9, 0.4, [[-19, -15, 0, 3.6], [-13, -9, 4.6, 8.2]]);
+  wallZ(-22, -6, -36, 0, 4.5, 0.3, [[-19, -16, 0, 3.2]]); // interior partition
+  // mezzanine stair in the west bay
+  stairs(-44, 0, -9, "-z", 16, 1.8, { rise: 4.5 / 16, run: 0.45 });
+  // roof stair climbing the east face, outside the wall
+  stairs(-25.8, 0, -7.4, "-z", 32, 2, { rise: 0.28125, run: 0.45 });
+  slab(-27, -22.4, -24.6, -21.2, 9, 0.4);
+  // roof rails with gaps, a tank and vents
+  rail(-45, -22, -45, -14, 9);
+  rail(-45, -12, -45, -6, 9);
+  rail(-45, -6, -34, -6, 9);
+  rail(-30, -6, -27, -6, 9);
+  rail(-45, -22, -34, -22, 9);
+  cyl(-40, 9, -12, 1.5, 2.4, { seg: 12 });
+  box(-31, 9, -18, 1.6, 1.4, 1.6, { ink: INK.ORANGE });
+  box(-30, 9, -10, 2.2, 1, 2.2, { ink: INK.BLACK });
+  // the yard outside: stacked containers on a loading dock
+  slab(-45, -6, -27, -2.2, 1.2, 0.4);
+  box(-31, 1.2, -4, 6, 2.6, 2.6, { ink: INK.GREEN });
+  box(-31, 3.8, -3.7, 5.4, 2.4, 2.4, { ink: INK.ORANGE });
+  box(-38, 0, -3.4, 2.4, 1.2, 2.4, { ink: INK.BLUE });
+  spawn(-41, 0, -18);
+  spawn(-34, 0, -9);
+  spawn(-31, 0, -12);
+  sniper(-40, 9, -12);
+  sniper(-30, 9, -20);
+  pickup(-36, 0, -12);
+  pickup(-44, 4.5, -8);
+  pickup(-40, 9, -10);
+
+  /* ------------------------------------------------------------------ *
+   * EAST DECK — an open two-level car park: a covered garage under two
+   * decks, joined by internal stairs. Footprint x 26..46, z -22..-6.
+   * ------------------------------------------------------------------ */
+  for (const x of [28.5, 33.5, 38.5, 43.5]) {
+    for (const z of [-20.5, -15.5, -10.5]) box(x, 0, z, 0.9, 4.2, 0.9, { ink: INK.BLACK });
+  }
+  // deck 1, built as four plates around a stairwell opening
+  slab(26, -22, 28, -6, 4.2, 0.4);
+  slab(34, -22, 46, -6, 4.2, 0.4);
+  slab(28, -22, 34, -16, 4.2, 0.4);
+  slab(28, -13, 34, -6, 4.2, 0.4);
+  stairs(31, 0, -21.6, "+z", 15, 3, { rise: 0.28, run: 0.5 });
+  // deck 2, half the footprint, with its own opening
+  slab(26, -14, 40, -6, 8.4, 0.4);
+  slab(44, -14, 46, -6, 8.4, 0.4);
+  slab(40, -14, 44, -11, 8.4, 0.4);
+  slab(40, -8, 44, -6, 8.4, 0.4);
+  stairs(42, 4.2, -13.6, "+z", 15, 3, { rise: 0.28, run: 0.5 });
+  // kerbs along the open edges
+  box(36, 4.2, -22, 20, 0.5, 0.4, { ink: INK.BLACK });
+  box(36, 4.2, -6, 20, 0.5, 0.4, { ink: INK.BLACK });
+  box(46, 4.2, -14, 0.4, 0.5, 16, { ink: INK.BLACK });
+  box(26, 4.2, -14, 0.4, 0.5, 16, { ink: INK.BLACK });
+  box(33, 8.4, -6, 14, 0.5, 0.4, { ink: INK.BLACK });
+  box(46, 8.4, -10, 0.4, 0.5, 8, { ink: INK.BLACK });
+  box(26, 8.4, -10, 0.4, 0.5, 8, { ink: INK.BLACK });
+  // parked wrecks and a barrier or two for cover
+  box(38, 4.2, -19, 4.4, 1.3, 2.1, { ink: INK.PINK });
+  box(38, 5.5, -19, 2.4, 0.9, 1.9, { ink: INK.PINK });
+  box(30, 4.2, -9, 4.4, 1.3, 2.1, { ink: INK.BLUE });
+  box(30, 5.5, -9, 2.4, 0.9, 1.9, { ink: INK.BLUE });
+  box(40, 0, -19, 4, 1.05, 0.6, { ink: INK.BLACK });
+  box(28, 0, -8, 4, 1.05, 0.6, { ink: INK.BLACK });
+  spawn(31, 0, -10);
+  spawn(44, 0, -8);
+  spawn(36, 0, -13);
+  sniper(44, 8.4, -8);
+  sniper(27, 8.4, -13);
+  pickup(30, 0, -20);
+  pickup(45, 4.2, -18);
+  pickup(32, 8.4, -7);
+
+  /* ------------------------------------------------------------------ *
+   * SKYWAYS — high routes leaving the tower's second floor east and
+   * west, each ending in a stair down to the street.
+   * ------------------------------------------------------------------ */
+  slab(7, -5.5, 19, -1.5, 8, 0.35);
+  slab(17, -8.2, 23.5, -1.5, 8, 0.35);
+  rail(7, -1.5, 23.5, -1.5, 8);
+  rail(7, -5.5, 17, -5.5, 8);
+  rail(17, -8.2, 20.2, -8.2, 8);
+  rail(22.8, -8.2, 23.5, -8.2, 8);
+  rail(23.5, -8.2, 23.5, -1.5, 8);
+  stairs(21.5, 0, -16.4, "+z", 16, 2.4, { rise: 0.5, run: 0.45 });
+  slab(20.3, -9.6, 22.7, -8, 8, 0.4);
+
+  slab(-19, -5.5, -7, -1.5, 8, 0.35);
+  slab(-23.5, -8.2, -17, -1.5, 8, 0.35);
+  rail(-23.5, -1.5, -7, -1.5, 8);
+  rail(-17, -5.5, -7, -5.5, 8);
+  rail(-20.2, -8.2, -17, -8.2, 8);
+  rail(-23.5, -8.2, -22.8, -8.2, 8);
+  rail(-23.5, -8.2, -23.5, -1.5, 8);
+  stairs(-21.5, 0, -16.4, "+z", 16, 2.4, { rise: 0.5, run: 0.45 });
+  slab(-22.7, -9.6, -20.3, -8, 8, 0.4);
+  spawn(18, 0, -16);
+  spawn(-18, 0, -13);
+  pickup(11, 8, -3.5);
+  pickup(-11, 8, -3.5);
+
+  /* ------------------------------------------------------------------ *
+   * STREET COVER — the south street was the emptiest, most exposed part
+   * of the map. Barriers, a low wall and a bus shelter give it lanes.
+   * ------------------------------------------------------------------ */
+  for (const x of [-12, -8.4, -4.8, 8, 11.6, 15.2]) box(x, 0, 24, 3.2, 1.05, 0.6, { ink: INK.BLACK });
+  box(-4, 0, 20, 14, 1.1, 0.5);
+  box(10.2, 0, 29, 0.2, 2.6, 0.2, { ink: INK.BLACK });
+  box(13.8, 0, 29, 0.2, 2.6, 0.2, { ink: INK.BLACK });
+  box(12, 2.6, 29, 4.4, 0.25, 2.8, { ink: INK.GREEN, noCollide: true });
+  box(12, 0, 29, 4, 0.5, 0.3, { ink: INK.BLUE });
+  box(-18, 0, 18, 2.6, 1.6, 1.6, { ink: INK.ORANGE });
+  box(18, 0, 18, 2.6, 1.6, 1.6, { ink: INK.ORANGE });
+  for (const x of [-20, -12, 12, 20]) box(x, 7, -30, 3.4, 1.05, 0.6, { ink: INK.BLACK });
+  spawn(-10, 0, 22);
+  spawn(13, 0, 26);
+  spawn(0, 0, 26);
+  spawn(-14, 0, 12);
+  spawn(14, 0, 12);
+  pickup(-12, 0, 24);
+  pickup(12, 0, 27);
 
   /* ---------------- street clutter ---------------- */
   box(-16, 0, -8, 2.2, 1.2, 2.2);
