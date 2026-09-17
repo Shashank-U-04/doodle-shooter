@@ -147,7 +147,13 @@ export default function Game() {
     setOverlay({ kind: "menu" });
     gameRef.current?.start();
   }, []);
-  const resume = useCallback(() => gameRef.current?.resume(), []);
+  // resume() arms the capture and keeps the pause screen up until the mouse is
+  // really captured; requestLock() is the immediate retry (the browser refuses a
+  // capture requested within ~1s of an Escape unlock), so a second click works.
+  const resume = useCallback(() => {
+    gameRef.current?.resume();
+    gameRef.current?.requestLock();
+  }, []);
   const restart = useCallback(() => {
     setOverlay({ kind: "menu" });
     gameRef.current?.restart();

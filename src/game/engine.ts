@@ -232,6 +232,15 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   let mouseFire = false;
   let mouseAim = false;
   let locked = false;
+  // Pointer capture is granted asynchronously (and refused outright for ~1.25s
+  // after an Escape unlock), so the run is frozen until the browser really
+  // hands the mouse over. Without this the sim kept running behind the pause /
+  // game-over screens with the cursor still captured — which hid the pointer
+  // and made every button on those screens unclickable.
+  let awaitingLock = false;
+  let announceOnCapture = false;
+  let lockTimer = 0;
+  let lockTries = 0;
   let sensitivity = 100; // slider percentage; 100 = default look speed
   let invertY = false;
 
@@ -2011,7 +2020,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
 
   function gameOver() {
     state = "over";
-    document.exitPointerLock?.();
+    awaitingLock = false;
+    announceOnCapture = false;
     const bestKey = "dd_best";
     const prev = Number(localStorage.getItem(bestKey) || 0);
     const isBest = score > prev;
@@ -2021,13 +2031,17 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     fx.wave();
     cb.onBoss(null, 0);
     cb.onGameOver({ wave, kills, score, best: isBest });
+    releasePointer();
   }
 
   function step(dtRaw: number) {
     const t = performance.now() * 0.001;
     postMat.uniforms.uTime.value = t;
 
-    if (state !== "playing") {
+    if (state !== "playing" || awaitingLock) {
+      // The cursor is only hidden while the pointer is captured, so a menu,
+      // pause or game-over screen must always hand the mouse back.
+      if (state !== "playing" && document.pointerLockElement) releasePointer();
       // idle sway for menu backdrop
       camera.position.set(player.pos.x, player.pos.y + 1.62, player.pos.z);
       camera.rotation.order = "YXZ";
@@ -2161,13 +2175,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     if (e.repeat) return;
     const code = e.code;
     if (["Space", "Tab", "AltLeft", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(code)) e.preventDefault();
-    keys.add(code);
-    if (state !== "playing") {
+    if (state !== "playing" || awaitingLock) {
       if (code === "KeyM") {
         fx.musicOn = !fx.musicOn;
       }
       return;
     }
+    keys.add(code);
     switch (code) {
       case "Space":
         if (player.onGround) {
@@ -2229,7 +2243,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
 
   const onMouseDown = (e: MouseEvent) => {
     mouseButtons.add(e.button);
-    if (state !== "playing") return;
+    if (state !== "playing" || awaitingLock) return;
     if (e.button === 0) {
       mouseFire = true;
       if (!slots[curSlot].def.auto) fireWeapon();
@@ -2255,28 +2269,98 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     player.pitch = clamp(player.pitch, -1.5, 1.5);
   };
   const onWheel = (e: WheelEvent) => {
-    if (state !== "playing") return;
+    if (state !== "playing" || awaitingLock) return;
     e.preventDefault();
     switchSlot((curSlot + (e.deltaY > 0 ? 1 : slots.length - 1)) % slots.length);
   };
-  // requestPointerLock returns a Promise in modern browsers; it rejects when
-  // called too soon after an Escape-triggered unlock (browser cooldown), so
-  // swallow rejections instead of throwing unhandled errors.
+  // Pointer capture. requestPointerLock returns a Promise in modern browsers and
+  // *refuses* a request made within ~1.25s of an Escape-triggered unlock (the
+  // browser's own cooldown). Those refusals used to be swallowed silently, which
+  // left the run "playing" with no captured mouse: the cursor stayed hidden, the
+  // pause / game-over buttons could never be clicked, and nothing could restart.
+  const canvasLegacy = canvas as HTMLCanvasElement & {
+    webkitRequestPointerLock?: () => void;
+    mozRequestPointerLock?: () => void;
+  };
   const lockPointer = () => {
     try {
-      const p = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
-      if (p && typeof p.catch === "function") p.catch(() => void 0);
+      if (document.pointerLockElement === canvas) return;
+      if (typeof canvas.requestPointerLock === "function") {
+        const p = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+        if (p && typeof p.catch === "function") p.catch(() => void 0);
+      } else if (canvasLegacy.webkitRequestPointerLock) {
+        canvasLegacy.webkitRequestPointerLock();
+      } else if (canvasLegacy.mozRequestPointerLock) {
+        canvasLegacy.mozRequestPointerLock();
+      }
     } catch {
-      /* older browsers may throw synchronously */
+      /* a refused capture is fine: capturePointer() retries and the READY
+         prompt on screen asks the player to click again */
     }
+  };
+  const releasePointer = () => {
+    try {
+      if (!document.pointerLockElement) return;
+      const d = document as Document & {
+        webkitExitPointerLock?: () => void;
+        mozExitPointerLock?: () => void;
+      };
+      if (typeof d.exitPointerLock === "function") d.exitPointerLock();
+      else if (d.webkitExitPointerLock) d.webkitExitPointerLock();
+      else if (d.mozExitPointerLock) d.mozExitPointerLock();
+    } catch {
+      /* never let a pointer-lock quirk break pause / menu / game over */
+    }
+  };
+  /** Ask for the mouse, retrying through the browser's post-Escape cooldown. */
+  const capturePointer = () => {
+    window.clearTimeout(lockTimer);
+    lockTries = 0;
+    const attempt = () => {
+      if (document.pointerLockElement === canvas) return;
+      if (state !== "playing" || !awaitingLock) return;
+      lockPointer();
+      lockTries += 1;
+      if (lockTries < 5) {
+        lockTimer = window.setTimeout(attempt, 180 + lockTries * 240);
+      } else {
+        // Capture is not going to happen here (denied permission, an unusual
+        // browser): unfreeze rather than trapping the player on a dead screen.
+        awaitingLock = false;
+        if (announceOnCapture) {
+          announceOnCapture = false;
+          cb.onResume();
+        }
+      }
+    };
+    attempt();
+  };
+  const onPointerLockError = () => {
+    /* capturePointer() retries; nothing else to do */
   };
   const onContext = (e: Event) => e.preventDefault();
   const onPointerLockChange = () => {
     locked = document.pointerLockElement === canvas;
-    if (!locked && state === "playing") handleRef.current.pause();
+    if (locked) {
+      window.clearTimeout(lockTimer);
+      lockTries = 0;
+      if (awaitingLock) {
+        awaitingLock = false;
+        last = performance.now();
+        if (announceOnCapture) {
+          announceOnCapture = false;
+          cb.onResume();
+        }
+      }
+      return;
+    }
+    // Esc, tab-away or a click outside: freeze the run and show the pause screen
+    if (state === "playing" && !awaitingLock) handleRef.current.pause();
   };
   const onCanvasClick = () => {
-    if (state === "playing" && !locked) lockPointer();
+    if (state !== "playing" || locked || awaitingLock) return;
+    awaitingLock = true;
+    capturePointer();
   };
   const onBlur = () => {
     keys.clear();
@@ -2293,6 +2377,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   window.addEventListener("wheel", onWheel, { passive: false });
   window.addEventListener("blur", onBlur);
   document.addEventListener("pointerlockchange", onPointerLockChange);
+  document.addEventListener("pointerlockerror", onPointerLockError);
   canvas.addEventListener("contextmenu", onContext);
   canvas.addEventListener("click", onCanvasClick);
 
@@ -2305,41 +2390,56 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       state = "playing";
       intermissionT = 3;
       fx.ensure();
-      lockPointer();
       startWave(1);
+      cb.onResume();
+      awaitingLock = true;
+      announceOnCapture = false;
+      capturePointer();
     },
     pause() {
       if (state !== "playing") return;
       state = "paused";
+      awaitingLock = false;
+      announceOnCapture = false;
       keys.clear();
       mouseFire = false;
       mouseAim = false;
-      document.exitPointerLock?.();
+      // Tell React first: a pointer-lock quirk must never leave the player on a
+      // frozen game with no overlay and an invisible cursor.
       cb.onPause({ wave, score });
+      releasePointer();
     },
     resume() {
       if (state !== "paused") return;
       state = "playing";
       last = performance.now();
-      cb.onResume();
-      lockPointer();
+      awaitingLock = true;
+      // the pause screen stays up until the mouse is really captured again
+      announceOnCapture = true;
+      capturePointer();
     },
     restart() {
       resetRun();
       state = "playing";
       cb.onResume();
-      lockPointer();
       startWave(1);
+      awaitingLock = true;
+      announceOnCapture = false;
+      capturePointer();
     },
     toMenu() {
       resetRun();
       state = "menu";
-      document.exitPointerLock?.();
+      awaitingLock = false;
+      announceOnCapture = false;
       cb.onBoss(null, 0);
       cb.onResume();
+      releasePointer();
     },
     requestLock() {
-      if (state === "playing" && !locked) lockPointer();
+      if (state !== "playing" || locked) return;
+      awaitingLock = true;
+      capturePointer();
     },
     setSensitivity(v: number) {
       sensitivity = v;
@@ -2360,7 +2460,12 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("wheel", onWheel);
       window.removeEventListener("blur", onBlur);
+      window.clearTimeout(lockTimer);
       document.removeEventListener("pointerlockchange", onPointerLockChange);
+      document.removeEventListener("pointerlockerror", onPointerLockError);
+      awaitingLock = false;
+      announceOnCapture = false;
+      releasePointer();
       canvas.removeEventListener("contextmenu", onContext);
       canvas.removeEventListener("click", onCanvasClick);
       renderer.dispose();
