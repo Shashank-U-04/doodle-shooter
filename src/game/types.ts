@@ -38,6 +38,7 @@ export type EngineCallbacks = {
   onPause: (state: { wave: number; score: number }) => void;
   onResume: () => void;
   onLockLost: () => void;
+  onLockChange: (locked: boolean) => void;
   onAim: (ads: boolean) => void;
 };
 

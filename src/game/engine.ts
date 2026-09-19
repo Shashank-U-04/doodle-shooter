@@ -2800,21 +2800,34 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     webkitRequestPointerLock?: () => void;
     mozRequestPointerLock?: () => void;
   };
-  const lockPointer = () => {
+  type LockOpts = { unadjustedMovement?: boolean };
+  const requestLockOnce = (opts?: LockOpts): Promise<void> => {
     try {
-      if (document.pointerLockElement === canvas) return;
-      if (typeof canvas.requestPointerLock === "function") {
-        const p = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
-        if (p && typeof p.catch === "function") p.catch(() => void 0);
-      } else if (canvasLegacy.webkitRequestPointerLock) {
-        canvasLegacy.webkitRequestPointerLock();
-      } else if (canvasLegacy.mozRequestPointerLock) {
-        canvasLegacy.mozRequestPointerLock();
+      if (typeof canvas.requestPointerLock !== "function") {
+        if (canvasLegacy.webkitRequestPointerLock) {
+          canvasLegacy.webkitRequestPointerLock();
+          return Promise.resolve();
+        }
+        if (canvasLegacy.mozRequestPointerLock) {
+          canvasLegacy.mozRequestPointerLock();
+          return Promise.resolve();
+        }
+        return Promise.reject(new Error("pointer lock unsupported"));
       }
-    } catch {
-      /* a refused capture is fine: capturePointer() retries and the READY
-         prompt on screen asks the player to click again */
+      const call = canvas.requestPointerLock as (o?: LockOpts) => Promise<void> | void;
+      const p = call(opts);
+      return p && typeof p.catch === "function" ? p : Promise.resolve();
+    } catch (err) {
+      return Promise.reject(err);
     }
+  };
+  // The reference's order: ask for raw (unaccelerated) mouse input first and
+  // fall back to plain pointer lock if the browser will not hand it over.
+  const lockPointer = () => {
+    if (document.pointerLockElement === canvas) return;
+    void requestLockOnce({ unadjustedMovement: true })
+      .catch(() => requestLockOnce())
+      .catch(() => void 0);
   };
   const releasePointer = () => {
     try {
@@ -2839,17 +2852,12 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       if (state !== "playing" || !awaitingLock) return;
       lockPointer();
       lockTries += 1;
-      if (lockTries < 5) {
-        lockTimer = window.setTimeout(attempt, 180 + lockTries * 240);
-      } else {
-        // Capture is not going to happen here (denied permission, an unusual
-        // browser): unfreeze rather than trapping the player on a dead screen.
-        awaitingLock = false;
-        if (announceOnCapture) {
-          announceOnCapture = false;
-          cb.onResume();
-        }
-      }
+      // Keep asking for as long as the run wants the mouse. The browser only
+      // grants a request that follows a real gesture, so every click and key
+      // press re-arms this (see onGesture) and the timer covers the case where
+      // the capture settles a moment after the gesture that asked for it.
+      lockTimer = window.setTimeout(attempt, 1200);
+      if (lockTries === 6) cb.onTip("click the page or press any key to grab the mouse", 6);
     };
     attempt();
   };
@@ -2859,6 +2867,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   const onContext = (e: Event) => e.preventDefault();
   const onPointerLockChange = () => {
     locked = document.pointerLockElement === canvas;
+    // tell React directly: the READY panel is shown while the mouse is loose,
+    // so a missed lock event would leave it sitting over a live game.
+    cb.onLockChange(locked);
     if (locked) {
       window.clearTimeout(lockTimer);
       lockTries = 0;
@@ -2880,6 +2891,21 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     awaitingLock = true;
     capturePointer();
   };
+  // Pointer lock is only granted to a request that follows a real user gesture,
+  // and the request has to happen on the gesture itself - so *every* click or
+  // key press while a run is live asks for the mouse again, wherever it lands
+  // (canvas, HUD, READY screen). Routing this through the engine's own listener
+  // instead of a React onClick means a swallowed click can never leave the
+  // player stuck staring at the READY panel.
+  const onGesture = (e: Event) => {
+    if (state !== "playing" || locked) return;
+    if (e.type === "keydown") {
+      const code = (e as KeyboardEvent).code;
+      if (code === "Escape" || code === "KeyP") return; // that opens the pause menu
+    }
+    awaitingLock = true;
+    capturePointer();
+  };
   const onBlur = () => {
     keys.clear();
     mouseFire = false;
@@ -2894,6 +2920,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   window.addEventListener("mousemove", onMouseMove);
   window.addEventListener("wheel", onWheel, { passive: false });
   window.addEventListener("blur", onBlur);
+  window.addEventListener("pointerdown", onGesture, true);
+  window.addEventListener("keydown", onGesture, true);
   document.addEventListener("pointerlockchange", onPointerLockChange);
   document.addEventListener("pointerlockerror", onPointerLockError);
   canvas.addEventListener("contextmenu", onContext);
@@ -2979,6 +3007,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       window.removeEventListener("wheel", onWheel);
       window.removeEventListener("blur", onBlur);
       window.clearTimeout(lockTimer);
+      window.removeEventListener("pointerdown", onGesture, true);
+      window.removeEventListener("keydown", onGesture, true);
       document.removeEventListener("pointerlockchange", onPointerLockChange);
       document.removeEventListener("pointerlockerror", onPointerLockError);
       awaitingLock = false;

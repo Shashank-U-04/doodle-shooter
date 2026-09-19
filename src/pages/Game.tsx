@@ -117,6 +117,7 @@ export default function Game() {
       onPause: (s) => setOverlay({ kind: "paused", wave: s.wave, score: s.score }),
       onResume: () => setOverlay({ kind: "menu" }),
       onLockLost: () => void 0,
+      onLockChange: (l) => setLocked(l),
       onAim: (a) => setAds(a),
     });
 
@@ -362,11 +363,15 @@ export default function Game() {
       )}
 
       {overlay.kind === "menu" && hud.wave > 0 && !locked && (
-        <div className="dd-screen" onClick={() => gameRef.current?.requestLock()}>
+        <div
+          className="dd-screen"
+          onPointerDown={() => gameRef.current?.requestLock()}
+          onClick={() => gameRef.current?.requestLock()}
+        >
           <div className="panel">
             <h1>READY</h1>
             <h2>wave {hud.wave} · score {hud.score}</h2>
-            <div className="go">CLICK ANYWHERE TO CAPTURE THE MOUSE</div>
+            <div className="go">CLICK THE PAGE (OR PRESS ANY KEY) TO GRAB THE MOUSE</div>
           </div>
         </div>
       )}
