@@ -87,6 +87,24 @@ type Enemy = {
   fuseT: number;
   pathFailT: number;
   laser: THREE.Mesh | null;
+  // ---- boss / wasp special attacks ----
+  bossAtk: BossAtk | null;
+  bossCharges: number;
+  bossSprays: number;
+  hopT: number;
+  hopping: boolean;
+  flyState: "orbit" | "dive" | "stunned";
+  flyT: number;
+  diveHit: boolean;
+};
+
+type BossAtk = {
+  kind: "stomp" | "throw" | "charge" | "rub" | "spray" | "summon";
+  t: number;
+  done: boolean;
+  dir: THREE.Vector3 | null;
+  hit: boolean;
+  shots: number;
 };
 
 /* ============================== data ============================== */
@@ -701,6 +719,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     }
     e.hp -= amount;
     e.t += 0.05;
+    if (e.def.boss) cb.onBoss(e.def.name, clamp(e.hp / e.maxHp, 0, 1));
     spawnShards(e.pos.clone().add(new THREE.Vector3(0, 1.2 * e.def.scale, 0)), crit ? INK.RED : e.def.ink, crit ? 7 : 3, 2.4);
     if (e.hp <= 0) killEnemy(e, source, crit, dir);
     else {
@@ -806,7 +825,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       headY: rigB.headWorldY,
     };
   }
-  function spawnEnemy(kind: EnemyKind) {
+  function spawnEnemy(kind: EnemyKind): Enemy {
     const def = ED[kind];
     const built = makeLocalRig(def);
     let pos: THREE.Vector3;
@@ -888,6 +907,14 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       fuseT: -1,
       pathFailT: 0,
       laser: null,
+      bossAtk: null,
+      bossCharges: 0,
+      bossSprays: 0,
+      hopT: 1,
+      hopping: false,
+      flyState: "orbit",
+      flyT: 0,
+      diveHit: false,
     };
     built.root.position.copy(pos);
     built.root.rotation.y = rand(0, Math.PI * 2);
@@ -895,6 +922,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     enemies.push(e);
     if (def.boss) cb.onBoss(def.name, 1);
     spawnShards(pos.clone().add(new THREE.Vector3(0, 1, 0)), def.ink, 8, 3);
+    return e;
   }
 
   function explode(pos: THREE.Vector3, radius: number, dmg: number, fromPlayer: boolean) {
@@ -1463,7 +1491,48 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   }
 
   function updateFlyer(e: Enemy, dt: number, dist: number) {
-    const orbit = Math.atan2(e.pos.x - player.pos.x, e.pos.z - player.pos.z) + 0.45;
+    // PAPER WASP: orbit → dive → recover; a katana block knocks it out of the sky.
+    e.aimAmt = smooth(e.aimAmt, e.los && dist < 18 ? 1 : 0, 6, dt);
+    e.flyT -= dt;
+    if (e.flyState === "stunned") {
+      e.vel.y -= 20 * dt;
+      if (e.onGround || e.flyT <= -1.2) {
+        e.flyState = "orbit";
+        e.flyT = 0.8;
+        e.cooldown = rand(e.def.cool[0], e.def.cool[1]);
+      }
+      e.yawT = Math.atan2(e.vel.x, e.vel.z);
+      return;
+    }
+    if (e.flyState === "dive") {
+      const aim = eyePos();
+      const to = aim.clone().sub(e.pos);
+      const len = to.length();
+      if (len > 0.2) e.vel.lerp(to.divideScalar(len).multiplyScalar(16), Math.min(1, dt * 6));
+      if (e.pos.distanceTo(aim) < 1.5 && !e.diveHit) {
+        e.diveHit = true;
+        e.flyT = 1.1;
+        e.cooldown = rand(e.def.cool[0], e.def.cool[1]);
+        const dir = aim.clone().sub(e.pos).normalize();
+        if (blocking) {
+          e.flyState = "stunned";
+          e.flyT = 0;
+          e.vel.set(dir.x * -4, 2, dir.z * -4);
+          fx.katana();
+        } else if (player.alive) {
+          damagePlayer(e.def.dmg * modDmg, dir);
+        }
+        e.vel.addScaledVector(dir, -7);
+      }
+      if (e.flyT <= 0) {
+        e.flyState = "orbit";
+        e.flyT = 0.8;
+      }
+      e.yawT = Math.atan2(e.vel.x, e.vel.z);
+      return;
+    }
+    // orbit in, then commit to the dive
+    const orbit = Math.atan2(e.pos.x - player.pos.x, e.pos.z - player.pos.z) + e.strafeDir * 0.45;
     const r = 11;
     const goal = new THREE.Vector3(
       player.pos.x + Math.sin(orbit) * r,
@@ -1479,16 +1548,266 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       e.vel.multiplyScalar(Math.max(0, 1 - 4 * dt));
     }
     e.yawT = Math.atan2(e.vel.x, e.vel.z);
-    // dive at the player when the cooldown is up and they are near
-    if (e.cooldown <= 0 && dist < 14) {
-      const dive = player.pos.clone().add(new THREE.Vector3(0, 1, 0)).sub(e.pos).normalize();
-      e.vel.addScaledVector(dive, e.def.speed * dt * 3.4);
-      if (dist < 2.2) {
-        damagePlayer(e.def.dmg * modDmg, dive);
-        e.vel.addScaledVector(dive, -12);
-        e.cooldown = rand(e.def.cool[0], e.def.cool[1]);
+    if (e.cooldown <= 0 && e.los && dist < 20) {
+      e.flyState = "dive";
+      e.flyT = 1.6;
+      e.diveHit = false;
+    }
+  }
+
+
+  const smooth = (cur: number, to: number, k: number, dt: number) => cur + (to - cur) * (1 - Math.exp(-k * dt));
+  const blankAtk = (kind: BossAtk["kind"]): BossAtk => ({ kind, t: 0, done: false, dir: null, hit: false, shots: 0 });
+
+  // bosses hurt the crowd around them too, like the reference
+  function blastEnemies(pos: THREE.Vector3, radius: number, dmg: number, src: Enemy) {
+    for (const o of enemies) {
+      if (!o.alive || o === src) continue;
+      const d = o.pos.distanceTo(pos);
+      if (d >= radius) continue;
+      damageEnemy(o, dmg * Math.sqrt(Math.max(0, 1 - d / radius)), false, "blast");
+    }
+  }
+
+  function spawnAt(kind: EnemyKind, pos: THREE.Vector3): Enemy {
+    const m = spawnEnemy(kind);
+    m.pos.copy(pos);
+    m.root.position.copy(pos);
+    m.root.scale.setScalar(ED[kind].scale);
+    m.state = "hunt";
+    m.t = 0.6;
+    return m;
+  }
+
+  // shared shockwave: effects, player damage inside the radius, crowd damage around it
+  function stompBlast(e: Enemy, radius: number, dmgMul: number, ink: InkId, shards: number) {
+    fx.explosion();
+    shakeT = Math.max(shakeT, 0.7);
+    spawnShards(e.pos.clone().add(new THREE.Vector3(0, 0.25, 0)), ink, shards, 12);
+    const dx = player.pos.x - e.pos.x;
+    const dz = player.pos.z - e.pos.z;
+    const pd = Math.hypot(dx, dz);
+    if (player.alive && pd < radius && player.pos.y < e.pos.y + 2.5) {
+      const inv = 1 / Math.max(1e-3, pd);
+      damagePlayer(e.def.dmg * dmgMul * modDmg, new THREE.Vector3(dx * inv, 0.2, dz * inv));
+    }
+    blastEnemies(e.pos, radius * 0.8, 60, e);
+  }
+
+  /* ---- boss brains, ported from the reference ---- */
+
+  function thinkBoss(e: Enemy, dt: number, dx: number, dz: number, dist: number, dy: number, target: THREE.Vector3) {
+    const kind = e.def.bossKind ?? "doodler";
+    if (kind === "eraser") return thinkEraser(e, dt, dx, dz, dist, dy, target);
+    if (kind === "inkblot") return thinkInkblot(e, dt, dx, dz, dist, dy, target);
+    // THE DOODLER — shockwave stomp up close, hurled ink glob at range
+    const def = e.def;
+    const g = Math.atan2(dx, dz);
+    const atk = e.bossAtk;
+    if (atk) {
+      atk.t += dt;
+      e.yawT = g;
+      e.vel.x *= Math.max(0, 1 - 5 * dt);
+      e.vel.z *= Math.max(0, 1 - 5 * dt);
+      if (atk.kind === "stomp") {
+        if (atk.t > 0.75 && !atk.done) {
+          atk.done = true;
+          stompBlast(e, 7.5, 1, INK.BLACK, 24);
+        }
+        if (atk.t > 1.3) {
+          e.bossAtk = null;
+          e.cooldown = rand(def.cool[0], def.cool[1]);
+        }
+      } else {
+        if (atk.t > 0.6 && !atk.done) {
+          atk.done = true;
+          const from = e.pos.clone().add(new THREE.Vector3(0, 1.55 * def.scale + 1, 0));
+          const dir = target.clone().add(new THREE.Vector3(0, 1, 0)).sub(from);
+          const len = Math.max(1e-3, dir.length());
+          dir.divideScalar(len);
+          dir.y += len * 0.012;
+          dir.normalize();
+          spawnBullet(from, dir.multiplyScalar(24), def.dmg * 0.9 * modDmg, false, INK.BLACK, "enemy");
+          fx.enemyShot();
+        }
+        if (atk.t > 1) {
+          e.bossAtk = null;
+          e.cooldown = rand(def.cool[0] * 0.6, def.cool[1] * 0.6);
+        }
+      }
+      return;
+    }
+    e.aimAmt = smooth(e.aimAmt, e.los ? 1 : 0, 6, dt);
+    if (e.cooldown <= 0 && e.los) {
+      if (dist < 7 && Math.abs(dy) < 3) {
+        e.bossAtk = blankAtk("stomp");
+        fx.bossRoar();
+        return;
+      }
+      if (dist < def.range) {
+        e.bossAtk = blankAtk("throw");
+        return;
       }
     }
+    if (e.los && dist < 14 && Math.abs(dy) < 2) steer(e, dt, target.x, target.z, def.speed, 30);
+    else follow(e, dt, target, def.speed);
+    if (e.los) e.yawT = g;
+  }
+
+  function thinkEraser(e: Enemy, dt: number, dx: number, dz: number, dist: number, dy: number, target: THREE.Vector3) {
+    const def = e.def;
+    const g = Math.atan2(dx, dz);
+    e.aimAmt = smooth(e.aimAmt, 0, 6, dt);
+    const atk = e.bossAtk;
+    if (atk) {
+      atk.t += dt;
+      if (atk.kind === "charge") {
+        if (atk.t < 0.7) {
+          e.yawT = g;
+          e.vel.x *= Math.max(0, 1 - 8 * dt);
+          e.vel.z *= Math.max(0, 1 - 8 * dt);
+          if (atk.t > 0.55 && !atk.dir) {
+            atk.dir = new THREE.Vector3(dx, 0, dz).normalize();
+            fx.bossRoar();
+          }
+        } else if (atk.t < 1.9) {
+          const dir = atk.dir;
+          if (dir) {
+            e.vel.x = dir.x * 17 * modSpeed;
+            e.vel.z = dir.z * 17 * modSpeed;
+          }
+          if (dist < 2.6 && Math.abs(dy) < 3 && !atk.hit) {
+            atk.hit = true;
+            const inv = 1 / Math.max(1e-3, dist);
+            damagePlayer(def.dmg * modDmg, new THREE.Vector3(dx * inv, 0.2, dz * inv));
+            shakeT = Math.max(shakeT, 0.5);
+          }
+          if (e.hitWall) {
+            atk.t = 1.9;
+            spawnShards(e.pos.clone().add(new THREE.Vector3(0, 0.4, 0)), INK.PINK, 30, 9);
+            fx.explosion();
+            shakeT = Math.max(shakeT, 0.6);
+          }
+          // pink streaks trail the whole charge
+          if (Math.floor(atk.t * 10) !== Math.floor((atk.t - dt) * 10)) {
+            spawnShards(e.pos.clone().add(new THREE.Vector3(0, 0.3, 0)), INK.PINK, 4, 3);
+          }
+        } else {
+          e.vel.x *= Math.max(0, 1 - 4 * dt);
+          e.vel.z *= Math.max(0, 1 - 4 * dt);
+          if (atk.t > 2.7) {
+            e.bossAtk = null;
+            e.cooldown = rand(def.cool[0], def.cool[1]);
+            e.bossCharges++;
+          }
+        }
+      } else {
+        // "rub": grind out two ink bombs, then slam ink on everything close
+        e.yawT = g;
+        e.vel.x *= Math.max(0, 1 - 6 * dt);
+        e.vel.z *= Math.max(0, 1 - 6 * dt);
+        if (atk.t > 0.9 && !atk.done) {
+          atk.done = true;
+          stompBlast(e, 6.5, 0.8, INK.PINK, 20);
+          const bombs = enemies.filter((o) => o.alive && o.kind === "bomber").length;
+          for (let i = 0; i < 2 && bombs + i < 4; i++) {
+            const a = rand(0, Math.PI * 2);
+            spawnAt("bomber", e.pos.clone().add(new THREE.Vector3(Math.cos(a) * 3, 0.2, Math.sin(a) * 3)));
+          }
+        }
+        if (atk.t > 1.6) {
+          e.bossAtk = null;
+          e.cooldown = rand(def.cool[0], def.cool[1]);
+        }
+      }
+      return;
+    }
+    if (e.cooldown <= 0 && e.los) {
+      if (e.bossCharges % 3 === 2 && dist < 12) {
+        e.bossAtk = blankAtk("rub");
+        e.bossCharges++;
+        return;
+      }
+      if (dist < def.range && dist > 3) {
+        e.bossAtk = blankAtk("charge");
+        return;
+      }
+    }
+    if (e.los && dist < 16 && Math.abs(dy) < 2) steer(e, dt, target.x, target.z, def.speed, 30);
+    else follow(e, dt, target, def.speed);
+    if (e.los) e.yawT = g;
+  }
+
+  function thinkInkblot(e: Enemy, dt: number, dx: number, dz: number, dist: number, dy: number, target: THREE.Vector3) {
+    const def = e.def;
+    const g = Math.atan2(dx, dz);
+    e.aimAmt = smooth(e.aimAmt, e.los ? 1 : 0, 6, dt);
+    const atk = e.bossAtk;
+    if (atk) {
+      atk.t += dt;
+      e.yawT = g;
+      e.vel.x *= Math.max(0, 1 - 6 * dt);
+      e.vel.z *= Math.max(0, 1 - 6 * dt);
+      if (atk.kind === "spray") {
+        if (atk.t > 0.6 && atk.shots < 9 && atk.t > 0.6 + atk.shots * 0.09) {
+          const from = e.pos.clone().add(new THREE.Vector3(0, 1.7 * def.scale, 0));
+          const a = Math.atan2(dx, dz) + (atk.shots - 4) * 0.19;
+          const dir = new THREE.Vector3(Math.sin(a), 0.18 + rand(-0.05, 0.05), Math.cos(a)).normalize();
+          spawnBullet(from, dir.multiplyScalar(20), def.dmg * 0.55 * modDmg, false, INK.BLACK, "enemy");
+          atk.shots++;
+          if (atk.shots === 1) fx.enemyShot();
+        }
+        if (atk.t > 1.8) {
+          e.bossAtk = null;
+          e.cooldown = rand(def.cool[0], def.cool[1]);
+          e.bossSprays++;
+        }
+      } else {
+        if (atk.t > 0.8 && !atk.done) {
+          atk.done = true;
+          fx.bossRoar();
+          spawnShards(e.pos.clone().add(new THREE.Vector3(0, 1, 0)), INK.BLACK, 40, 10);
+          const flies = enemies.filter((o) => o.alive && o.kind === "flyer").length;
+          for (let i = 0; i < 3 && flies + i < 6; i++) {
+            spawnAt("flyer", e.pos.clone().add(new THREE.Vector3(rand(-2, 2), 2 + i, rand(-2, 2))));
+          }
+        }
+        if (atk.t > 1.4) {
+          e.bossAtk = null;
+          e.cooldown = rand(def.cool[0], def.cool[1]);
+        }
+      }
+      return;
+    }
+    // hop toward you — the blot travels in arcs, and the landing is a shockwave
+    e.hopT -= dt;
+    if (e.onGround && e.hopT <= 0 && dist > 4) {
+      e.hopT = rand(1.6, 2.4);
+      const inv = 1 / Math.max(1e-3, dist);
+      e.vel.set(dx * inv * 11, 13, dz * inv * 11);
+      e.onGround = false;
+      e.hopping = true;
+    }
+    if (e.hopping && e.onGround) {
+      e.hopping = false;
+      stompBlast(e, 4.5, 0.7, INK.BLACK, 18);
+    }
+    if (e.cooldown <= 0 && e.los) {
+      if (e.bossSprays % 3 === 2) {
+        e.bossAtk = blankAtk("summon");
+        e.bossSprays++;
+        return;
+      }
+      if (dist < def.range) {
+        e.bossAtk = blankAtk("spray");
+        return;
+      }
+    }
+    if (!e.hopping) {
+      if (e.los && dist < 14 && Math.abs(dy) < 2) steer(e, dt, target.x, target.z, def.speed, 30);
+      else follow(e, dt, target, def.speed);
+    }
+    if (e.los) e.yawT = g;
   }
 
   function updateEnemy(e: Enemy, dt: number) {
@@ -1542,7 +1861,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       e.pos.addScaledVector(e.vel, dt);
       e.pos.x = clamp(e.pos.x, world.bounds.minX, world.bounds.maxX);
       e.pos.z = clamp(e.pos.z, world.bounds.minZ, world.bounds.maxZ);
-      e.pos.y = clamp(e.pos.y, 1.6, 15);
+      e.pos.y = clamp(e.pos.y, e.flyState === "stunned" ? 0.4 : 1.6, 15);
       e.yaw += (e.yawT - e.yaw) * (1 - Math.exp(-8 * dt));
       e.root.position.copy(e.pos);
       e.root.rotation.y = e.yaw;
@@ -1567,6 +1886,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       } else {
         follow(e, dt, target, e.def.speed);
       }
+    } else if (e.def.weapon === "boss") {
+      thinkBoss(e, dt, dx, dz, dist, dy, target);
     } else if (e.def.weapon === "blade") {
       updateRusher(e, dt, dx, dz, dist, dy, target);
     } else {
@@ -1656,7 +1977,19 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     e.armL.rotation.x = swB * amp * 0.7 - 0.05;
     e.foreL.rotation.x = -0.25 - Math.max(0, swB) * 0.35;
     const aim = e.aimAmt ?? 0;
-    if (e.def.weapon === "blade") {
+    if (e.def.boss) {
+      // bosses telegraph: the arm winds up, then slams (the reference's pose maths)
+      const atk = e.bossAtk;
+      const wind = atk && (atk.kind === "stomp" || atk.kind === "throw") ? clamp(atk.t / (atk.kind === "stomp" ? 0.6 : 0.5), 0, 1) : 0;
+      const slam = atk && atk.kind === "stomp" && atk.t >= 0.75 ? 1 : 0;
+      const charge = atk && atk.kind === "charge" ? 1 : 0;
+      e.armR.rotation.x += (-0.4 - sw * amp * 0.5 - wind * 2.4 + slam * 0.9 - e.armR.rotation.x) * (1 - Math.exp(-10 * dt));
+      e.armR.rotation.z = -0.2 - wind * 0.2;
+      e.foreR.rotation.x = -1.1 + wind * 0.3 + slam * 0.7;
+      e.armL.rotation.x = swB * amp * 0.5 - wind * 1.1 + slam * 0.4;
+      e.foreL.rotation.x = -0.3 - wind * 0.4;
+      e.torso.rotation.x = -wind * 0.28 + slam * 0.4 + charge * 0.5;
+    } else if (e.def.weapon === "blade") {
       e.armR.rotation.x = -0.4 - sw * amp * 0.5;
       e.foreR.rotation.x = -1.15 - (e.attackT > 0 ? 0.5 : 0);
       e.armR.rotation.z = -0.35;
