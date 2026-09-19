@@ -66,6 +66,7 @@ export default function Game() {
   const [best, setBest] = useState(() => Number(localStorage.getItem("dd_best") || 0));
   const [ready, setReady] = useState(false);
   const [locked, setLocked] = useState(false);
+  const [lockBlocked, setLockBlocked] = useState(false);
 
   // track pointer lock so we can prompt when the browser refused to recapture it
   useEffect(() => {
@@ -117,7 +118,10 @@ export default function Game() {
       onPause: (s) => setOverlay({ kind: "paused", wave: s.wave, score: s.score }),
       onResume: () => setOverlay({ kind: "menu" }),
       onLockLost: () => void 0,
-      onLockChange: (l) => setLocked(l),
+      onLockChange: (l, blocked) => {
+        setLocked(l);
+        setLockBlocked(blocked);
+      },
       onAim: (a) => setAds(a),
     });
 
@@ -361,12 +365,20 @@ export default function Game() {
       )}
 
       {/* The mouse can only be granted on a real click, so while it is loose a
-          small prompt asks for one. It is deliberately non-blocking: the run
-          keeps playing underneath and any click or key press grabs the mouse. */}
+          line of text asks for one — the same centred tip the original uses. It
+          never covers the view or takes a click, and it disappears the moment
+          the mouse is captured. */}
       {overlay.kind === "menu" && hud.wave > 0 && !locked && (
-        <div className="dd-grab">
-          <b>CLICK THE PAGE TO GRAB THE MOUSE</b>
-          <span>or press any key · the keyboard already works</span>
+        <div className="dd-tip show">
+          {lockBlocked ? (
+            <>
+              this browser will not hand over the mouse — <b>hold a mouse button and drag to look</b>
+            </>
+          ) : (
+            <>
+              click the page to grab the mouse — <b>or press any key</b>
+            </>
+          )}
         </div>
       )}
 

@@ -383,8 +383,6 @@
 .dd-bossbar.hidden { display: none; }
 .dd-bossbar .bar.big { width: 420px; height: 20px; margin-top: 4px; }
 
-.dd-tip { position: absolute; left: 0; right: 0; bottom: 17%; text-align: center; font-size: 26px; color: #1a30c0; opacity: 0.9; }
-.dd-tip b { color: #d02030; }
 
 .dd-focusmeter { display: flex; align-items: center; gap: 8px; font-size: 19px; margin-bottom: 4px; }
 .dd-focusmeter .bar { width: 120px; height: 10px; }
@@ -420,34 +418,26 @@
 .dd-screen .go { font-size: 34px; margin-top: 18px; animation: dd-blink 1.2s infinite; }
 @keyframes dd-blink { 50% { opacity: 0.35; } }
 
-/* Non-blocking "grab the mouse" prompt: no backdrop and no pointer events, so
-   it can never cover the view or swallow the click that captures the mouse. */
-.dd-grab {
+/* Tip line — the original's centred ink (bottom 17%, multiply blend): no box,
+   no backdrop and no pointer events, so it can never cover the view or swallow
+   the click that captures the mouse. */
+.dd-tip {
   position: absolute;
-  left: 50%;
-  bottom: 6%;
+  left: 0;
+  right: 0;
+  bottom: 17%;
   z-index: 5;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  padding: 10px 26px 12px;
-  transform: translateX(-50%) rotate(-0.5deg);
-  background: rgba(250, 248, 238, 0.94);
-  border: 3px solid #1a30c0;
-  border-radius: 12px 16px 10px 14px / 14px 10px 16px 12px;
-  box-shadow: 5px 5px 0 rgba(26, 48, 192, 0.15);
+  text-align: center;
+  font-size: 26px;
   color: #1a30c0;
+  opacity: 0.9;
   pointer-events: none;
   mix-blend-mode: multiply;
-  animation: dd-grab-in 0.28s ease-out;
 }
-.dd-grab b { font-size: 30px; font-weight: normal; letter-spacing: 1px; }
-.dd-grab span { font-size: 19px; opacity: 0.75; }
-@keyframes dd-grab-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(10px) rotate(-0.5deg); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0) rotate(-0.5deg); }
-}
+.dd-tip b { color: #d02030; }
+/* the persistent "grab the mouse" line pulses gently while it waits */
+.dd-tip.show { animation: dd-tip-pulse 2.6s ease-in-out infinite; }
+@keyframes dd-tip-pulse { 50% { opacity: 0.5; } }
 .dd-screen .beststat { font-size: 22px; opacity: 0.8; margin-top: 4px; }
 .dd-screen .controls-note { font-size: 19px; line-height: 1.4; opacity: 0.85; }
 
