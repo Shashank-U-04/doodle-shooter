@@ -252,7 +252,9 @@ export default function Game() {
           </div>
         )}
 
-        {tip && <div className="dd-tip" dangerouslySetInnerHTML={{ __html: tip }} />}
+        {tip && overlay.kind === "menu" && (
+          <div className="dd-tip" dangerouslySetInnerHTML={{ __html: tip }} />
+        )}
 
         <div className="dd-hud-bl">
           <div className="health">

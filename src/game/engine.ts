@@ -267,6 +267,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // a held mouse button steers instead (see onMouseMove), and the hint says so.
   let lockBlocked = false;
   let lastGestureAsk = 0;
+  // A capture we actually held can still be dropped (Escape, alt-tab, the
+  // browser's own cooldown). Only that is a reason to pause. An event arriving
+  // out of nowhere, or a capture that dies the instant it lands, must never put
+  // the player on a pause screen — embedded frames do both constantly.
+  let hadLock = false;
+  let lockedAt = 0;
+  const lossTimes: number[] = [];
   // The first wave is queued as soon as a run starts, but its enemies only
   // begin arriving once the mouse is actually captured (or the grace runs out)
   // — nobody should be shot at spawn while they are still grabbing the mouse.
@@ -2856,7 +2863,16 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     if (!wantLock || isLocked()) return;
     void requestLockOnce({ unadjustedMovement: true })
       .catch(() => requestLockOnce())
-      .catch(() => void 0);
+      .catch(() => {
+        // Both forms refused. If a real gesture was behind the request then this
+        // document cannot take the pointer at all (a sandboxed / cross-origin
+        // frame with no pointer-lock permission throws instead of firing an
+        // error event). Say so, instead of asking for a click that cannot work.
+        if (performance.now() - lastGestureAsk < 1500) {
+          lockBlocked = true;
+          cb.onLockChange(isLocked(), lockBlocked);
+        }
+      });
   };
   const releasePointer = () => {
     try {
@@ -2882,7 +2898,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const retry = () => {
       if (!wantLock || isLocked() || state !== "playing") return;
       lockPointer();
-      lockTimer = window.setTimeout(retry, 1200);
+      if (!lockBlocked) lockTimer = window.setTimeout(retry, 1200);
     };
     retry();
   };
@@ -2896,20 +2912,37 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // A gesture-triggered refusal means this document cannot have the pointer
     // at all (a restricted iframe). A refusal from the idle retry just means
     // the request had no gesture behind it, which is expected — ignore those.
-    if (performance.now() - lastGestureAsk < 1500) lockBlocked = true;
+    if (performance.now() - lastGestureAsk < 1500 && !lockBlocked) {
+      lockBlocked = true;
+      cb.onLockChange(isLocked(), lockBlocked);
+    }
   };
   const onContext = (e: Event) => e.preventDefault();
   const onPointerLockChange = () => {
-    // tell React directly, so the "grab the mouse" hint can never get stuck on
-    if (isLocked()) lockBlocked = false;
-    cb.onLockChange(isLocked(), lockBlocked);
     if (isLocked()) {
+      hadLock = true;
+      lockedAt = performance.now();
+      lockBlocked = false;
       window.clearTimeout(lockTimer);
       last = performance.now();
+      // tell React directly, so the "grab the mouse" hint can never get stuck on
+      cb.onLockChange(true, lockBlocked);
       return;
     }
-    // Esc, tab-away or a click outside: pause and show the pause screen
-    if (state === "playing") handleRef.current.pause();
+    const wasHeld = hadLock;
+    hadLock = false;
+    // a capture that dies on arrival was never really ours — do not act on it
+    const reallyLost = wasHeld && performance.now() - lockedAt > 400;
+    if (reallyLost) {
+      const t = performance.now();
+      lossTimes.push(t);
+      while (lossTimes.length && t - lossTimes[0] > 10000) lossTimes.shift();
+    }
+    cb.onLockChange(false, lockBlocked);
+    // Esc / alt-tab / a click outside: pause. Unless the capture is flapping
+    // (three losses in ten seconds), in which case pausing would trap the player
+    // in a loop — the tip asks for a click instead and drag-look keeps it playable.
+    if (state === "playing" && reallyLost && lossTimes.length < 3) handleRef.current.pause();
   };
   // Pointer lock is only granted during a real gesture, and the request has to
   // be made *on* that gesture — so every click and key press while a run is
@@ -2925,11 +2958,16 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     askForMouse(true);
   };
   const onBlur = () => {
+    // Losing focus only means the held keys and buttons can no longer be
+    // trusted (a button released outside the window never reports). It is NOT a
+    // reason to pause — an embedded preview frame blurs constantly, which would
+    // put the player on the pause screen the moment they started. The capture
+    // state is reported by pointerlockchange above, which is what the original
+    // game pauses on.
     keys.clear();
-    mouseButtons.clear(); // a button released outside the window never reports
+    mouseButtons.clear();
     mouseFire = false;
     mouseAim = false;
-    if (state === "playing") handleRef.current.pause();
   };
 
   window.addEventListener("keydown", onKeyDown);
