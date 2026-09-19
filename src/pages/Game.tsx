@@ -148,12 +148,10 @@ export default function Game() {
     setOverlay({ kind: "menu" });
     gameRef.current?.start();
   }, []);
-  // resume() arms the capture and keeps the pause screen up until the mouse is
-  // really captured; requestLock() is the immediate retry (the browser refuses a
-  // capture requested within ~1s of an Escape unlock), so a second click works.
+  // resume() hands control back immediately (and asks for the mouse; if the
+  // browser refuses, the hint appears and the next click retries).
   const resume = useCallback(() => {
     gameRef.current?.resume();
-    gameRef.current?.requestLock();
   }, []);
   const restart = useCallback(() => {
     setOverlay({ kind: "menu" });
@@ -362,17 +360,13 @@ export default function Game() {
         </div>
       )}
 
+      {/* The mouse can only be granted on a real click, so while it is loose a
+          small prompt asks for one. It is deliberately non-blocking: the run
+          keeps playing underneath and any click or key press grabs the mouse. */}
       {overlay.kind === "menu" && hud.wave > 0 && !locked && (
-        <div
-          className="dd-screen"
-          onPointerDown={() => gameRef.current?.requestLock()}
-          onClick={() => gameRef.current?.requestLock()}
-        >
-          <div className="panel">
-            <h1>READY</h1>
-            <h2>wave {hud.wave} · score {hud.score}</h2>
-            <div className="go">CLICK THE PAGE (OR PRESS ANY KEY) TO GRAB THE MOUSE</div>
-          </div>
+        <div className="dd-grab">
+          <b>CLICK THE PAGE TO GRAB THE MOUSE</b>
+          <span>or press any key · the keyboard already works</span>
         </div>
       )}
 
