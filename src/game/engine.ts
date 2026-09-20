@@ -265,10 +265,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   let sensitivity = 100; // slider percentage; 100 = default look speed
   let invertY = false;
   // Where the cursor is, so the view can still turn when the pointer cannot be
-  // captured (see steerFromEdge).
+  // captured (see steerFromEdge), plus the previous position so look keeps
+  // working in frames that strip the movement deltas from mouse events.
   let cursorX = 0;
   let cursorY = 0;
   let cursorSeen = false;
+  let lastCX = 0;
+  let lastCY = 0;
   // One refused capture is final. A sandboxed preview frame refuses pointer
   // lock outright (SecurityError), and a canvas removed by a StrictMode remount
   // refuses with WrongDocumentError — both are latched here so the request is
