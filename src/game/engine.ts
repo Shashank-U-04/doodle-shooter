@@ -254,30 +254,14 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   const mouseButtons = new Set<number>();
   let mouseFire = false;
   let mouseAim = false;
-  // Pointer lock is a convenience here, never a gate. The browser only grants
-  // it during a real user gesture, so if it is refused the run simply keeps
-  // going (the keyboard still works) and the on-screen hint asks for a click.
-  // The one hard rule is that the mouse is handed back whenever a menu, pause
-  // or game-over screen is up — the cursor is only hidden while the pointer is
-  // captured, so that is what keeps those buttons clickable.
-  let wantLock = false;
-  let lockTimer = 0;
-  // Set when a capture has been asked for and refused for a few seconds
-  // straight: inside a restricted iframe it never can be granted. The run stays
-  // playable — a held mouse button steers instead (see onMouseMove) and the
-  // hint says so — so this only changes the wording, never the game.
-  let lockBlocked = false;
-  let lockWantAt = 0;
-  // Losing the capture never pauses the game. The reference pauses there, but
-  // its own page owns the pointer; inside an embedded preview frame the capture
-  // is granted and dropped at random, and pausing on that strands the player on
-  // the pause screen every few seconds. Pause is Esc/P and nothing else, so a
-  // run always keeps going and the cursor always comes back on a menu.
-  // The first wave is queued as soon as a run starts, but its enemies only
-  // begin arriving once the mouse is actually captured (or the grace runs out)
-  // — nobody should be shot at spawn while they are still grabbing the mouse.
-  let pendingStart = false;
-  let graceT = 0;
+  // Pointer capture is a nicety, never a requirement. Mouse look runs on plain
+  // mouse movement (see onMouseMove), so a frame that refuses the capture costs
+  // the player nothing, and the one rule that matters is that a menu, pause or
+  // game-over screen hands the cursor back — that is what keeps its buttons
+  // clickable.
+  // Losing the capture never pauses the game: pause is Esc/P and nothing else,
+  // so a run always keeps going and a pointer-lock quirk can never strand the
+  // player on a pause screen.
   let sensitivity = 100; // slider percentage; 100 = default look speed
   let invertY = false;
 
@@ -2606,8 +2590,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
 
   function gameOver() {
     state = "over";
-    pendingStart = false;
-    wantLock = false;
     const bestKey = "dd_best";
     const prev = Number(localStorage.getItem(bestKey) || 0);
     const isBest = score > prev;
@@ -2669,17 +2651,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     updateShards(dtRaw);
     updatePickups(dt);
 
-    // hold the first arrivals until the mouse is in hand (or the grace expires)
-    if (pendingStart) {
-      graceT -= dtRaw;
-      if (isLocked() || graceT <= 0) pendingStart = false;
-    }
-
     // wave spawner
     if (queue.length > 0) {
       spawnT -= dt;
       const alive = enemies.filter((e) => e.alive).length;
-      if (!pendingStart && spawnT <= 0 && alive < maxAlive) {
+      if (spawnT <= 0 && alive < maxAlive) {
         spawnEnemy(queue.shift()!);
         spawnT = 0.55;
         enemiesLeft = queue.length + alive;
@@ -2871,10 +2847,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   };
   const onMouseMove = (e: MouseEvent) => {
     if (state !== "playing") return;
-    // Captured -> the mouse always steers. Not captured (the browser refused,
-    // or we have not been given it yet) -> a held mouse button steers, so the
-    // game is playable either way and the view never drifts on its own.
-    if (!isLocked() && mouseButtons.size === 0) return;
+    // Moving the mouse turns the view. That is the whole look system: it does
+    // not wait on — and is not gated by — whether the browser granted a pointer
+    // capture, because a restricted frame can refuse that outright.
     // the reference's own sensitivity: 0.0022 rad per mouse count at 100%
     const s = (0.0022 * sensitivity) / 100;
     // its spike guard too: a single wild delta (a device switch, a glitch) is
@@ -2892,133 +2867,59 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     e.preventDefault();
     switchSlot((curSlot + (e.deltaY > 0 ? 1 : slots.length - 1)) % slots.length);
   };
-  // Pointer capture is best-effort. The browser only grants it during a real
-  // gesture, and may refuse it outright (a restricted iframe cannot take the
-  // pointer at all), so nothing in the game waits on it — the fallback is
-  // button-drag look in onMouseMove. Requests are made on every click and key
-  // press, plus once a second while a run wants the mouse, which is what rides
-  // out the browser's ~1.25s cooldown after an Escape unlock.
-  const canvasLegacy = canvas as HTMLCanvasElement & {
-    webkitRequestPointerLock?: () => void;
-    mozRequestPointerLock?: () => void;
-  };
-  type LockOpts = { unadjustedMovement?: boolean };
-  const requestLockOnce = (opts?: LockOpts): Promise<void> => {
+  // Pointer capture is asked for on every click and key press, because that is
+  // the only time a browser will grant it. Nothing in the game waits on it: if
+  // it is refused (a restricted frame cannot take the pointer at all) the run
+  // plays exactly the same, with the cursor visible.
+  const isLocked = () => document.pointerLockElement != null;
+  const requestLock = () => {
+    if (state !== "playing" || isLocked()) return;
     try {
-      if (typeof canvas.requestPointerLock !== "function") {
-        if (canvasLegacy.webkitRequestPointerLock) {
-          canvasLegacy.webkitRequestPointerLock();
-          return Promise.resolve();
-        }
-        if (canvasLegacy.mozRequestPointerLock) {
-          canvasLegacy.mozRequestPointerLock();
-          return Promise.resolve();
-        }
-        return Promise.reject(new Error("pointer lock unsupported"));
+      // Must be invoked *on* the canvas: calling it detached throws
+      // "Illegal invocation", which silently killed every request.
+      const request = canvas.requestPointerLock.bind(canvas) as (o?: {
+        unadjustedMovement?: boolean;
+      }) => Promise<void> | void;
+      const p = request({ unadjustedMovement: true });
+      // The reference's order: raw (unaccelerated) input first, plain pointer
+      // lock for a browser that will not hand the unadjusted form over.
+      if (p && typeof p.catch === "function") {
+        p.catch(() => {
+          try {
+            request();
+          } catch {
+            /* refused: moving the mouse still steers the view */
+          }
+        });
       }
-      // Must be invoked *on the canvas*: a detached call throws
-      // "Illegal invocation" in Chrome, which silently killed every capture.
-      const call = canvas.requestPointerLock.bind(canvas) as (o?: LockOpts) => Promise<void> | void;
-      const p = call(opts);
-      return p && typeof p.catch === "function" ? p : Promise.resolve();
-    } catch (err) {
-      return Promise.reject(err);
+    } catch {
+      /* a refused capture costs nothing — movement look carries on */
     }
   };
-  /** Is the pointer captured by this document? (Any element: the canvas is the
-      only one that ever asks, but the check must not be able to miss.) */
-  const isLocked = () => document.pointerLockElement != null;
-  /** Stop asking: this document cannot have the pointer (a sandboxed frame). */
-  const blockPointer = () => {
-    if (lockBlocked) return;
-    lockBlocked = true;
-    cb.onLockChange(isLocked(), true);
-  };
-  // The reference's order: ask for raw (unaccelerated) mouse input first, and
-  // fall back to plain pointer lock if the browser will not hand it over.
-  const lockPointer = () => {
-    if (!wantLock || isLocked()) return;
-    void requestLockOnce({ unadjustedMovement: true })
-      .catch(() => requestLockOnce())
-      .catch(() => {
-        // Both forms refused. One refusal is normal — the browser refuses a
-        // capture for about a second after Escape, and a request with no gesture
-        // behind it is always refused. Refusals that carry on for seconds mean
-        // this document cannot take the pointer at all (a sandboxed frame throws
-        // instead of firing an error event), so say so rather than asking for a
-        // click that can never work.
-        if (performance.now() - lockWantAt > 4000) blockPointer();
-      });
-  };
+  /** Hand the mouse back: every menu, pause and game-over screen does this. */
   const releasePointer = () => {
     try {
-      if (!document.pointerLockElement) return;
-      const d = document as Document & {
-        webkitExitPointerLock?: () => void;
-        mozExitPointerLock?: () => void;
-      };
-      if (typeof d.exitPointerLock === "function") d.exitPointerLock();
-      else if (d.webkitExitPointerLock) d.webkitExitPointerLock();
-      else if (d.mozExitPointerLock) d.mozExitPointerLock();
+      if (document.pointerLockElement) document.exitPointerLock();
     } catch {
       /* never let a pointer-lock quirk break pause / menu / game over */
     }
   };
-  /** Want the mouse for this run: ask now, then once a second until we have it.
-      The slower retry is what rides out the browser's ~1.25s cooldown after an
-      Escape unlock; every click and key press also asks (see onGesture). */
-  const askForMouse = () => {
-    if (!wantLock) lockWantAt = performance.now();
-    wantLock = true;
-    window.clearTimeout(lockTimer);
-    const retry = () => {
-      if (!wantLock || isLocked() || state !== "playing") return;
-      lockPointer();
-      if (!lockBlocked) lockTimer = window.setTimeout(retry, 1200);
-    };
-    retry();
-  };
-  /** Hand the mouse back: every menu, pause and game-over screen does this. */
-  const exitMouse = () => {
-    wantLock = false;
-    window.clearTimeout(lockTimer);
-    releasePointer();
-  };
-  const onPointerLockError = () => {
-    // A gesture-triggered refusal means this document cannot have the pointer
-    // at all (a restricted iframe). A refusal from the idle retry just means
-    // the request had no gesture behind it, which is expected — ignore those.
-    if (performance.now() - lockWantAt > 4000) blockPointer();
-  };
   const onContext = (e: Event) => e.preventDefault();
   const onPointerLockChange = () => {
-    if (isLocked()) {
-      lockBlocked = false;
-      lockWantAt = 0;
-      window.clearTimeout(lockTimer);
-      // a fresh frame clock: the capture itself is not a hitch
-      last = performance.now();
-      // tell React directly, so the "grab the mouse" hint can never get stuck on
-      cb.onLockChange(true, lockBlocked);
-      return;
-    }
-    // Released (Escape, alt-tab, the browser's cooldown, an embedded frame
-    // losing focus): keep playing. The hint asks for a click and drag-look
-    // covers the gap, so a pointer-lock quirk can never interrupt the run.
-    cb.onLockChange(false, lockBlocked);
+    // Capturing or releasing the pointer is not a hitch: restart the clock so
+    // the frame that follows is not measured against time spent in the menu.
+    last = performance.now();
   };
-  // Pointer lock is only granted during a real gesture, and the request has to
-  // be made *on* that gesture — so every click and key press while a run is
-  // live asks for the mouse again, wherever it lands (canvas, HUD, hint).
-  // Handling it here rather than in a React onClick means nothing on screen can
-  // swallow the gesture and strand the player without a captured mouse.
+  // A capture is only ever granted on a gesture, and the request has to be made
+  // from inside it — so every click and key press while a run is live asks,
+  // wherever it lands (canvas, HUD, tip). Escape and P are left alone: they
+  // open the pause menu, which hands the mouse back.
   const onGesture = (e: Event) => {
-    if (state !== "playing" || isLocked()) return;
     if (e.type === "keydown") {
       const code = (e as KeyboardEvent).code;
-      if (code === "Escape" || code === "KeyP") return; // that opens the pause menu
+      if (code === "Escape" || code === "KeyP") return;
     }
-    askForMouse();
+    requestLock();
   };
   const onBlur = () => {
     // Losing focus (or the tab being hidden) only means the held keys and
@@ -3042,7 +2943,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   window.addEventListener("pointerdown", onGesture, true);
   window.addEventListener("keydown", onGesture, true);
   document.addEventListener("pointerlockchange", onPointerLockChange);
-  document.addEventListener("pointerlockerror", onPointerLockError);
   canvas.addEventListener("contextmenu", onContext);
 
   /* ---------- public handle ---------- */
@@ -3056,9 +2956,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       fx.ensure();
       startWave(1);
       cb.onResume();
-      pendingStart = true;
-      graceT = 8;
-      askForMouse();
+      // START is a real click, so this is the one moment a capture can be
+      // granted. If it is refused, moving the mouse still looks around.
+      requestLock();
+      cb.onTip("<b>move the mouse</b> to look · <b>click</b> to capture it", 5);
     },
     pause() {
       if (state !== "playing") return;
@@ -3069,32 +2970,29 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       // Tell React first: a pointer-lock quirk must never leave the player on a
       // frozen game with no overlay and an invisible cursor.
       cb.onPause({ wave, score });
-      exitMouse();
+      releasePointer();
     },
     resume() {
       if (state !== "paused") return;
       state = "playing";
       last = performance.now();
-      pendingStart = false;
       cb.onResume();
-      askForMouse();
+      // RESUME is a click as well: take the mouse back now the run is live.
+      requestLock();
     },
     restart() {
       resetRun();
       state = "playing";
       cb.onResume();
       startWave(1);
-      pendingStart = true;
-      graceT = 8;
-      askForMouse();
+      requestLock();
     },
     toMenu() {
       resetRun();
       state = "menu";
-      pendingStart = false;
       cb.onBoss(null, 0);
       cb.onResume();
-      exitMouse();
+      releasePointer();
     },
     setSensitivity(v: number) {
       sensitivity = v;
@@ -3116,12 +3014,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       window.removeEventListener("wheel", onWheel);
       window.removeEventListener("blur", onBlur);
       document.removeEventListener("visibilitychange", onBlur);
-      window.clearTimeout(lockTimer);
       window.removeEventListener("pointerdown", onGesture, true);
       window.removeEventListener("keydown", onGesture, true);
       document.removeEventListener("pointerlockchange", onPointerLockChange);
-      document.removeEventListener("pointerlockerror", onPointerLockError);
-      exitMouse();
+      releasePointer();
       canvas.removeEventListener("contextmenu", onContext);
       renderer.dispose();
       canvas.remove();

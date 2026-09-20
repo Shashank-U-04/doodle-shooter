@@ -435,12 +435,9 @@
   mix-blend-mode: multiply;
 }
 .dd-tip b { color: #d02030; }
-/* the persistent "grab the mouse" line pulses gently while it waits */
-.dd-tip.show { animation: dd-tip-pulse 2.6s ease-in-out infinite; }
 /* a tip belongs to live play: while any panel is up the tip layer is inert, so
    a stale line can never show through or beside a menu */
 .dd-root:has(.dd-screen) .dd-tip { display: none; }
-@keyframes dd-tip-pulse { 50% { opacity: 0.5; } }
 .dd-screen .beststat { font-size: 22px; opacity: 0.8; margin-top: 4px; }
 .dd-screen .controls-note { font-size: 19px; line-height: 1.4; opacity: 0.85; }
 

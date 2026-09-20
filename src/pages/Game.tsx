@@ -32,7 +32,7 @@ type Overlay =
 
 const CONTROLS: [string, string][] = [
   ["WASD", "move"],
-  ["Mouse", "look"],
+  ["Mouse", "look (move to turn)"],
   ["LMB", "fire / slash"],
   ["RMB", "aim · block (katana)"],
   ["Space", "jump · double jump"],
@@ -65,16 +65,6 @@ export default function Game() {
   const [sound, setSound] = useState(() => localStorage.getItem("dd_music") !== "0");
   const [best, setBest] = useState(() => Number(localStorage.getItem("dd_best") || 0));
   const [ready, setReady] = useState(false);
-  const [locked, setLocked] = useState(false);
-  const [lockBlocked, setLockBlocked] = useState(false);
-
-  // track pointer lock so we can prompt when the browser refused to recapture it
-  useEffect(() => {
-    const onPlc = () => setLocked(document.pointerLockElement !== null);
-    document.addEventListener("pointerlockchange", onPlc);
-    onPlc();
-    return () => document.removeEventListener("pointerlockchange", onPlc);
-  }, []);
 
   const msgTimer = useRef<number | null>(null);
   const tipTimer = useRef<number | null>(null);
@@ -117,10 +107,6 @@ export default function Game() {
       },
       onPause: (s) => setOverlay({ kind: "paused", wave: s.wave, score: s.score }),
       onResume: () => setOverlay({ kind: "menu" }),
-      onLockChange: (l, blocked) => {
-        setLocked(l);
-        setLockBlocked(blocked);
-      },
       onAim: (a) => setAds(a),
     });
 
@@ -363,26 +349,8 @@ export default function Game() {
               </label>
             </div>
             {best > 0 && <div className="beststat">best score: {best}</div>}
-            <div className="go">CLICK START — the mouse will be captured</div>
+            <div className="go">CLICK START — move the mouse to look around</div>
           </div>
-        </div>
-      )}
-
-      {/* The mouse can only be granted on a real click, so while it is loose a
-          line of text asks for one — the same centred tip the original uses. It
-          never covers the view or takes a click, and it disappears the moment
-          the mouse is captured. */}
-      {live && !locked && (
-        <div className="dd-tip show">
-          {lockBlocked ? (
-            <>
-              <b>click</b>, or hold a mouse button and <b>drag to look</b>
-            </>
-          ) : (
-            <>
-              <b>click</b> or <b>press any key</b> to grab the mouse
-            </>
-          )}
         </div>
       )}
 
@@ -393,7 +361,7 @@ export default function Game() {
             <h2>wave {overlay.wave} · score {overlay.score}</h2>
             <div className="mainbtns">
               <button type="button" className="start" onClick={resume}>
-                RESUME<i>click to recapture the mouse</i>
+                RESUME<i>back into the wave</i>
               </button>
               <button type="button" onClick={restart}>
                 RESTART RUN
