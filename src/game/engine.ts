@@ -264,6 +264,18 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // player on a pause screen.
   let sensitivity = 100; // slider percentage; 100 = default look speed
   let invertY = false;
+  // Where the cursor is, so the view can still turn when the pointer cannot be
+  // captured (see steerFromEdge).
+  let cursorX = 0;
+  let cursorY = 0;
+  let cursorSeen = false;
+  // One refused capture is final. A sandboxed preview frame refuses pointer
+  // lock outright (SecurityError), and a canvas removed by a StrictMode remount
+  // refuses with WrongDocumentError — both are latched here so the request is
+  // never repeated and the console stays clean. Losing the capture never pauses
+  // anything: pause is Esc/P and nothing else.
+  let lockRefused = false;
+  let disposed = false;
 
   /* ---------- player ---------- */
   const player = {
@@ -2627,6 +2639,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       dt = dtRaw * 0.32;
       if (slowmoT <= 0) focusChain = 0;
     }
+    steerFromEdge(dt);
     if (hitstopT > 0) dt *= 0.2;
 
     updatePlayer(dtRaw);
@@ -2846,6 +2859,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     if (e.button === 2) mouseAim = false;
   };
   const onMouseMove = (e: MouseEvent) => {
+    cursorX = e.clientX;
+    cursorY = e.clientY;
+    cursorSeen = true;
     if (state !== "playing") return;
     // Moving the mouse turns the view. That is the whole look system: it does
     // not wait on — and is not gated by — whether the browser granted a pointer
@@ -2873,27 +2889,41 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // plays exactly the same, with the cursor visible.
   const isLocked = () => document.pointerLockElement != null;
   const requestLock = () => {
-    if (state !== "playing" || isLocked()) return;
+    if (disposed || lockRefused || state !== "playing" || isLocked()) return;
+    // A remount (StrictMode) can leave this canvas out of the document:
+    // requesting the pointer on it throws WrongDocumentError.
+    if (!canvas.isConnected) return;
+    const refuse = () => {
+      if (disposed || lockRefused) return;
+      lockRefused = true;
+      // Say why the cursor will not disappear, once, then stay quiet.
+      cb.onTip(
+        "this frame blocks mouse capture — <b>move the mouse</b> to look",
+        6,
+      );
+    };
+    // Must be invoked *on* the canvas: calling it detached throws
+    // "Illegal invocation", which silently killed every request.
+    const request = canvas.requestPointerLock.bind(canvas) as (o?: {
+      unadjustedMovement?: boolean;
+    }) => Promise<void> | void;
     try {
-      // Must be invoked *on* the canvas: calling it detached throws
-      // "Illegal invocation", which silently killed every request.
-      const request = canvas.requestPointerLock.bind(canvas) as (o?: {
-        unadjustedMovement?: boolean;
-      }) => Promise<void> | void;
       const p = request({ unadjustedMovement: true });
       // The reference's order: raw (unaccelerated) input first, plain pointer
       // lock for a browser that will not hand the unadjusted form over.
       if (p && typeof p.catch === "function") {
         p.catch(() => {
+          if (disposed || lockRefused) return;
           try {
-            request();
+            const q = request();
+            if (q && typeof q.catch === "function") q.catch(refuse);
           } catch {
-            /* refused: moving the mouse still steers the view */
+            refuse();
           }
         });
       }
     } catch {
-      /* a refused capture costs nothing — movement look carries on */
+      refuse();
     }
   };
   /** Hand the mouse back: every menu, pause and game-over screen does this. */
@@ -2904,11 +2934,43 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       /* never let a pointer-lock quirk break pause / menu / game over */
     }
   };
+  /**
+   * Lock-free steering. A sandboxed preview frame cannot take the pointer, and
+   * a loose cursor stops at the window edge — so the view would lock up as soon
+   * as you turned far enough to reach it. While the pointer is not captured,
+   * pushing the cursor into an edge keeps turning, which makes a full circle of
+   * look possible wherever the game is running. With the pointer captured this
+   * does nothing at all.
+   */
+  const steerFromEdge = (dt: number) => {
+    if (isLocked() || !cursorSeen) return;
+    const w = container.clientWidth || window.innerWidth;
+    const h = container.clientHeight || window.innerHeight;
+    const margin = 46;
+    const rate = 2.4; // rad/s at the very edge
+    const depth = (v: number, span: number) =>
+      v < margin
+        ? -(margin - v) / margin
+        : v > span - margin
+          ? (v - (span - margin)) / margin
+          : 0;
+    const ex = depth(cursorX, w);
+    const ey = depth(cursorY, h);
+    if (!ex && !ey) return;
+    player.yaw -= ex * rate * dt;
+    player.pitch -= ey * rate * dt * (invertY ? -1 : 1);
+    player.pitch = clamp(player.pitch, -1.5, 1.5);
+  };
   const onContext = (e: Event) => e.preventDefault();
   const onPointerLockChange = () => {
     // Capturing or releasing the pointer is not a hitch: restart the clock so
     // the frame that follows is not measured against time spent in the menu.
     last = performance.now();
+  };
+  // Fired when a request is refused (a restricted frame, a not-yet-permitted
+  // re-lock after Escape). Stop asking rather than retrying forever.
+  const onPointerLockError = () => {
+    lockRefused = true;
   };
   // A capture is only ever granted on a gesture, and the request has to be made
   // from inside it — so every click and key press while a run is live asks,
@@ -2943,6 +3005,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   window.addEventListener("pointerdown", onGesture, true);
   window.addEventListener("keydown", onGesture, true);
   document.addEventListener("pointerlockchange", onPointerLockChange);
+  document.addEventListener("pointerlockerror", onPointerLockError);
   canvas.addEventListener("contextmenu", onContext);
 
   /* ---------- public handle ---------- */
@@ -2958,8 +3021,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       cb.onResume();
       // START is a real click, so this is the one moment a capture can be
       // granted. If it is refused, moving the mouse still looks around.
+      cb.onTip("<b>move the mouse</b> to look · <b>click</b> to grab the cursor", 4);
       requestLock();
-      cb.onTip("<b>move the mouse</b> to look · <b>click</b> to capture it", 5);
     },
     pause() {
       if (state !== "playing") return;
@@ -3004,6 +3067,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       fx.musicOn = on;
     },
     dispose() {
+      disposed = true;
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", onKeyDown);
@@ -3017,6 +3081,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       window.removeEventListener("pointerdown", onGesture, true);
       window.removeEventListener("keydown", onGesture, true);
       document.removeEventListener("pointerlockchange", onPointerLockChange);
+      document.removeEventListener("pointerlockerror", onPointerLockError);
       releasePointer();
       canvas.removeEventListener("contextmenu", onContext);
       renderer.dispose();
