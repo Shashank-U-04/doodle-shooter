@@ -123,7 +123,6 @@ const rnd = (a: number, b: number) => a + Math.random() * (b - a);
 const HIP_Y = 0.92;
 const THIGH = 0.44;
 const FOOT = 0.13;
-const SHIN = HIP_Y - THIGH - FOOT; // 0.35
 const SHOULDER_Y = 0.5;
 const HEAD_Y = 0.64;
 const UP_ARM = 0.3;

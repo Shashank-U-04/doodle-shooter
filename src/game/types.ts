@@ -37,7 +37,6 @@ export type EngineCallbacks = {
   onGameOver: (stats: GameOverStats) => void;
   onPause: (state: { wave: number; score: number }) => void;
   onResume: () => void;
-  onLockLost: () => void;
   onLockChange: (locked: boolean, blocked: boolean) => void;
   onAim: (ads: boolean) => void;
 };

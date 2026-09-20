@@ -117,7 +117,6 @@ export default function Game() {
       },
       onPause: (s) => setOverlay({ kind: "paused", wave: s.wave, score: s.score }),
       onResume: () => setOverlay({ kind: "menu" }),
-      onLockLost: () => void 0,
       onLockChange: (l, blocked) => {
         setLocked(l);
         setLockBlocked(blocked);
@@ -167,6 +166,9 @@ export default function Game() {
     navigate("/");
   }, [navigate]);
 
+  // Live play only: a tip, the wave banner or the "grab the mouse" prompt is
+  // never drawn while a panel is up, so no stale line can sit over a menu.
+  const live = overlay.kind === "menu" && hud.wave > 0;
   const hpFrac = Math.max(0, hud.hp / hud.maxHp);
 
   return (
@@ -245,14 +247,14 @@ export default function Game() {
           ))}
         </div>
 
-        {message && (
+        {message && live && (
           <div className="dd-msg">
             <div className="t">{message.t}</div>
             {message.s && <div className="sub">{message.s}</div>}
           </div>
         )}
 
-        {tip && overlay.kind === "menu" && (
+        {tip && live && (
           <div className="dd-tip" dangerouslySetInnerHTML={{ __html: tip }} />
         )}
 
@@ -370,15 +372,15 @@ export default function Game() {
           line of text asks for one — the same centred tip the original uses. It
           never covers the view or takes a click, and it disappears the moment
           the mouse is captured. */}
-      {overlay.kind === "menu" && hud.wave > 0 && !locked && (
+      {live && !locked && (
         <div className="dd-tip show">
           {lockBlocked ? (
             <>
-              this browser will not hand over the mouse — <b>hold a mouse button and drag to look</b>
+              <b>click</b>, or hold a mouse button and <b>drag to look</b>
             </>
           ) : (
             <>
-              click the page to grab the mouse — <b>or press any key</b>
+              <b>click</b> or <b>press any key</b> to grab the mouse
             </>
           )}
         </div>

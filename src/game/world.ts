@@ -39,13 +39,24 @@ export const shared = {
   uLightDir: { value: new THREE.Vector3(0, 1, 0) },
 };
 
+// One material per (ink, fill mode, side, flat flag), shared by everything that
+// uses it. Without the cache every bullet, every shard, every splat and every
+// bucket of every enemy rig allocated its own ShaderMaterial — hundreds of new
+// materials per wave, which the renderer has to register, upload uniforms for
+// and garbage-collect, exactly when the screen is busiest. Nothing mutates a
+// material's uniforms after creation, so sharing is safe.
+const inkMaterials = new Map<number, THREE.ShaderMaterial>();
+
 export function makeInkMaterial(
   ink: InkId,
   fill = false,
   side: THREE.Side = THREE.FrontSide,
   flat = false,
 ): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
+  const key = ink | (fill ? 8 : 0) | (side === THREE.BackSide ? 16 : side === THREE.DoubleSide ? 32 : 0) | (flat ? 64 : 0);
+  const cached = inkMaterials.get(key);
+  if (cached) return cached;
+  const made = new THREE.ShaderMaterial({
     uniforms: {
       uInk: { value: ink },
       uFill: { value: fill ? 1 : 0 },
@@ -59,6 +70,8 @@ export function makeInkMaterial(
     fragmentShader: INK_FRAG,
     side,
   });
+  inkMaterials.set(key, made);
+  return made;
 }
 
 /* ============================== AABB colliders ============================== */

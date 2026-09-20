@@ -28,7 +28,6 @@ THREE.ColorManagement.enabled = false;
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
-type EnemyDefX = { bodyW?: number; headS?: number; limbR?: number };
 type Enemy = {
   kind: EnemyKind;
   def: EnemyDef;
@@ -72,6 +71,7 @@ type Enemy = {
   pathI: number;
   pathT: number;
   pathGoal: THREE.Vector3 | null;
+  valveT: number;
   stuckT: number;
   hitWall: boolean;
   appAng: number;
@@ -262,18 +262,17 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // captured, so that is what keeps those buttons clickable.
   let wantLock = false;
   let lockTimer = 0;
-  // Set when the browser refuses a capture we asked for on a real gesture —
-  // inside a restricted iframe it never can be granted. The run stays playable:
-  // a held mouse button steers instead (see onMouseMove), and the hint says so.
+  // Set when a capture has been asked for and refused for a few seconds
+  // straight: inside a restricted iframe it never can be granted. The run stays
+  // playable — a held mouse button steers instead (see onMouseMove) and the
+  // hint says so — so this only changes the wording, never the game.
   let lockBlocked = false;
-  let lastGestureAsk = 0;
-  // A capture we actually held can still be dropped (Escape, alt-tab, the
-  // browser's own cooldown). Only that is a reason to pause. An event arriving
-  // out of nowhere, or a capture that dies the instant it lands, must never put
-  // the player on a pause screen — embedded frames do both constantly.
-  let hadLock = false;
-  let lockedAt = 0;
-  const lossTimes: number[] = [];
+  let lockWantAt = 0;
+  // Losing the capture never pauses the game. The reference pauses there, but
+  // its own page owns the pointer; inside an embedded preview frame the capture
+  // is granted and dropped at random, and pausing on that strands the player on
+  // the pause screen every few seconds. Pause is Esc/P and nothing else, so a
+  // run always keeps going and the cursor always comes back on a menu.
   // The first wave is queued as soon as a run starts, but its enemies only
   // begin arriving once the mouse is actually captured (or the grace runs out)
   // — nobody should be shot at spawn while they are still grabbing the mouse.
@@ -510,6 +509,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
 
   /* ---------- pools ---------- */
   const bulletGeo = new THREE.BoxGeometry(0.05, 0.05, 0.6);
+  const pickupGeo = new THREE.BoxGeometry(0.42, 0.42, 0.42);
+  const pickupBarGeo = new THREE.BoxGeometry(0.5, 0.14, 0.14);
+  const nadeGeo = new THREE.BoxGeometry(0.22, 0.22, 0.22);
   const spawnBullet = (pos: THREE.Vector3, vel: THREE.Vector3, dmg: number, friendly: boolean, ink: InkId, source: string, headMul = 1) => {
     const mesh = new THREE.Mesh(bulletGeo, makeInkMaterial(ink, false, THREE.FrontSide, true));
     mesh.position.copy(pos);
@@ -816,6 +818,20 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   }
 
   /* ---------- enemies ---------- */
+  // Every rig merges its own geometry (materials are shared from a global
+  // cache), so a discarded enemy must hand those buffers back. Without this
+  // every enemy ever spawned stayed resident in GPU memory, which is what
+  // wears the renderer down over a long run of waves.
+  const deadGeos = new Set<THREE.BufferGeometry>();
+  const releaseRig = (root: THREE.Object3D) => {
+    root.traverse((o) => {
+      const g = (o as THREE.Mesh).geometry;
+      if (g) deadGeos.add(g);
+    });
+    for (const g of deadGeos) g.dispose();
+    deadGeos.clear();
+  };
+
   function makeLocalRig(def: EnemyDef) {
     let rigB: Rig;
     if (def.model === "flyer") rigB = makeWaspRig({ ink: def.ink, bodyW: 1, headS: 1, limbR: 0.03, scale: def.scale });
@@ -907,6 +923,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       pathI: 0,
       pathT: 0,
       pathGoal: null,
+      valveT: 0,
       stuckT: 0,
       hitWall: false,
       appAng: spawnSlot++ * 2.39996,
@@ -1027,6 +1044,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // a spot on open ground, a sensible distance from the player and reachable
   // from there — used to drop an enemy back in when it has been walled away
   function findOpenSpot(center: THREE.Vector3, minD: number, maxD: number, needPath: boolean) {
+    let pathTries = 0;
     for (let i = 0; i < 26; i++) {
       const a = rand(0, Math.PI * 2);
       const r = rand(minD, maxD);
@@ -1034,7 +1052,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       const z = clamp(center.z + Math.sin(a) * r, world.bounds.minZ, world.bounds.maxZ);
       if (!navOpen(x, z) || pointInSolid(x, 0.2, z, 0.7)) continue;
       const p = new THREE.Vector3(x, 0.2, z);
-      if (needPath && !navFindPath(p, center.clone().setY(0.2))) continue;
+      if (needPath) {
+        // Only a couple of candidates are ever path-checked: a search that
+        // cannot reach the player explores the whole grid, and 26 of those in
+        // one frame is a stall, not a spawn.
+        if (pathTries++ >= 2) break;
+        if (!navFindPath(p, center.clone().setY(0.2))) continue;
+      }
       return p;
     }
     return null;
@@ -1137,7 +1161,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     };
 
     let guard = 0;
-    while (heap.length && guard++ < 4000) {
+    // bounded: a hopeless search gives up and the enemy presses on instead of
+    // stalling the frame while it hunts for a route that is not there
+    while (heap.length && guard++ < 2500) {
       const cur = pop();
       if (navDone[cur] === navEpoch) continue;
       navDone[cur] = navEpoch;
@@ -1524,30 +1550,39 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       const to = aim.clone().sub(e.pos);
       const len = to.length();
       if (len > 0.2) e.vel.lerp(to.divideScalar(len).multiplyScalar(16), Math.min(1, dt * 6));
-      if (e.pos.distanceTo(aim) < 1.5 && !e.diveHit) {
+      // Strike on contact, then break off at once. The old code kept steering
+      // into the player for a full second *after* the hit, which parked the wasp
+      // on the player's head and made movement feel broken from the knockback.
+      if (!e.diveHit && e.pos.distanceTo(aim) < 1.9) {
         e.diveHit = true;
-        e.flyT = 1.1;
-        e.cooldown = rand(e.def.cool[0], e.def.cool[1]);
-        const dir = aim.clone().sub(e.pos).normalize();
+        const dir = aim.clone().sub(e.pos);
+        if (dir.lengthSq() < 1e-4) dir.set(0, 1, 0);
+        dir.normalize();
         if (blocking) {
           e.flyState = "stunned";
           e.flyT = 0;
           e.vel.set(dir.x * -4, 2, dir.z * -4);
           fx.katana();
-        } else if (player.alive) {
-          damagePlayer(e.def.dmg * modDmg, dir);
+        } else {
+          if (player.alive) damagePlayer(e.def.dmg * modDmg, dir);
+          // peel off hard and go straight back to the standoff ring
+          e.vel.copy(dir).multiplyScalar(-11);
+          e.vel.y = Math.max(e.vel.y, 5);
+          e.flyState = "orbit";
+          e.flyT = 0.9;
+          e.cooldown = rand(e.def.cool[0], e.def.cool[1]);
         }
-        e.vel.addScaledVector(dir, -7);
-      }
-      if (e.flyT <= 0) {
+      } else if (e.flyT <= 0) {
+        // its dive window closed without connecting: climb away and try again
         e.flyState = "orbit";
         e.flyT = 0.8;
+        e.cooldown = rand(1.2, 2.2);
       }
       e.yawT = Math.atan2(e.vel.x, e.vel.z);
       return;
     }
     // orbit in, then commit to the dive
-    const orbit = Math.atan2(e.pos.x - player.pos.x, e.pos.z - player.pos.z) + e.strafeDir * 0.45;
+    const orbit = Math.atan2(e.pos.x - player.pos.x, e.pos.z - player.pos.z) + e.strafeDir * 0.5;
     const r = 11;
     const goal = new THREE.Vector3(
       player.pos.x + Math.sin(orbit) * r,
@@ -1562,10 +1597,23 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     } else {
       e.vel.multiplyScalar(Math.max(0, 1 - 4 * dt));
     }
+    // never settle on top of the player: inside the ring it is pushed back out
+    const hx = e.pos.x - player.pos.x;
+    const hz = e.pos.z - player.pos.z;
+    const hd = Math.hypot(hx, hz);
+    if (hd < 6) {
+      const out = ((6 - hd) / Math.max(0.001, hd)) * 6 * dt;
+      e.vel.x += hx * out;
+      e.vel.z += hz * out;
+      if (hd < 2.5) {
+        e.vel.x += hx * 3;
+        e.vel.z += hz * 3;
+      }
+    }
     e.yawT = Math.atan2(e.vel.x, e.vel.z);
-    if (e.cooldown <= 0 && e.los && dist < 20) {
+    if (e.flyT <= 0 && e.cooldown <= 0 && e.los && dist < 20) {
       e.flyState = "dive";
-      e.flyT = 1.6;
+      e.flyT = 1.5;
       e.diveHit = false;
     }
   }
@@ -1913,8 +1961,12 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // far away — drop it back onto open ground rather than stall the wave.
     e.pathFailT = e.path && e.pathI < e.path.length ? 0 : e.pathFailT + dt;
     if (e.pathFailT > 7 && dist > 26 && !e.los) {
-      const spot = findOpenSpot(player.pos, 20, 34, true);
-      if (spot) {
+      if (e.valveT > 0) e.valveT -= dt;
+      const spot = e.valveT <= 0 ? findOpenSpot(player.pos, 20, 34, true) : null;
+      if (!spot) {
+        // no room found: back off hard instead of re-searching every frame
+        e.valveT = 4;
+      } else {
         e.pos.copy(spot);
         e.vel.set(0, 0, 0);
         e.path = null;
@@ -2088,10 +2140,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       const g = new THREE.Group();
       const ink: InkId = kind === "ammo" ? INK.BLUE : INK.GREEN;
       const m = makeInkMaterial(ink, true);
-      const box = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.42), m);
+      const box = new THREE.Mesh(pickupGeo, m);
       g.add(box);
       if (kind === "health") {
-        const bar = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.14, 0.14), m);
+        const bar = new THREE.Mesh(pickupBarGeo, m);
         bar.rotation.z = Math.PI / 4;
         g.add(bar);
       }
@@ -2157,7 +2209,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     player.grenades--;
     player.nadeCd = 0.6;
     const eye = eyePos();
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.22), makeInkMaterial(INK.BLACK, true));
+    const mesh = new THREE.Mesh(nadeGeo, makeInkMaterial(INK.BLACK, true));
     mesh.position.copy(eye);
     scene.add(mesh);
     grenades.push({
@@ -2504,6 +2556,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   function resetRun() {
     for (const e of enemies) {
       scene.remove(e.root);
+      releaseRig(e.root);
       dropLaser(e);
     }
     enemies.length = 0;
@@ -2595,12 +2648,19 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     if (hitstopT > 0) dt *= 0.2;
 
     updatePlayer(dtRaw);
+    // A non-finite position is unrecoverable: the camera matrix goes NaN and
+    // the scene stops drawing entirely. Recover instead of freezing.
+    if (!Number.isFinite(player.pos.x + player.pos.y + player.pos.z)) {
+      player.pos.set(0, 0.2, 38);
+      player.vel.set(0, 0, 0);
+    }
     for (const e of enemies) updateEnemy(e, dt);
     separateEnemies(dt);
     // cull fully-dead
     for (let i = enemies.length - 1; i >= 0; i--) {
       if (!enemies[i].alive && enemies[i].dying <= -0.1) {
         dropLaser(enemies[i]);
+        releaseRig(enemies[i].root);
         enemies.splice(i, 1);
       }
     }
@@ -2679,13 +2739,24 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   /* ---------- loop / resize ---------- */
   let raf = 0;
   let last = performance.now();
+  let stepFaulted = false;
   const loop = () => {
+    // scheduled first, so the picture keeps coming even if a frame throws
     raf = requestAnimationFrame(loop);
     const now = performance.now();
     const dt = Math.min(0.033, (now - last) / 1000);
     last = now;
-    district.update(now * 0.001);
-    step(dt);
+    try {
+      district.update(now * 0.001);
+      step(dt);
+    } catch (err) {
+      // One bad frame used to stop the world mid-wave (a frozen wasp and a
+      // screen that no longer drew). Report it once instead of freezing.
+      if (!stepFaulted) {
+        stepFaulted = true;
+        console.error("[doodle district] frame error", err);
+      }
+    }
   };
 
   const onResize = () => {
@@ -2857,21 +2928,26 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   /** Is the pointer captured by this document? (Any element: the canvas is the
       only one that ever asks, but the check must not be able to miss.) */
   const isLocked = () => document.pointerLockElement != null;
-  // The reference's order: ask for raw (unaccelerated) mouse input first and
+  /** Stop asking: this document cannot have the pointer (a sandboxed frame). */
+  const blockPointer = () => {
+    if (lockBlocked) return;
+    lockBlocked = true;
+    cb.onLockChange(isLocked(), true);
+  };
+  // The reference's order: ask for raw (unaccelerated) mouse input first, and
   // fall back to plain pointer lock if the browser will not hand it over.
   const lockPointer = () => {
     if (!wantLock || isLocked()) return;
     void requestLockOnce({ unadjustedMovement: true })
       .catch(() => requestLockOnce())
       .catch(() => {
-        // Both forms refused. If a real gesture was behind the request then this
-        // document cannot take the pointer at all (a sandboxed / cross-origin
-        // frame with no pointer-lock permission throws instead of firing an
-        // error event). Say so, instead of asking for a click that cannot work.
-        if (performance.now() - lastGestureAsk < 1500) {
-          lockBlocked = true;
-          cb.onLockChange(isLocked(), lockBlocked);
-        }
+        // Both forms refused. One refusal is normal — the browser refuses a
+        // capture for about a second after Escape, and a request with no gesture
+        // behind it is always refused. Refusals that carry on for seconds mean
+        // this document cannot take the pointer at all (a sandboxed frame throws
+        // instead of firing an error event), so say so rather than asking for a
+        // click that can never work.
+        if (performance.now() - lockWantAt > 4000) blockPointer();
       });
   };
   const releasePointer = () => {
@@ -2891,9 +2967,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   /** Want the mouse for this run: ask now, then once a second until we have it.
       The slower retry is what rides out the browser's ~1.25s cooldown after an
       Escape unlock; every click and key press also asks (see onGesture). */
-  const askForMouse = (fromGesture = false) => {
+  const askForMouse = () => {
+    if (!wantLock) lockWantAt = performance.now();
     wantLock = true;
-    if (fromGesture) lastGestureAsk = performance.now();
     window.clearTimeout(lockTimer);
     const retry = () => {
       if (!wantLock || isLocked() || state !== "playing") return;
@@ -2912,37 +2988,24 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // A gesture-triggered refusal means this document cannot have the pointer
     // at all (a restricted iframe). A refusal from the idle retry just means
     // the request had no gesture behind it, which is expected — ignore those.
-    if (performance.now() - lastGestureAsk < 1500 && !lockBlocked) {
-      lockBlocked = true;
-      cb.onLockChange(isLocked(), lockBlocked);
-    }
+    if (performance.now() - lockWantAt > 4000) blockPointer();
   };
   const onContext = (e: Event) => e.preventDefault();
   const onPointerLockChange = () => {
     if (isLocked()) {
-      hadLock = true;
-      lockedAt = performance.now();
       lockBlocked = false;
+      lockWantAt = 0;
       window.clearTimeout(lockTimer);
+      // a fresh frame clock: the capture itself is not a hitch
       last = performance.now();
       // tell React directly, so the "grab the mouse" hint can never get stuck on
       cb.onLockChange(true, lockBlocked);
       return;
     }
-    const wasHeld = hadLock;
-    hadLock = false;
-    // a capture that dies on arrival was never really ours — do not act on it
-    const reallyLost = wasHeld && performance.now() - lockedAt > 400;
-    if (reallyLost) {
-      const t = performance.now();
-      lossTimes.push(t);
-      while (lossTimes.length && t - lossTimes[0] > 10000) lossTimes.shift();
-    }
+    // Released (Escape, alt-tab, the browser's cooldown, an embedded frame
+    // losing focus): keep playing. The hint asks for a click and drag-look
+    // covers the gap, so a pointer-lock quirk can never interrupt the run.
     cb.onLockChange(false, lockBlocked);
-    // Esc / alt-tab / a click outside: pause. Unless the capture is flapping
-    // (three losses in ten seconds), in which case pausing would trap the player
-    // in a loop — the tip asks for a click instead and drag-look keeps it playable.
-    if (state === "playing" && reallyLost && lossTimes.length < 3) handleRef.current.pause();
   };
   // Pointer lock is only granted during a real gesture, and the request has to
   // be made *on* that gesture — so every click and key press while a run is
@@ -2955,15 +3018,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       const code = (e as KeyboardEvent).code;
       if (code === "Escape" || code === "KeyP") return; // that opens the pause menu
     }
-    askForMouse(true);
+    askForMouse();
   };
   const onBlur = () => {
-    // Losing focus only means the held keys and buttons can no longer be
-    // trusted (a button released outside the window never reports). It is NOT a
-    // reason to pause — an embedded preview frame blurs constantly, which would
-    // put the player on the pause screen the moment they started. The capture
-    // state is reported by pointerlockchange above, which is what the original
-    // game pauses on.
+    // Losing focus (or the tab being hidden) only means the held keys and
+    // buttons can no longer be trusted: a button released outside the window
+    // never reports. It is NOT a reason to pause — an embedded preview frame
+    // blurs constantly, and the original only clears the keys here too.
     keys.clear();
     mouseButtons.clear();
     mouseFire = false;
@@ -2977,6 +3038,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   window.addEventListener("mousemove", onMouseMove);
   window.addEventListener("wheel", onWheel, { passive: false });
   window.addEventListener("blur", onBlur);
+  document.addEventListener("visibilitychange", onBlur);
   window.addEventListener("pointerdown", onGesture, true);
   window.addEventListener("keydown", onGesture, true);
   document.addEventListener("pointerlockchange", onPointerLockChange);
@@ -3053,6 +3115,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("wheel", onWheel);
       window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onBlur);
       window.clearTimeout(lockTimer);
       window.removeEventListener("pointerdown", onGesture, true);
       window.removeEventListener("keydown", onGesture, true);
