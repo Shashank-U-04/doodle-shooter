@@ -2781,6 +2781,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       if (code === "KeyM") {
         fx.musicOn = !fx.musicOn;
       }
+      // Esc/P while paused goes straight back into the run - pause is always
+      // one keypress from the game, in either direction.
+      if ((code === "Escape" || code === "KeyP") && state === "paused") {
+        handleRef.current.resume();
+      }
       return;
     }
     keys.add(code);
@@ -2865,6 +2870,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     cursorX = e.clientX;
     cursorY = e.clientY;
     cursorSeen = true;
+    // cursor-position deltas, kept as a fallback look input
+    const cdx = e.clientX - lastCX;
+    const cdy = e.clientY - lastCY;
+    lastCX = e.clientX;
+    lastCY = e.clientY;
     if (state !== "playing") return;
     // Moving the mouse turns the view. That is the whole look system: it does
     // not wait on — and is not gated by — whether the browser granted a pointer
@@ -2877,6 +2887,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     let dy = e.movementY;
     if (Math.abs(dx) > 400) dx = 0;
     if (Math.abs(dy) > 400) dy = 0;
+    // Some restricted frames deliver unlocked mouse events with movement deltas
+    // of exactly 0, so the view would never turn. Cursor-position deltas are
+    // the same motion; use them whenever the movement ones are silent.
+    if (dx === 0 && dy === 0 && (cdx !== 0 || cdy !== 0) && !isLocked()) {
+      dx = Math.abs(cdx) > 400 ? 0 : cdx;
+      dy = Math.abs(cdy) > 400 ? 0 : cdy;
+    }
     player.yaw -= dx * s;
     player.pitch -= dy * s * (invertY ? -1 : 1);
     player.pitch = clamp(player.pitch, -1.5, 1.5);
@@ -3024,7 +3041,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       cb.onResume();
       // START is a real click, so this is the one moment a capture can be
       // granted. If it is refused, moving the mouse still looks around.
-      cb.onTip("<b>move the mouse</b> to look · <b>click</b> to grab the cursor", 4);
+      cb.onTip("<b>WASD</b> move · <b>mouse</b> look · <b>Esc</b> pause", 4);
       requestLock();
     },
     pause() {

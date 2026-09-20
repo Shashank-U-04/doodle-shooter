@@ -32,7 +32,7 @@ type Overlay =
 
 const CONTROLS: [string, string][] = [
   ["WASD", "move"],
-  ["Mouse", "look (move to turn)"],
+  ["Mouse", "look — edge of screen keeps turning"],
   ["LMB", "fire / slash"],
   ["RMB", "aim · block (katana)"],
   ["Space", "jump · double jump"],
@@ -44,7 +44,7 @@ const CONTROLS: [string, string][] = [
   ["F", "focus dash · slash"],
   ["G", "grenade"],
   ["X", "dash"],
-  ["P / Esc", "pause"],
+  ["P / Esc", "pause / resume"],
   ["M", "sound"],
 ];
 
@@ -349,7 +349,7 @@ export default function Game() {
               </label>
             </div>
             {best > 0 && <div className="beststat">best score: {best}</div>}
-            <div className="go">CLICK START — move the mouse to look around</div>
+            <div className="go">START · WASD move · mouse look · Esc pause</div>
           </div>
         </div>
       )}
