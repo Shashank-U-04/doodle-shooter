@@ -275,6 +275,12 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // False the moment the pointer leaves the window, so the edge-steer cannot
   // keep turning the view for a cursor that is not even over the game.
   let pointerInside = false;
+  // When the pointer last produced real look input (ms). "The mouse has been
+  // still for a beat" is what lets steerFromEdge tell a cursor deliberately
+  // held against the screen edge apart from one just sweeping past it.
+  let lastLookMoveMs = 0;
+  // How long the cursor has been parked inside an edge band (steerFromEdge).
+  let edgeParkT = 0;
   // Raw-input health: counts consecutive captured mousemove events that report
   // no movement deltas (see the detector in onMouseMove). A granted pointer
   // lock that never reports motion is dead raw input — some external mice do
@@ -2884,6 +2890,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     cursorX = e.clientX;
     cursorY = e.clientY;
     cursorSeen = true;
+    lastLookMoveMs = performance.now();
     // cursor-position deltas, kept as a fallback look input
     const cdx = e.clientX - lastCX;
     const cdy = e.clientY - lastCY;
@@ -2996,19 +3003,35 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     }
   };
   /**
-   * Lock-free steering. A sandboxed preview frame cannot take the pointer, and
-   * a loose cursor stops at the window edge — so the view would lock up as soon
-   * as you turned far enough to reach it. While the pointer is not captured,
-   * pushing the cursor into an edge keeps turning, which makes a full circle of
-   * look possible wherever the game is running. With the pointer captured this
-   * does nothing at all.
+   * Lock-free edge steering, for the restricted preview frames that cannot take
+   * the pointer at all. The cursor must be deliberately HELD against a screen
+   * edge before any auto-turn starts: a thin 18px band, a 0.25 s park, and a
+   * gentle ramp to a slow rate keep normal aiming — sweeping the cursor across
+   * the frame, resting it mid-screen, even brushing an edge — completely free
+   * of rotation. Any real mouse input (movement deltas, a capture) or a
+   * pointer that leaves the window stops it at once.
    */
   const steerFromEdge = (dt: number) => {
+    // Only ever a fallback: with the pointer captured — every real browser —
+    // mouse deltas alone drive look, exactly like the reference.
     if (isLocked() || !cursorSeen || !pointerInside) return;
+    // The mouse moved this beat, so the player is aiming: never auto-turn.
+    // (Unrestricted frames report movement deltas; stripped-delta frames still
+    // reach here on cursor motion, so also watch cursor-position deltas.)
+    const still = performance.now() - lastLookMoveMs > 250;
+    if (!still) {
+      edgeParkT = 0;
+      return;
+    }
     const w = container.clientWidth || window.innerWidth;
     const h = container.clientHeight || window.innerHeight;
-    const margin = 46;
-    const rate = 2.4; // rad/s at the very edge
+    // A thin band at the frame edge. ~18px means the cursor must be pressed
+    // right up against the edge — resting aim anywhere else on screen never
+    // enters the band, which is what fixes the runaway spin during normal aim.
+    const margin = 18;
+    // Gentle on purpose: this is an escape hatch for frames with no pointer
+    // capture, not a second look system. Slow even at full depth.
+    const rate = 1.0; // rad/s at the very edge
     const depth = (v: number, span: number) =>
       v < margin
         ? -(margin - v) / margin
@@ -3017,9 +3040,19 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
           : 0;
     const ex = depth(cursorX, w);
     const ey = depth(cursorY, h);
-    if (!ex && !ey) return;
-    player.yaw -= ex * rate * dt;
-    player.pitch -= ey * rate * dt * (invertY ? -1 : 1);
+    if (!ex && !ey) {
+      edgeParkT = 0;
+      return;
+    }
+    // Hold the cursor in the band for a beat first: sweeping past an edge, or
+    // any live aim that clips it, parks for 0 ms and never auto-turns.
+    edgeParkT += dt;
+    if (edgeParkT < 0.25) return;
+    // Ease in over ~0.6 s so the turn starts as a nudge, not a jump.
+    const ramp = Math.min(1, (edgeParkT - 0.25) / 0.6);
+    const a = ex * rate * ramp * dt;
+    player.yaw -= a;
+    player.pitch -= ey * rate * ramp * dt * (invertY ? -1 : 1);
     player.pitch = clamp(player.pitch, -1.5, 1.5);
   };
   const onContext = (e: Event) => e.preventDefault();

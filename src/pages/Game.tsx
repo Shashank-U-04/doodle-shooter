@@ -32,7 +32,7 @@ type Overlay =
 
 const CONTROLS: [string, string][] = [
   ["WASD", "move"],
-  ["Mouse", "look — edge of screen keeps turning"],
+  ["Mouse", "look — park at the screen edge to keep turning"],
   ["LMB", "fire / slash"],
   ["RMB", "aim · block (katana)"],
   ["Space", "jump · double jump"],
