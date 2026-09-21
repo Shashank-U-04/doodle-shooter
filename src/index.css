@@ -220,6 +220,17 @@
 }
 .dd-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
+/* While a run is live the OS arrow is hidden — the game draws its own crosshair
+   and a floating pointer over the scene is what made aiming feel "weird".
+   Every menu/pause/game-over screen (a .dd-screen) brings it straight back, so
+   those buttons stay clickable even if the engine misses a release call. */
+.dd-root.dd-live {
+  cursor: none;
+}
+.dd-root.dd-live:has(.dd-screen) {
+  cursor: auto;
+}
+
 .dd-hud {
   position: absolute;
   inset: 0;

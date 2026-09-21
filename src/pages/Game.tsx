@@ -65,6 +65,9 @@ export default function Game() {
   const [sound, setSound] = useState(() => localStorage.getItem("dd_music") !== "0");
   const [best, setBest] = useState(() => Number(localStorage.getItem("dd_best") || 0));
   const [ready, setReady] = useState(false);
+  // live play only: the OS arrow is hidden while a run is on (the game draws its
+  // own crosshair) and comes straight back for any menu / pause / game-over panel
+  const playing = hud.wave > 0 && overlay.kind === "menu";
 
   const msgTimer = useRef<number | null>(null);
   const tipTimer = useRef<number | null>(null);
@@ -158,7 +161,7 @@ export default function Game() {
   const hpFrac = Math.max(0, hud.hp / hud.maxHp);
 
   return (
-    <div className="dd-root">
+    <div className={`dd-root ${playing ? "dd-live" : ""}`}>
       <div ref={stageRef} className="dd-stage absolute inset-0" />
 
       {/* HUD */}
