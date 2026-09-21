@@ -104,20 +104,64 @@ export function resolveMove(
   let hitCeiling = false;
   let hitWall = false;
 
+  // Does the body (a box of `radius` around x/z, `height` tall from y up)
+  // intersect this collider? Strict inequalities: standing exactly on a
+  // surface is not inside it.
+  const hits = (x: number, y: number, z: number, c: Collider) =>
+    x + radius > c.minX &&
+    x - radius < c.maxX &&
+    z + radius > c.minZ &&
+    z - radius < c.maxZ &&
+    y < c.maxY &&
+    y + height > c.minY;
+
+  const anyHit = () => {
+    for (const c of colliders) if (hits(pos.x, pos.y, pos.z, c)) return c;
+    return null;
+  };
+
+  // Depenetration: push the body out of whatever it overlaps, along the
+  // shortest escape. This is what makes the old "wedged between a wall and a
+  // staircase with no way out" impossible — an overlap can never survive a
+  // frame, so the player can always move free again.
+  const depenetrate = () => {
+    for (let i = 0; i < 3; i++) {
+      const c = anyHit();
+      if (!c) return;
+      const up = c.maxY - pos.y; // climb out over the top
+      const down = pos.y + height - c.minY; // slip out below the bottom
+      const px = c.maxX + radius - pos.x;
+      const nx = pos.x - (c.minX - radius);
+      const pz = c.maxZ + radius - pos.z;
+      const nz = pos.z - (c.minZ - radius);
+      const side = Math.min(px, nx, pz, nz);
+      if (up <= side && up <= stepHeight + 0.3) {
+        // stair-scale overlap: step out on top, as if it were a tread
+        pos.y = c.maxY;
+        onGround = true;
+      } else if (side <= down) {
+        if (px <= nx && px <= pz && px <= nz) pos.x = c.maxX + radius;
+        else if (nx <= pz && nx <= nz) pos.x = c.minX - radius;
+        else if (pz <= nz) pos.z = c.maxZ + radius;
+        else pos.z = c.minZ - radius;
+      } else {
+        pos.y = c.minY - height;
+        vel.y = Math.min(vel.y, 0);
+        hitCeiling = true;
+      }
+    }
+  };
+
+  // If a previous frame left us inside geometry — squeezed between boxes, or
+  // spawned into a prop — get clear BEFORE moving, not after.
+  depenetrate();
+
   const tryAxis = (axis: "x" | "y" | "z", delta: number) => {
     if (delta === 0) return;
-    pos[axis] += delta;
-    const feetY = pos.y;
-    const headY = pos.y + height;
+    const saved = pos[axis];
+    pos[axis] = saved + delta;
     for (const c of colliders) {
-      const overlapsXZ =
-        pos.x + radius > c.minX &&
-        pos.x - radius < c.maxX &&
-        pos.z + radius > c.minZ &&
-        pos.z - radius < c.maxZ;
-      if (!overlapsXZ) continue;
-      const overlapsY = feetY < c.maxY && headY > c.minY;
-      if (!overlapsY) continue;
+      if (!hits(pos.x, pos.y, pos.z, c)) continue;
       if (axis === "y") {
         if (delta < 0) {
           pos.y = c.maxY;
@@ -128,34 +172,44 @@ export function resolveMove(
           hitCeiling = true;
           vel.y = 0;
         }
-      } else if (axis === "x") {
-        // step-up assist for small ledges
-        if (onGroundish(c, feetY, stepHeight)) {
-          pos.y = c.maxY;
-          continue;
-        }
-        pos.x = delta > 0 ? c.minX - radius : c.maxX + radius;
-        vel.x = 0;
-        hitWall = true;
       } else {
-        if (onGroundish(c, feetY, stepHeight)) {
+        // Step-up assist: a knee-high ledge becomes floor — but only if the
+        // whole body clears the space above it. Lifting into a lintel, rail or
+        // ceiling is exactly how players used to end up jammed inside walls.
+        if (c.maxY - pos.y <= stepHeight && c.maxY - pos.y > -0.01) {
+          const oldY = pos.y;
           pos.y = c.maxY;
-          continue;
+          if (!anyHit()) continue;
+          pos.y = oldY;
         }
-        pos.z = delta > 0 ? c.minZ - radius : c.maxZ + radius;
-        vel.z = 0;
+        // Clamp back out only when this move is what entered the box. If the
+        // body was already inside it, clamping would drag us through the wall
+        // to the far side — often into the next box, where two opposing
+        // clamps pinned the player permanently. Leave those to depenetration.
+        const wasInside = hits(
+          axis === "x" ? saved : pos.x,
+          pos.y,
+          axis === "z" ? saved : pos.z,
+          c,
+        );
+        if (wasInside) continue;
+        pos[axis] =
+          delta > 0
+            ? (axis === "x" ? c.minX : c.minZ) - radius
+            : (axis === "x" ? c.maxX : c.maxZ) + radius;
+        vel[axis] = 0;
         hitWall = true;
       }
     }
   };
 
-  const onGroundish = (c: AABB, feetY: number, step: number) => {
-    return c.maxY - feetY <= step && c.maxY - feetY > -0.01;
-  };
-
   tryAxis("x", vel.x * dt);
   tryAxis("z", vel.z * dt);
   tryAxis("y", vel.y * dt);
+
+  // Whatever the frame did, end it outside every collider.
+  depenetrate();
+
   return { onGround, hitCeiling, hitWall };
 }
 
