@@ -30,24 +30,6 @@ type Overlay =
   | { kind: "paused"; wave: number; score: number }
   | { kind: "over"; stats: GameOverStats };
 
-const CONTROLS: [string, string][] = [
-  ["WASD", "move"],
-  ["Mouse", "look"],
-  ["LMB", "fire / slash"],
-  ["RMB", "aim · block (katana)"],
-  ["Space", "jump · double jump"],
-  ["Shift", "sprint"],
-  ["C / Ctrl", "crouch"],
-  ["R", "reload"],
-  ["1–5 / wheel", "weapons"],
-  ["Q / E", "grapple (hold to reel)"],
-  ["F", "focus dash · slash"],
-  ["G", "grenade"],
-  ["X", "dash"],
-  ["P / Esc", "pause / resume"],
-  ["M", "sound"],
-];
-
 export default function Game() {
   const navigate = useNavigate();
   const stageRef = useRef<HTMLDivElement>(null);
@@ -60,9 +42,11 @@ export default function Game() {
   const [hitmarker, setHitmarker] = useState(0);
   const [boss, setBoss] = useState<{ name: string; frac: number } | null>(null);
   const [ads, setAds] = useState(false);
-  const [sens, setSens] = useState(() => Number(localStorage.getItem("dd_sens") || 100));
-  const [invert, setInvert] = useState(() => localStorage.getItem("dd_invert") === "1");
-  const [sound, setSound] = useState(() => localStorage.getItem("dd_music") !== "0");
+  // Settings live on the title screen and in localStorage; the run reads them
+  // once at mount and they cannot change mid-play, so refs suffice.
+  const sens = useRef(Number(localStorage.getItem("dd_sens") || 100));
+  const invert = useRef(localStorage.getItem("dd_invert") === "1");
+  const sound = useRef(localStorage.getItem("dd_music") !== "0");
   const [best, setBest] = useState(() => Number(localStorage.getItem("dd_best") || 0));
   // live play only: the OS arrow is hidden while a run is on (the game draws its
   // own crosshair) and comes straight back for any menu / pause / game-over panel
@@ -117,9 +101,9 @@ export default function Game() {
       return;
     }
     gameRef.current = handle;
-    handle.setSensitivity(sens);
-    handle.setInvert(invert);
-    handle.setMusic(sound);
+    handle.setSensitivity(sens.current);
+    handle.setInvert(invert.current);
+    handle.setMusic(sound.current);
     // arriving from the title screen's START: begin the run straight away
     handle.start();
 
@@ -134,12 +118,8 @@ export default function Game() {
   }, []);
 
   // pause on tab-away handled by engine; Escape opens pause overlay through onPause
-  const start = useCallback(() => {
-    setOverlay({ kind: "menu" });
-    gameRef.current?.start();
-  }, []);
   // resume() hands control back immediately (and asks for the mouse; if the
-  // browser refuses, the hint appears and the next click retries).
+  // browser refuses, the next click retries).
   const resume = useCallback(() => {
     gameRef.current?.resume();
   }, []);
@@ -282,78 +262,6 @@ export default function Game() {
           <div className="hint">{hud.hint}</div>
         </div>
       </div>
-
-      {/* Overlays */}
-      {overlay.kind === "menu" && hud.wave === 0 && (
-        <div className="dd-screen">
-          <div className="panel">
-            <h1>DOODLE DISTRICT</h1>
-            <h2>a scribbled survival shooter</h2>
-            <div className="mainbtns">
-              <button type="button" className="start" onClick={start}>
-                START<i>solo · survive the waves</i>
-              </button>
-            </div>
-            <div className="cols">
-              <div>
-                <div className="colhead">MOUSE + KEYBOARD</div>
-                {CONTROLS.map(([k, v]) => (
-                  <div key={k}>
-                    <b>{k}</b> {v}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="settings">
-              <label>
-                look sensitivity
-                <input
-                  type="range"
-                  min={25}
-                  max={250}
-                  step={5}
-                  value={sens}
-                  onChange={(e) => {
-                    const v = Number(e.target.value);
-                    setSens(v);
-                    localStorage.setItem("dd_sens", String(v));
-                    gameRef.current?.setSensitivity(v);
-                  }}
-                />
-                <b>{sens}%</b>
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={invert}
-                  onChange={(e) => {
-                    setInvert(e.target.checked);
-                    localStorage.setItem("dd_invert", e.target.checked ? "1" : "0");
-                    gameRef.current?.setInvert(e.target.checked);
-                  }}
-                />
-                invert vertical look
-              </label>
-              <label>
-                music
-                <input
-                  type="checkbox"
-                  checked={sound}
-                  onChange={(e) => {
-                    setSound(e.target.checked);
-                    localStorage.setItem("dd_music", e.target.checked ? "1" : "0");
-                    gameRef.current?.setMusic(e.target.checked);
-                  }}
-                />
-                <span className="k">(M)</span>
-              </label>
-            </div>
-            {best > 0 && <div className="beststat">best score: {best}</div>}
-            <div className="go">START · WASD move · mouse look · Esc pause</div>
-          </div>
-        </div>
-      )}
 
       {overlay.kind === "paused" && (
         <div className="dd-screen">

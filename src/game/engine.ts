@@ -267,6 +267,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // False the moment the pointer leaves the window, so the edge-steer cannot
   // keep turning the view for a cursor that is not even over the game.
   let pointerInside = false;
+  // Dead-capture detector: counts consecutive captured mousemove events that
+  // carry no motion data (see the guard in onMouseMove). A granted pointer
+  // lock that never reports movement is exactly the "mouse is frozen until I
+  // press Esc" bug — the detector drops the dead capture automatically.
+  let lockedZeroStreak = 0;
   // When the pointer last produced real look input (ms). "The mouse has been
   // still for a beat" is what lets steerFromEdge tell a cursor deliberately
   // held against the screen edge apart from one just sweeping past it.
@@ -2929,6 +2934,19 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // still drops device glitches.
     if (Math.abs(dx) > 1500) dx = 0;
     if (Math.abs(dy) > 1500) dy = 0;
+    // Dead-capture detector: while captured, an honest device always reports
+    // motion on a mousemove. A streak of silent events means this capture is
+    // delivering no data at all - exactly the "mouse frozen until Esc" state -
+    // so the engine drops it itself and the working unlocked path takes over
+    // the same frame. On normal machines this never fires; a capture that
+    // reports real motion resets the streak to zero forever.
+    if (isLocked()) {
+      if (dx !== 0 || dy !== 0) lockedZeroStreak = 0;
+      else if (++lockedZeroStreak >= 8) {
+        lockedZeroStreak = 0;
+        releasePointer();
+      }
+    }
     // Some restricted frames deliver unlocked mouse events with movement deltas
     // of exactly 0, so the view would never turn. Cursor-position deltas are
     // the same motion; use them whenever the movement ones are silent.
