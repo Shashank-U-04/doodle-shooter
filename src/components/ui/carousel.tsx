@@ -93,11 +93,14 @@ function Carousel({
 
   React.useEffect(() => {
     if (!api) return
-    onSelect(api)
+    // Initial scroll-state sync deferred one frame: a synchronous setState
+    // here is flagged as a cascading render, and one frame is invisible.
+    const raf = requestAnimationFrame(() => onSelect(api))
     api.on("reInit", onSelect)
     api.on("select", onSelect)
 
     return () => {
+      cancelAnimationFrame(raf)
       api?.off("select", onSelect)
     }
   }, [api, onSelect])

@@ -697,7 +697,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       if (to.dot(fwd) < 0.35) continue;
       hitAny = true;
       const headHit = to.dot(fwd) > 0.85;
-      damageEnemy(e, headHit ? 999 : 90 * (1 + wave * 0.03), headHit, "katana", to);
+      damageEnemy(e, headHit ? 999 : 90 * (1 + wave * 0.03), headHit, "katana");
     }
     if (!hitAny) katanaStreak = 0;
     pushHud();
@@ -727,12 +727,12 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     player.yaw = Math.atan2(-dir.x, -dir.z);
     fx.focusDash();
     shakeT = 0.2;
-    damageEnemy(target, 9999, false, "focus", dir);
+    damageEnemy(target, 9999, false, "focus");
     cb.onTip("<b>EXECUTED</b>", 1.2);
   }
 
   /* ---------- damage ---------- */
-  function damageEnemy(e: Enemy, amount: number, crit: boolean, source: string, dir?: THREE.Vector3) {
+  function damageEnemy(e: Enemy, amount: number, crit: boolean, source: string) {
     if (!e.alive) return;
     if (e.def.shield && e.shieldMesh && source !== "katana" && source !== "blast" && source !== "focus") {
       const toPlayer = player.pos.clone().sub(e.pos).normalize();
@@ -748,7 +748,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     e.t += 0.05;
     if (e.def.boss) cb.onBoss(e.def.name, clamp(e.hp / e.maxHp, 0, 1));
     spawnShards(e.pos.clone().add(new THREE.Vector3(0, 1.2 * e.def.scale, 0)), crit ? INK.RED : e.def.ink, crit ? 7 : 3, 2.4);
-    if (e.hp <= 0) killEnemy(e, source, crit, dir);
+    if (e.hp <= 0) killEnemy(e, source, crit);
     else {
       fx.hitEnemy();
       cb.onHitmarker(false, crit);
@@ -756,7 +756,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     pushHud();
   }
 
-  function killEnemy(e: Enemy, source: string, crit: boolean, _dir?: THREE.Vector3) {
+  function killEnemy(e: Enemy, source: string, crit: boolean) {
     e.alive = false;
     e.dying = 0.6;
     const credit = source !== "enemy" && source !== "self";
@@ -2455,7 +2455,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     if (proj >= 0 && proj <= segLen) {
       const closest = from.clone().addScaledVector(segDir, proj);
       if (closest.distanceTo(headC) < 0.34 * s) {
-        damageEnemy(e, b.dmg * b.headMul, true, b.source, segDir);
+        damageEnemy(e, b.dmg * b.headMul, true, b.source);
         return true;
       }
     }
@@ -2463,7 +2463,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const c: Collider = { minX: e.pos.x - 0.5 * s, maxX: e.pos.x + 0.5 * s, minY: e.pos.y, maxY: e.pos.y + 1.85 * s, minZ: e.pos.z - 0.35 * s, maxZ: e.pos.z + 0.35 * s };
     const t = rayAABB(from, segDir, c, segLen);
     if (t >= 0) {
-      damageEnemy(e, b.dmg, false, b.source, segDir);
+      damageEnemy(e, b.dmg, false, b.source);
       return true;
     }
     return false;

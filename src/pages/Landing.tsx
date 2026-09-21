@@ -1,7 +1,7 @@
 // The title screen, rebuilt to match the reference game's main menu: same paper
 // sheet, same panel, same START / PLAY ONLINE buttons, settings and control list.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useNavigate } from "react-router";
 
 const KEYBOARD: [string, string][] = [
@@ -20,12 +20,8 @@ export default function Landing() {
   const [sens, setSens] = useState(() => Number(localStorage.getItem("dd_sens") || 100));
   const [invert, setInvert] = useState(() => localStorage.getItem("dd_invert") === "1");
   const [music, setMusic] = useState(() => localStorage.getItem("dd_music") !== "0");
-  const [best, setBest] = useState(() => Number(localStorage.getItem("dd_best") || 0));
+  const [best] = useState(() => Number(localStorage.getItem("dd_best") || 0));
   const [note, setNote] = useState<string | null>(null);
-
-  useEffect(() => {
-    setBest(Number(localStorage.getItem("dd_best") || 0));
-  }, []);
 
   const online = useCallback(() => {
     setNote("online play isn't wired up yet — solo for now");

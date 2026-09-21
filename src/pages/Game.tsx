@@ -64,7 +64,6 @@ export default function Game() {
   const [invert, setInvert] = useState(() => localStorage.getItem("dd_invert") === "1");
   const [sound, setSound] = useState(() => localStorage.getItem("dd_music") !== "0");
   const [best, setBest] = useState(() => Number(localStorage.getItem("dd_best") || 0));
-  const [ready, setReady] = useState(false);
   // live play only: the OS arrow is hidden while a run is on (the game draws its
   // own crosshair) and comes straight back for any menu / pause / game-over panel
   const playing = hud.wave > 0 && overlay.kind === "menu";
@@ -121,7 +120,6 @@ export default function Game() {
     handle.setSensitivity(sens);
     handle.setInvert(invert);
     handle.setMusic(sound);
-    setReady(true);
     // arriving from the title screen's START: begin the run straight away
     handle.start();
 
@@ -292,7 +290,7 @@ export default function Game() {
             <h1>DOODLE DISTRICT</h1>
             <h2>a scribbled survival shooter</h2>
             <div className="mainbtns">
-              <button type="button" className="start" onClick={start} disabled={!ready}>
+              <button type="button" className="start" onClick={start}>
                 START<i>solo · survive the waves</i>
               </button>
             </div>

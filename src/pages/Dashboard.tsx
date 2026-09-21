@@ -9,7 +9,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/hooks/use-auth";
 import { Gamepad2, LogOut, Play, Trophy } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router";
 
 type Best = { score: number; wave: number };
@@ -28,11 +28,7 @@ function readBest(): Best {
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
-  const [best, setBest] = useState<Best>({ score: 0, wave: 0 });
-
-  useEffect(() => {
-    setBest(readBest());
-  }, []);
+  const [best] = useState<Best>(() => readBest());
 
   const handleSignOut = async () => {
     await signOut();
