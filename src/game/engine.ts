@@ -2261,7 +2261,28 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const p = player;
     p.crouch = keys.has("ControlLeft") || keys.has("KeyC");
     p.sprint = keys.has("ShiftLeft") || keys.has("ShiftRight");
-    p.height = p.crouch ? JN : CI;
+    // Standing back up must respect headroom: expanding the body inside a
+    // crawlspace jams the resolver. Stay crouched until there is room.
+    const wantHeight = p.crouch ? JN : CI;
+    if (wantHeight > p.height) {
+      let blocked = false;
+      for (const c of world.colliders) {
+        if (
+          p.pos.x + p.radius > c.minX &&
+          p.pos.x - p.radius < c.maxX &&
+          p.pos.z + p.radius > c.minZ &&
+          p.pos.z - p.radius < c.maxZ &&
+          p.pos.y + CI > c.minY &&
+          p.pos.y < c.minY
+        ) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) p.height = wantHeight;
+    } else {
+      p.height = wantHeight;
+    }
 
     let ix = 0;
     let iz = 0;
@@ -2363,15 +2384,21 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       const to = from.clone().add(step);
       let dead = b.life <= 0;
 
-      // world
+      // world — sub-stepped so fast rounds cannot tunnel through a thin
+      // wall or floor plank between frames (one ray per ~2m slice).
       const dir = step.clone();
       const len = dir.length();
       if (len > 1e-6) {
         dir.divideScalar(len);
-        const t = rayAABBall(from, dir, len);
-        if (t >= 0) {
-          dead = true;
-          spawnShards(from.clone().addScaledVector(dir, t), b.ink, 2, 1.6);
+        const slices = Math.max(1, Math.ceil(len / 2));
+        const sliceLen = len / slices;
+        for (let s = 0; s < slices && !dead; s++) {
+          const base = from.clone().addScaledVector(dir, s * sliceLen);
+          const t = rayAABBall(base, dir, sliceLen);
+          if (t >= 0) {
+            dead = true;
+            spawnShards(base.clone().addScaledVector(dir, t), b.ink, 2, 1.6);
+          }
         }
       }
 
@@ -2660,6 +2687,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // A non-finite position is unrecoverable: the camera matrix goes NaN and
     // the scene stops drawing entirely. Recover instead of freezing.
     if (!Number.isFinite(player.pos.x + player.pos.y + player.pos.z)) {
+      player.pos.set(0, 0.2, 38);
+      player.vel.set(0, 0, 0);
+    }
+    // Fell out of the world (through a seam, off the arena rim): back to the
+    // start point instead of being stranded under the map forever. Enemies
+    // already have this net; the player deserved the same.
+    if (player.pos.y < -6) {
       player.pos.set(0, 0.2, 38);
       player.vel.set(0, 0, 0);
     }
