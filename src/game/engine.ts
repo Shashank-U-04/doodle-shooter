@@ -281,14 +281,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   let lastLookMoveMs = 0;
   // How long the cursor has been parked inside an edge band (steerFromEdge).
   let edgeParkT = 0;
-  // Raw-input health: counts consecutive captured mousemove events that report
-  // no movement deltas (see the detector in onMouseMove). A granted pointer
-  // lock that never reports motion is dead raw input — some external mice do
-  // this with the unadjustedMovement lock on Chromium, while trackpads are
-  // unaffected. Once caught, the raw form is never requested again this
-  // session; plain lock (what the reference uses) instead.
-  let lockedZeroStreak = 0;
-  let avoidRaw = false;
   // Refused captures are throttled, not forbidden. A sandboxed preview frame
   // refuses pointer lock outright (SecurityError) and a StrictMode remount can
   // refuse with WrongDocumentError — retrying at every keystroke would spam
@@ -2912,27 +2904,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // still drops device glitches.
     if (Math.abs(dx) > 1500) dx = 0;
     if (Math.abs(dy) > 1500) dy = 0;
-    // Silence detector: while captured, an honest device always reports motion
-    // on a mousemove. A short streak of zero-delta events means the raw stream
-    // is dead (the external-mouse bug), so the capture is dropped at once —
-    // the unlocked fallback takes over — and the raw form is not asked for
-    // again. Without this the view would never turn: the lock is granted, so
-    // the unlocked fallback was gated off, and locked events carry no deltas.
-    if (isLocked()) {
-      if (dx !== 0 || dy !== 0) {
-        lockedZeroStreak = 0;
-      } else if (++lockedZeroStreak >= 6) {
-        lockedZeroStreak = 0;
-        const wasRaw = avoidRaw;
-        avoidRaw = true;
-        releasePointer();
-        if (!wasRaw)
-          cb.onTip(
-            "raw mouse input failed — <b>look still works</b>, click to re-capture",
-            5,
-          );
-      }
-    }
     // Some restricted frames deliver unlocked mouse events with movement deltas
     // of exactly 0, so the view would never turn. Cursor-position deltas are
     // the same motion; use them whenever the movement ones are silent.
@@ -2971,25 +2942,16 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     };
     // Must be invoked *on* the canvas: calling it detached throws
     // "Illegal invocation", which silently killed every request.
-    const request = canvas.requestPointerLock.bind(canvas) as (o?: {
-      unadjustedMovement?: boolean;
-    }) => Promise<void> | void;
+    // Plain pointer lock only — same call the reference game makes. The
+    // unadjustedMovement (raw) form is what broke real browsers: Chromium
+    // grants it, then some devices deliver no motion data at all, so the view
+    // froze while the game kept running. OS-level acceleration belongs to the
+    // player's system settings, exactly as on the reference site.
+    const request = canvas.requestPointerLock.bind(canvas) as () =>
+      Promise<void> | void;
     try {
-      // Plain lock once the raw form has been caught reporting silence.
-      const p = avoidRaw ? request() : request({ unadjustedMovement: true });
-      // The reference's order: raw (unaccelerated) input first, plain pointer
-      // lock for a browser that will not hand the unadjusted form over.
-      if (p && typeof p.catch === "function") {
-        p.catch(() => {
-          if (disposed) return;
-          try {
-            const q = request();
-            if (q && typeof q.catch === "function") q.catch(refuse);
-          } catch {
-            refuse();
-          }
-        });
-      }
+      const p = request();
+      if (p && typeof p.catch === "function") p.catch(refuse);
     } catch {
       refuse();
     }
@@ -3124,7 +3086,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       cb.onResume();
       // START is a real click, so this is the one moment a capture can be
       // granted. If it is refused, moving the mouse still looks around.
-      cb.onTip("<b>WASD</b> move · <b>mouse</b> look · <b>Esc</b> pause", 4);
       requestLock();
     },
     pause() {
