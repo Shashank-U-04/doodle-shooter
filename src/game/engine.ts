@@ -155,14 +155,6 @@ const MODIFIERS = [
   { name: "SWARM · more of them, thinner", speed: 1.15, dmg: 0.9, extra: 3 },
 ];
 
-const TIPS = [
-  "hold <b>Q</b>/<b>E</b> to grapple rooftops · tap again to let go",
-  "block with the <b>KATANA</b> — some of their bullets go back",
-  "kills in the air are worth more · stay off the floor",
-  "<b>G</b> lobs a grenade · pickups give you more",
-  "press <b>Space</b> again in the air for a double jump",
-];
-
 type Bullet = {
   pos: THREE.Vector3;
   vel: THREE.Vector3;
@@ -2135,7 +2127,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     }
     enemiesLeft = queue.length;
     fx.wave();
-    if (n <= TIPS.length) cb.onTip(TIPS[n - 1], 7);
     player.grenades = Math.min(player.maxGrenades, player.grenades + 1);
     spawnPickups();
     pushHud();
@@ -2968,11 +2959,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const refuse = () => {
       if (disposed || performance.now() < lockCooldownUntil) return;
       lockCooldownUntil = performance.now() + 1500;
-      // Say why the cursor will not disappear, once, then stay quiet.
-      cb.onTip(
-        "this frame blocks mouse capture — <b>move the mouse</b> to look",
-        6,
-      );
+      // Silent by design: a refused capture must never surface as a popup —
+      // the unlocked look fallback takes over invisibly.
     };
     // Must be invoked *on* the canvas: calling it detached throws
     // "Illegal invocation", which silently killed every request.
