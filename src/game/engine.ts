@@ -275,6 +275,14 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // False the moment the pointer leaves the window, so the edge-steer cannot
   // keep turning the view for a cursor that is not even over the game.
   let pointerInside = false;
+  // Raw-input health: counts consecutive captured mousemove events that report
+  // no movement deltas (see the detector in onMouseMove). A granted pointer
+  // lock that never reports motion is dead raw input — some external mice do
+  // this with the unadjustedMovement lock on Chromium, while trackpads are
+  // unaffected. Once caught, the raw form is never requested again this
+  // session; plain lock (what the reference uses) instead.
+  let lockedZeroStreak = 0;
+  let avoidRaw = false;
   // Refused captures are throttled, not forbidden. A sandboxed preview frame
   // refuses pointer lock outright (SecurityError) and a StrictMode remount can
   // refuse with WrongDocumentError — retrying at every keystroke would spam
@@ -2891,14 +2899,39 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // dropped rather than snapping the view
     let dx = e.movementX;
     let dy = e.movementY;
-    if (Math.abs(dx) > 400) dx = 0;
-    if (Math.abs(dy) > 400) dy = 0;
+    // Real flicks on a 1000 Hz mouse deliver several hundred counts in one
+    // coalesced frame; the old 400 cap ate them as "spikes" and the view
+    // stuttered exactly when flicking. 1500 is far above honest motion and
+    // still drops device glitches.
+    if (Math.abs(dx) > 1500) dx = 0;
+    if (Math.abs(dy) > 1500) dy = 0;
+    // Silence detector: while captured, an honest device always reports motion
+    // on a mousemove. A short streak of zero-delta events means the raw stream
+    // is dead (the external-mouse bug), so the capture is dropped at once —
+    // the unlocked fallback takes over — and the raw form is not asked for
+    // again. Without this the view would never turn: the lock is granted, so
+    // the unlocked fallback was gated off, and locked events carry no deltas.
+    if (isLocked()) {
+      if (dx !== 0 || dy !== 0) {
+        lockedZeroStreak = 0;
+      } else if (++lockedZeroStreak >= 6) {
+        lockedZeroStreak = 0;
+        const wasRaw = avoidRaw;
+        avoidRaw = true;
+        releasePointer();
+        if (!wasRaw)
+          cb.onTip(
+            "raw mouse input failed — <b>look still works</b>, click to re-capture",
+            5,
+          );
+      }
+    }
     // Some restricted frames deliver unlocked mouse events with movement deltas
     // of exactly 0, so the view would never turn. Cursor-position deltas are
     // the same motion; use them whenever the movement ones are silent.
     if (dx === 0 && dy === 0 && (cdx !== 0 || cdy !== 0) && !isLocked()) {
-      dx = Math.abs(cdx) > 400 ? 0 : cdx;
-      dy = Math.abs(cdy) > 400 ? 0 : cdy;
+      dx = Math.abs(cdx) > 1500 ? 0 : cdx;
+      dy = Math.abs(cdy) > 1500 ? 0 : cdy;
     }
     player.yaw -= dx * s;
     player.pitch -= dy * s * (invertY ? -1 : 1);
@@ -2935,7 +2968,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       unadjustedMovement?: boolean;
     }) => Promise<void> | void;
     try {
-      const p = request({ unadjustedMovement: true });
+      // Plain lock once the raw form has been caught reporting silence.
+      const p = avoidRaw ? request() : request({ unadjustedMovement: true });
       // The reference's order: raw (unaccelerated) input first, plain pointer
       // lock for a browser that will not hand the unadjusted form over.
       if (p && typeof p.catch === "function") {
