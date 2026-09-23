@@ -31,7 +31,7 @@ export default function Landing() {
     <div className="dd-landing">
       <div className="dd-screen">
         <div className="panel">
-          <h1>DOODLE DISTRICT</h1>
+          <h1>DOODLE SHOOTER</h1>
           <h2>a scribbled survival shooter</h2>
 
           <div className="mainbtns">

@@ -1,7 +1,7 @@
 {
-  "name": "freebuff.com application",
-  "short_name": "freebuff.com",
-  "description": "freebuff.com application",
+  "name": "Doodle Shooter",
+  "short_name": "Doodle Shooter",
+  "description": "A scribbled survival shooter — solo wave survival in a hand-drawn district",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
