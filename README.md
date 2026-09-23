@@ -4,8 +4,6 @@ A hand-drawn survival shooter built from the ground up with Vite, React, TypeScr
 
 Play it: **START → survive the waves.** Best score is saved locally.
 
-> Designed and built by me — every mechanic, shader, and system is my own work.
-
 ---
 
 ## The Game
