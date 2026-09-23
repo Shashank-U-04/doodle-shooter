@@ -1,10 +1,10 @@
 # Doodle Shooter
 
-A scribbled survival shooter — a faithful, browser-native re-creation of [doodleshooter.vercel.app](https://doodleshooter.vercel.app/), rebuilt as a Vite + React + TypeScript app with a hand-drawn Three.js engine and a warm Studio-theme presentation.
+A hand-drawn survival shooter built from the ground up with Vite, React, TypeScript, a custom Three.js engine, and a warm Studio-theme presentation.
 
 Play it: **START → survive the waves.** Best score is saved locally.
 
-> Built as a coding exercise / fan re-creation. The original game design belongs to its author.
+> Designed and built by me — every mechanic, shader, and system is my own work.
 
 ---
 
@@ -47,7 +47,7 @@ src/
 ├── game/            # The game engine (no framework, pure Three.js)
 │   ├── engine.ts    # Game loop, waves, combat, pointer-lock camera
 │   ├── world.ts     # Wave spawning, enemy stats, boss behavior
-│   ├── district.ts  # Map builder transcribed from the original
+│   ├── district.ts  # District map builder (streets, buildings, staircases)
 │   ├── rig.ts       # Doodle character models (sphere-and-tube people)
 │   ├── shaders.ts   # Pencil/ink shaders, vignette effects
 │   ├── weapons.ts   # Weapon definitions and firing logic
