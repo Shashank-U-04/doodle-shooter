@@ -2,7 +2,8 @@
 
 A hand-drawn survival shooter built from the ground up with Vite, React, TypeScript, a custom Three.js engine, and a warm Studio-theme presentation.
 
-Play it: **START → survive the waves.** Best score is saved locally.
+**START** → survive the waves. **PLAY ONLINE** → share a code and shoot a friend.
+Best score is saved locally.
 
 ---
 
@@ -24,6 +25,31 @@ You are a hand-drawn survivor in a doodled district. Waves of sketched enemies c
 | **Mouse look** | Pointer Lock with adjustable sensitivity (`25%–250%`) and optional inverted Y — configured on the title screen. |
 | **Pause** | `P` or `Esc` pauses; the menu hands the OS cursor back. |
 
+### Online deathmatch (free for all)
+
+`PLAY ONLINE` on the title screen opens the lobby. One player **creates a
+match** and gets a 4-letter code; the other **joins** with that code; the host
+starts it and both drop into the district. First to 15 kills takes the match,
+and the host can call a rematch from the results screen.
+
+- **Peer-to-peer over WebRTC.** The other player is drawn into the same map as
+a real doodle with their own ink colour, walk cycle and muzzle flash — no game
+server sits in the middle, so the two browsers talk directly (PeerJS is used
+only for the first handshake that introduces them).
+- **Split authority.** Each client owns its own body: it moves, shoots, and
+decides when it is down. The shot is decided by the client that fired it,
+the damage is applied by the client that took it. Deaths are announced to the
+district, so both players build the same scoreboard and agree on the winner.
+- **Down, not out.** A death is a ~3 second wait; you respawn at the point
+furthest from the other doodles. Health regenerates out of combat, ammo comes
+from the pickups scattered around the district.
+- **Player count.** The host relays for everyone, so the code scales past a
+two-player duel, but a duel is what it is tuned for.
+
+> WebRTC needs a secure context: play over the deployed `https://` URL (or
+> `localhost`). The first connection can take a couple of seconds while the two
+> browsers negotiate, and each player needs a modern desktop browser.
+
 ### The studio theme
 
 The chrome around the game uses a **Studio theme** — gallery-clean, warm off-whites, thin framing, muted neutrals, careful spacing, soft editorial presentation. The game itself renders as pencil-and-ink on paper: outlines, hatching, toon shading, and a scribble vignette when hurt.
@@ -34,6 +60,7 @@ The chrome around the game uses a **Studio theme** — gallery-clean, warm off-w
 
 - **Vite + React 19 + TypeScript** — app shell and routing
 - **Three.js** — custom hand-drawn rendering engine (`src/game/`)
+- **PeerJS / WebRTC** — peer-to-peer online play (data channels, no game server)
 - **Tailwind CSS v4 + shadcn/ui** — Studio-themed UI (dashboard, auth, landing chrome)
 - **Convex + Convex Auth** — backend & database (email OTP + guest sign-in)
 - **Framer Motion** — page transitions and UI animation
@@ -49,9 +76,11 @@ src/
 │   ├── rig.ts       # Doodle character models (sphere-and-tube people)
 │   ├── shaders.ts   # Pencil/ink shaders, vignette effects
 │   ├── weapons.ts   # Weapon definitions and firing logic
+│   ├── net.ts       # Online play: rooms, roster, P2P state and hit trading
 │   └── audio.ts     # Procedural SFX + music
 ├── pages/
-│   ├── Landing.tsx  # Title screen — START, settings, controls
+│   ├── Landing.tsx  # Title screen — START, PLAY ONLINE, settings, controls
+│   ├── Online.tsx   # Match lobby + free-for-all arena
 │   ├── Game.tsx     # In-game HUD, pause, game over
 │   ├── Dashboard.tsx# Signed-in stats page
 │   └── Auth.tsx     # Email OTP / guest sign-in

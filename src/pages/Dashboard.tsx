@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/hooks/use-auth";
-import { Gamepad2, LogOut, Play, Trophy } from "lucide-react";
+import { Gamepad2, LogOut, Play, Trophy, Users } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
@@ -55,6 +55,15 @@ export default function Dashboard() {
             >
               <Play className="mr-2 size-4" />
               Play now
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-none font-studio-display tracking-[0.16em] uppercase"
+              onClick={() => navigate("/online")}
+            >
+              <Users className="mr-2 size-4" />
+              Play online
             </Button>
             <Button
               type="button"

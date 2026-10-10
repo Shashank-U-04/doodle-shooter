@@ -21,7 +21,7 @@ import {
 import { buildDistrict, type District } from "./district";
 import { makeBlobRig, makeRig, makeWaspRig, type Rig } from "./rig";
 import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
-import type { EngineCallbacks, GameHandle, HudState } from "./types";
+import type { EngineCallbacks, GameHandle, HudState, NetPlayerState, NetRemotePlayer } from "./types";
 
 THREE.ColorManagement.enabled = false;
 
@@ -326,6 +326,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   let slowmoT = 0;
   let focusChain = 0;
   let blocking = false;
+  // Online only: the two flags the net layer broadcasts about us. They are
+  // written from the same places the solo game already tracks movement and
+  // firing, so nothing about the run itself changes.
+  let netMoving = false;
+  let netFireT = 0;
 
   /* ---------- run state ---------- */
   type RunState = "menu" | "playing" | "paused" | "over";
@@ -627,6 +632,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       return;
     }
     s.mag--;
+    netFireT = 0.14;
     fireCd = def.interval;
     recoil = Math.min(recoil + (def.kind === "shotgun" ? 3.2 : 1.2), 5);
     player.pitch += def.kind === "sniper" ? 0.02 : 0.006;
@@ -681,6 +687,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
 
   function katanaSlash() {
     fx.katana();
+    netFireT = 0.2;
     recoil = 2.5;
     const eye = eyePos();
     const fwd = fwdVec();
@@ -800,7 +807,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     pushHud();
   }
 
-  function damagePlayer(amount: number, fromDir?: THREE.Vector3) {
+  function damagePlayer(amount: number, fromDir?: THREE.Vector3, killerId: string | null = null) {
     if (!player.alive || state !== "playing") return;
     player.hp -= amount;
     player.regenDelay = 4.5;
@@ -814,7 +821,15 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     if (player.hp <= 0) {
       player.hp = 0;
       player.alive = false;
-      gameOver();
+      if (pvp.active) {
+        // A deathmatch death is a wait, not the end of the run: the match and
+        // everyone else's game keep going while we sit out the respawn timer.
+        mouseFire = false;
+        mouseAim = false;
+        cb.onNetDeath?.(killerId);
+      } else {
+        gameOver();
+      }
     }
     pushHud();
   }
@@ -980,6 +995,168 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const pd = player.pos.distanceTo(pos);
     if (pd < radius * 0.8) {
       damagePlayer(dmg * Math.sqrt(Math.max(0, 1 - pd / (radius * 0.8))));
+    }
+    // online: a grenade hurts everyone standing in it, not just us
+    blastRemotes(pos, radius * 0.8, dmg);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Online PvP — additive, and inert unless setPvp(true)
+   *
+   * Nothing below changes the solo game: every branch is behind `pvp.active`.
+   * What the engine gains is exactly three things — it draws the other
+   * players, our bullets can hit them, and their bullets can hit us. Movement,
+   * weapons, physics, waves and the HUD are the code they already were.
+   * ------------------------------------------------------------------ */
+  const PVP_INKS: InkId[] = [INK.BLUE, INK.RED, INK.BLACK, INK.ORANGE, INK.GREEN, INK.PINK];
+
+  type RemoteActor = {
+    id: string;
+    name: string;
+    ink: InkId;
+    rig: Rig;
+    /** drawn position, smoothed towards `target` */
+    pos: THREE.Vector3;
+    target: THREE.Vector3;
+    yaw: number;
+    targetYaw: number;
+    state: NetPlayerState;
+    /** countdown to the next muzzle flash while they hold the trigger */
+    fireT: number;
+    walk: number;
+  };
+
+  const pvp = {
+    active: false,
+    remotes: new Map<string, RemoteActor>(),
+  };
+
+  function dropRemote(a: RemoteActor) {
+    scene.remove(a.rig.root);
+    releaseRig(a.rig.root);
+  }
+
+  function syncRemotePlayers(list: NetRemotePlayer[]) {
+    const keep = new Set<string>();
+    for (const p of list) {
+      keep.add(p.id);
+      let a = pvp.remotes.get(p.id);
+      if (!a) {
+        const ink = PVP_INKS[((p.ink % PVP_INKS.length) + PVP_INKS.length) % PVP_INKS.length];
+        const built = makeRig({ ink, bodyW: 1, headS: 1, limbR: 0.032, weapon: "rifle", scale: 1, vest: true });
+        built.root.position.set(p.state.x, p.state.y, p.state.z);
+        built.root.rotation.y = p.state.yaw + Math.PI;
+        scene.add(built.root);
+        a = {
+          id: p.id,
+          name: p.name,
+          ink,
+          rig: built,
+          pos: new THREE.Vector3(p.state.x, p.state.y, p.state.z),
+          target: new THREE.Vector3(p.state.x, p.state.y, p.state.z),
+          yaw: p.state.yaw,
+          targetYaw: p.state.yaw,
+          state: p.state,
+          fireT: 0,
+          walk: 0,
+        };
+        pvp.remotes.set(p.id, a);
+      }
+      a.name = p.name;
+      a.state = p.state;
+      a.target.set(p.state.x, p.state.y, p.state.z);
+      a.targetYaw = p.state.yaw;
+    }
+    for (const [id, a] of [...pvp.remotes]) {
+      if (keep.has(id)) continue;
+      dropRemote(a);
+      pvp.remotes.delete(id);
+    }
+  }
+
+  function updateRemoteActors(dt: number) {
+    for (const a of pvp.remotes.values()) {
+      const s = a.state;
+      // Updates arrive at ~20 Hz; the avatar is drawn where the packet says
+      // they are, eased so a 50 ms gap reads as motion instead of a stutter.
+      // A jump bigger than a room is a respawn, not movement — snap to it
+      // rather than sliding the body across the whole district.
+      if (a.pos.distanceToSquared(a.target) > 144) a.pos.copy(a.target);
+      else a.pos.lerp(a.target, Math.min(1, dt * 14));
+      let dy = a.targetYaw - a.yaw;
+      while (dy > Math.PI) dy -= Math.PI * 2;
+      while (dy < -Math.PI) dy += Math.PI * 2;
+      a.yaw += dy * Math.min(1, dt * 14);
+      a.rig.root.position.copy(a.pos);
+      // the rigs are modelled facing +Z, the player convention faces -Z
+      a.rig.root.rotation.y = a.yaw + Math.PI;
+      a.rig.root.visible = s.alive;
+      if (!s.alive) continue;
+
+      const P = a.rig.parts;
+      a.walk += dt * (s.moving ? 9 : 2.2);
+      const swing = Math.sin(a.walk) * 0.5 * (s.moving ? 1 : 0.12);
+      P.legL.rotation.x = swing;
+      P.legR.rotation.x = -swing;
+      P.armL.rotation.x = -swing * 0.7;
+      P.armR.rotation.x = swing * 0.7;
+      P.torso.rotation.y = Math.sin(a.walk * 0.5) * 0.06 * (s.moving ? 1 : 0);
+
+      // muzzle ink: a splash the moment they start, then a flicker for as long
+      // as the trigger is held, so a burst reads as a burst
+      a.fireT -= dt;
+      if (!s.firing) a.fireT = 0;
+      else if (a.fireT <= 0) {
+        a.fireT = 0.09;
+        const dir = new THREE.Vector3(Math.sin(a.yaw + Math.PI), 0, Math.cos(a.yaw + Math.PI));
+        const m = a.pos.clone().add(new THREE.Vector3(0, 1.25, 0)).addScaledVector(dir, 0.5);
+        spawnShards(m, a.ink, 3, 2.2);
+        spawnShards(m.clone().addScaledVector(dir, 3.5), a.ink, 1, 1.4);
+      }
+    }
+  }
+
+  /** our rounds against the other players; true when the round is spent */
+  function hitRemoteSegment(from: THREE.Vector3, to: THREE.Vector3, b: Bullet): boolean {
+    if (!pvp.active) return false;
+    const seg = to.clone().sub(from);
+    const segLen = seg.length();
+    if (segLen < 1e-6) return false;
+    const segDir = seg.clone().divideScalar(segLen);
+    for (const a of pvp.remotes.values()) {
+      if (!a.state.alive) continue;
+      const headC = a.pos.clone().add(new THREE.Vector3(0, 1.5, 0));
+      const toH = headC.clone().sub(from);
+      const proj = toH.dot(segDir);
+      if (proj >= 0 && proj <= segLen && from.clone().addScaledVector(segDir, proj).distanceTo(headC) < 0.32) {
+        spawnShards(headC, INK.RED, 4, 3);
+        cb.onHitmarker(false, true);
+        cb.onNetHit?.(a.id, b.dmg * b.headMul, true);
+        return true;
+      }
+      const c: Collider = {
+        minX: a.pos.x - 0.4, maxX: a.pos.x + 0.4,
+        minY: a.pos.y, maxY: a.pos.y + 1.75,
+        minZ: a.pos.z - 0.4, maxZ: a.pos.z + 0.4,
+      };
+      if (rayAABB(from, segDir, c, segLen) >= 0) {
+        spawnShards(a.pos.clone().add(new THREE.Vector3(0, 1.1, 0)), INK.RED, 3, 2);
+        cb.onHitmarker(false, false);
+        cb.onNetHit?.(a.id, b.dmg, false);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** blasts (grenades) reach the other players as well as us */
+  function blastRemotes(pos: THREE.Vector3, radius: number, dmg: number) {
+    if (!pvp.active) return;
+    for (const a of pvp.remotes.values()) {
+      if (!a.state.alive) continue;
+      const d = a.pos.distanceTo(pos);
+      if (d >= radius) continue;
+      cb.onNetHit?.(a.id, dmg * Math.sqrt(Math.max(0, 1 - d / radius)) * 1.5, false);
     }
   }
 
@@ -2137,6 +2314,18 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     pushHud();
   }
 
+  /** An online deathmatch: no waves, no enemies — only the other players. */
+  function startMatch() {
+    wave = 0;
+    modifierName = "FREE FOR ALL";
+    enemiesLeft = 0;
+    queue = [];
+    comboCount = 0;
+    spawnPickups();
+    cb.onMessage("FREE FOR ALL", "shoot the other doodle first", 2.6);
+    pushHud();
+  }
+
   function spawnPickups() {
     for (let i = 0; i < 7; i++) {
       const kind: "ammo" | "health" = i < 5 ? "ammo" : "health";
@@ -2255,6 +2444,19 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   /* ---------- player update ---------- */
   function updatePlayer(dt: number) {
     const p = player;
+    netFireT = Math.max(0, netFireT - dt);
+    // Online, down and waiting for the respawn: hold the death pose and take no
+    // input at all until the net layer calls netRespawn(). Solo never gets here
+    // (a death ends the run and step() stops calling this).
+    if (pvp.active && !p.alive) {
+      p.vel.set(0, 0, 0);
+      netMoving = false;
+      camera.rotation.order = "YXZ";
+      camera.rotation.y = p.yaw;
+      camera.rotation.x = p.pitch;
+      camera.rotation.z = 0;
+      return;
+    }
     p.crouch = keys.has("ControlLeft") || keys.has("KeyC");
     p.sprint = keys.has("ShiftLeft") || keys.has("ShiftRight");
     // Standing back up must respect headroom: expanding the body inside a
@@ -2338,6 +2540,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // camera
     const bobT = performance.now() * 0.011;
     const moving = move.lengthSq() > 0 && p.onGround;
+    netMoving = moving;
     const bobY = moving ? Math.sin(bobT) * 0.035 : 0;
     const bobX = moving ? Math.cos(bobT * 0.5) * 0.02 : 0;
     camera.position.set(p.pos.x + bobX, p.pos.y + (p.crouch ? JN * 0.94 : 1.6) + bobY, p.pos.z);
@@ -2408,6 +2611,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
               break;
             }
           }
+          // online: the other players are targets too
+          if (!dead && hitRemoteSegment(from, to, b)) dead = true;
         } else if (segmentHitsPlayer(from, to)) {
           dead = true;
           if (blocking && blockDeflect(b)) {
@@ -2561,6 +2766,15 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
         blips.push({ x: clamp(right / 62, -1, 1), z: clamp(-fwd / 62, -1, 1), boss: !!e.def.boss });
         if (blips.length >= 24) break;
       }
+      // online: the other players show up on the map too
+      for (const a of pvp.remotes.values()) {
+        if (!a.state.alive) continue;
+        const dx = a.pos.x - player.pos.x;
+        const dz = a.pos.z - player.pos.z;
+        const fwd = dx * -sy + dz * -cy;
+        const right = dx * cy - dz * sy;
+        blips.push({ x: clamp(right / 62, -1, 1), z: clamp(-fwd / 62, -1, 1), boss: false });
+      }
     }
     const hud: HudState = {
       score,
@@ -2708,8 +2922,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     updateShards(dtRaw);
     updatePickups(dt);
 
-    // wave spawner
-    if (queue.length > 0) {
+    // wave spawner — an online deathmatch has no waves at all, so the slot is
+    // used to drive the other players instead
+    if (pvp.active) {
+      updateRemoteActors(dt);
+    } else if (queue.length > 0) {
       spawnT -= dt;
       const alive = enemies.filter((e) => e.alive).length;
       if (spawnT <= 0 && alive < maxAlive) {
@@ -2818,6 +3035,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     if (e.repeat) return;
     const code = e.code;
     if (["Space", "Tab", "AltLeft", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(code)) e.preventDefault();
+    // Online, while our player is down: only pausing (and the music toggle)
+    // still answers — no reloading, throwing or weapon swaps from the grave.
+    if (pvp.active && !player.alive && code !== "Escape" && code !== "KeyP" && code !== "KeyM") return;
     if (state !== "playing") {
       if (code === "KeyM") {
         fx.musicOn = !fx.musicOn;
@@ -2892,6 +3112,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   const onMouseDown = (e: MouseEvent) => {
     mouseButtons.add(e.button);
     if (state !== "playing") return;
+    if (pvp.active && !player.alive) return;
     if (e.button === 0) {
       mouseFire = true;
       if (!slots[curSlot].def.auto) fireWeapon();
@@ -3122,7 +3343,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       state = "playing";
       intermissionT = 3;
       fx.ensure();
-      startWave(1);
+      if (pvp.active) startMatch();
+      else startWave(1);
       cb.onResume();
       // START is a real click, so this is the one moment a capture can be
       // granted. If it is refused, moving the mouse still looks around.
@@ -3151,8 +3373,80 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       resetRun();
       state = "playing";
       cb.onResume();
-      startWave(1);
+      if (pvp.active) startMatch();
+      else startWave(1);
       requestLock();
+    },
+    setPvp(on: boolean) {
+      pvp.active = on;
+      if (!on) {
+        for (const a of pvp.remotes.values()) dropRemote(a);
+        pvp.remotes.clear();
+      }
+    },
+    netState(): NetPlayerState {
+      return {
+        x: player.pos.x,
+        y: player.pos.y,
+        z: player.pos.z,
+        yaw: player.yaw,
+        pitch: player.pitch,
+        hp: Math.ceil(player.hp),
+        alive: player.alive,
+        moving: netMoving,
+        firing: netFireT > 0,
+        weapon: slots[curSlot].def.name,
+      };
+    },
+    setRemotePlayers(list: NetRemotePlayer[]) {
+      syncRemotePlayers(list);
+    },
+    takeNetHit(dmg: number, killerId: string) {
+      if (!pvp.active) return;
+      damagePlayer(dmg, undefined, killerId);
+    },
+    netRespawn(preferIndex?: number) {
+      if (!pvp.active) return;
+      // Street level only — a few of the map's spawn pads sit on rooftops, and
+      // respawning onto a roof is a fall the player never asked for.
+      const ground = district.spawnPoints.filter((s) => s.y <= 0.5);
+      const spots = ground.length > 0 ? ground : district.spawnPoints;
+      let best = spots[0] ?? new THREE.Vector3(0, 0.2, 38);
+      if (typeof preferIndex === "number" && spots.length > 0) {
+        // the numbered pad the match handed out: how a fresh match spreads the
+        // players across the district instead of stacking them on the start line
+        best = spots[((preferIndex % spots.length) + spots.length) % spots.length];
+      } else {
+        // otherwise the pad nobody is standing near wins
+        let bestD = -1;
+        for (const s of spots) {
+          let d = Infinity;
+          for (const a of pvp.remotes.values()) { const v = a.pos.distanceTo(s); if (v < d) d = v; }
+          if (d > bestD) {
+            bestD = d;
+            best = s;
+          }
+        }
+      }
+      player.pos.set(best.x, Math.max(0.2, best.y), best.z);
+      player.vel.set(0, 0, 0);
+      player.hp = player.maxHp;
+      player.alive = true;
+      player.regenDelay = 0;
+      player.hurtFx = 0;
+      player.flashFx = 0;
+      for (const s of slots) {
+        s.mag = s.def.magSize;
+        s.reserve = s.def.reserve;
+      }
+      reloadT = 0;
+      fireCd = 0;
+      mouseFire = false;
+      mouseAim = false;
+      pushHud();
+    },
+    isAlive() {
+      return player.alive;
     },
     toMenu() {
       resetRun();

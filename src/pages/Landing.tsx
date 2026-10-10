@@ -1,5 +1,5 @@
-// The title screen, rebuilt to match the reference game's main menu: same paper
-// sheet, same panel, same START / PLAY ONLINE buttons, settings and control list.
+// The title screen: paper sheet, panel, START / PLAY ONLINE buttons, settings
+// and the control list. START goes solo, PLAY ONLINE opens the deathmatch lobby.
 
 import { useCallback, useState } from "react";
 import { useNavigate } from "react-router";
@@ -21,11 +21,13 @@ export default function Landing() {
   const [invert, setInvert] = useState(() => localStorage.getItem("dd_invert") === "1");
   const [music, setMusic] = useState(() => localStorage.getItem("dd_music") !== "0");
   const [best] = useState(() => Number(localStorage.getItem("dd_best") || 0));
-  const [note, setNote] = useState<string | null>(null);
+  const [note] = useState<string | null>(null);
 
+  // PLAY ONLINE opens the lobby: one player creates a match and shares the
+  // 4-letter code, the other types it in, and the two browsers talk directly.
   const online = useCallback(() => {
-    setNote("online play isn't wired up yet — solo for now");
-  }, []);
+    navigate("/online");
+  }, [navigate]);
 
   return (
     <div className="dd-landing">
@@ -39,7 +41,7 @@ export default function Landing() {
               START<i>solo · survive the waves</i>
             </button>
             <button type="button" onClick={online}>
-              PLAY ONLINE<i>free for all · up to 10 players</i>
+              PLAY ONLINE<i>free for all · share a code, play a friend</i>
             </button>
           </div>
 
