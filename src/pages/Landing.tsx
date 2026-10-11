@@ -3,6 +3,7 @@
 
 import { useCallback, useState } from "react";
 import { useNavigate } from "react-router";
+import { SENS_MAX, SENS_MIN, readSensitivity } from "@/game/settings";
 
 const KEYBOARD: [string, string][] = [
   ["WASD", "move &nbsp; · &nbsp; <b>Mouse</b> look &nbsp; · &nbsp; <b>Shift</b> sprint"],
@@ -17,7 +18,7 @@ const KEYBOARD: [string, string][] = [
 
 export default function Landing() {
   const navigate = useNavigate();
-  const [sens, setSens] = useState(() => Number(localStorage.getItem("dd_sens") || 100));
+  const [sens, setSens] = useState(readSensitivity);
   const [invert, setInvert] = useState(() => localStorage.getItem("dd_invert") === "1");
   const [music, setMusic] = useState(() => localStorage.getItem("dd_music") !== "0");
   const [best] = useState(() => Number(localStorage.getItem("dd_best") || 0));
@@ -62,8 +63,8 @@ export default function Landing() {
               look sensitivity
               <input
                 type="range"
-                min={25}
-                max={250}
+                min={SENS_MIN}
+                max={SENS_MAX}
                 step={5}
                 value={sens}
                 onChange={(e) => {
