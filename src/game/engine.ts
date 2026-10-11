@@ -267,11 +267,21 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // False the moment the pointer leaves the window, so the edge-steer cannot
   // keep turning the view for a cursor that is not even over the game.
   let pointerInside = false;
-  // Dead-capture detector: counts consecutive captured mousemove events that
-  // carry no motion data (see the guard in onMouseMove). A granted pointer
-  // lock that never reports movement is exactly the "mouse is frozen until I
-  // press Esc" bug — the detector drops the dead capture automatically.
+  // Dead-capture detectors. A granted pointer lock that never reports movement
+  // is exactly the "mouse is frozen until Esc" bug, and it has two faces: a
+  // capture that only sends silent events is caught by the streak counter
+  // below (see the guard in onMouseMove), and a capture that sends no events
+  // at all is caught by the watchdog clock (see watchCapture). Either one
+  // drops the dead capture automatically and the unlocked path takes over.
   let lockedZeroStreak = 0;
+  let lockWatchdog: number | null = null;
+  let lockMotionSeen = false;
+  let silentLockStreak = 0;
+  let captureBroken = false;
+  // How long a freshly granted capture may stay completely silent before it is
+  // treated as dead (see watchCapture). Short enough that a broken lock cannot
+  // hold the view frozen; long enough that an active player never trips it.
+  const LOCK_SILENT_MS = 700;
   // When the pointer last produced real look input (ms). "The mouse has been
   // still for a beat" is what lets steerFromEdge tell a cursor deliberately
   // held against the screen edge apart from one just sweeping past it.
@@ -3162,10 +3172,15 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // the same frame. On normal machines this never fires; a capture that
     // reports real motion resets the streak to zero forever.
     if (isLocked()) {
-      if (dx !== 0 || dy !== 0) lockedZeroStreak = 0;
-      else if (++lockedZeroStreak >= 8) {
+      if (dx !== 0 || dy !== 0) {
+        // Real data while captured: this lock is alive, and this frame can
+        // feed a live lock — never pin it as broken.
         lockedZeroStreak = 0;
-        releasePointer();
+        lockMotionSeen = true;
+        silentLockStreak = 0;
+      } else if (++lockedZeroStreak >= 8) {
+        lockedZeroStreak = 0;
+        dropDeadCapture();
       }
     }
     // Some restricted frames deliver unlocked mouse events with movement deltas
@@ -3191,6 +3206,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   const isLocked = () => document.pointerLockElement != null;
   const requestLock = () => {
     if (disposed || state !== "playing" || isLocked()) return;
+    // A frame that fed two dead captures cannot be trusted with a third: the
+    // run plays on the unlocked path instead of re-freezing on every click.
+    if (captureBroken) return;
     if (performance.now() < lockCooldownUntil) return;
     // A remount (StrictMode) can leave this canvas out of the document:
     // requesting the pointer on it throws WrongDocumentError.
@@ -3224,6 +3242,37 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     } catch {
       /* never let a pointer-lock quirk break pause / menu / game over */
     }
+  };
+  /**
+   * Drop a capture that has proven dead — the exact recovery the player used
+   * to have to perform by hand with Esc. Two silent captures in a row mean
+   * this frame cannot feed a locked pointer, so the run stops asking and
+   * finishes on the unlocked path instead of re-entering the frozen state.
+   */
+  const dropDeadCapture = () => {
+    silentLockStreak += 1;
+    if (silentLockStreak >= 2) captureBroken = true;
+    lockCooldownUntil = performance.now() + 1500;
+    releasePointer();
+  };
+  /**
+   * Watch a freshly granted capture on a clock. A live lock reports motion
+   * within a beat and stays; a lock that reports nothing is dropped before the
+   * player ever notices the view is frozen. On a normal browser this changes
+   * nothing: moving the mouse proves the capture alive at once.
+   */
+  const watchCapture = () => {
+    if (lockWatchdog != null) {
+      window.clearTimeout(lockWatchdog);
+      lockWatchdog = null;
+    }
+    if (!isLocked()) return;
+    lockMotionSeen = false;
+    lockWatchdog = window.setTimeout(() => {
+      lockWatchdog = null;
+      if (disposed || !isLocked() || lockMotionSeen) return;
+      dropDeadCapture();
+    }, LOCK_SILENT_MS);
   };
   /**
    * Lock-free edge steering, for the restricted preview frames that cannot take
@@ -3290,6 +3339,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // Capturing or releasing the pointer is not a hitch: restart the clock so
     // the frame that follows is not measured against time spent in the menu.
     last = performance.now();
+    // A fresh capture is watched: if it stays completely silent for a beat it
+    // is dead, and dropping it here is what ends the "frozen until Esc" state
+    // without the player ever touching Esc.
+    watchCapture();
   };
   // Fired when a request is refused (a restricted frame, a not-yet-permitted
   // re-lock after Escape). Stop asking rather than retrying forever.
@@ -3466,6 +3519,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     },
     dispose() {
       disposed = true;
+      if (lockWatchdog != null) {
+        window.clearTimeout(lockWatchdog);
+        lockWatchdog = null;
+      }
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", onKeyDown);
