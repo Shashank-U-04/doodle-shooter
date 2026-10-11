@@ -304,6 +304,15 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
       onNetHit: (id, dmg) => session.reportHit(id, dmg),
       onNetDeath: (killerId) => {
         session.reportDeath(killerId ?? session.me);
+        // A client never applies its own death envelope, so the victim's page
+        // has to record its own obituary here or its kill feed stays silent.
+        {
+          const roster = session.getPlayers();
+          const me = roster.find((p) => p.isMe);
+          const killer = killerId && killerId !== session.me ? roster.find((p) => p.id === killerId) : null;
+          const who = me?.name ?? "YOU";
+          pushFeed(killer ? `${killer.name} ERASED ${who}` : `${who} ERASED THEMSELVES`, true);
+        }
         setDown(true);
         window.setTimeout(() => {
           if (winnerRef.current) return;
