@@ -21,7 +21,6 @@ import {
 import { buildDistrict, type District } from "./district";
 import { makeBlobRig, makeRig, makeWaspRig, type Rig } from "./rig";
 import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
-import { clampSensitivity } from "./settings";
 import type { EngineCallbacks, GameHandle, HudState, NetPlayerState, NetRemotePlayer } from "./types";
 
 THREE.ColorManagement.enabled = false;
@@ -2901,14 +2900,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       player.pos.set(0, 0.2, 38);
       player.vel.set(0, 0, 0);
     }
-    // The view angle has to survive the same way. It is the one number every
-    // frame of the run depends on, and a single bad input delta used to be
-    // enough to freeze the camera for the rest of the run: nothing turned the
-    // view, and nothing drew. Straighten up instead.
-    if (!Number.isFinite(player.yaw + player.pitch)) {
-      player.yaw = Math.PI;
-      player.pitch = 0;
-    }
     // Fell out of the world (through a seam, off the arena rim): back to the
     // start point instead of being stranded under the map forever. Enemies
     // already have this net; the player deserved the same.
@@ -3141,14 +3132,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     pointerInside = true;
     cursorX = e.clientX;
     cursorY = e.clientY;
-    lastLookMoveMs = performance.now();
-    // cursor-position deltas, kept as a fallback look input. The first event of
-    // a run has no previous position to measure against, so it contributes
-    // none: comparing it to a stock 0 would snap the view by wherever the
-    // cursor happened to be sitting when the run started.
-    const cdx = cursorSeen ? e.clientX - lastCX : 0;
-    const cdy = cursorSeen ? e.clientY - lastCY : 0;
     cursorSeen = true;
+    lastLookMoveMs = performance.now();
+    // cursor-position deltas, kept as a fallback look input
+    const cdx = e.clientX - lastCX;
+    const cdy = e.clientY - lastCY;
     lastCX = e.clientX;
     lastCY = e.clientY;
     if (state !== "playing") return;
@@ -3159,11 +3147,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const s = (0.0022 * sensitivity) / 100;
     // its spike guard too: a single wild delta (a device switch, a glitch) is
     // dropped rather than snapping the view
-    // A browser that hands us no movement data at all must not be read as a
-    // motion of NaN: one NaN poisons the yaw permanently. Missing movement
-    // counts as standing still, and the cursor-delta fallback below still runs.
-    let dx = Number.isFinite(e.movementX) ? e.movementX : 0;
-    let dy = Number.isFinite(e.movementY) ? e.movementY : 0;
+    let dx = e.movementX;
+    let dy = e.movementY;
     // Real flicks on a 1000 Hz mouse deliver several hundred counts in one
     // coalesced frame; the old 400 cap ate them as "spikes" and the view
     // stuttered exactly when flicking. 1500 is far above honest motion and
@@ -3190,7 +3175,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       dx = Math.abs(cdx) > 1500 ? 0 : cdx;
       dy = Math.abs(cdy) > 1500 ? 0 : cdy;
     }
-    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
     player.yaw -= dx * s;
     player.pitch -= dy * s * (invertY ? -1 : 1);
     player.pitch = clamp(player.pitch, -1.5, 1.5);
@@ -3205,17 +3189,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // it is refused (a restricted frame cannot take the pointer at all) the run
   // plays exactly the same, with the cursor visible.
   const isLocked = () => document.pointerLockElement != null;
-  // A frame that refuses pointer capture (a sandboxed or cross-origin preview)
-  // is the one place where the mouse cannot turn the view unless the cursor is
-  // over the game itself, and from the player's seat that is indistinguishable
-  // from "the mouse does not work". Say so once, in the tip line, and leave it
-  // at that: the look itself needs nothing from the capture.
-  let toldNoCapture = false;
-  const noteNoCapture = () => {
-    if (toldNoCapture) return;
-    toldNoCapture = true;
-    cb.onTip("<b>MOUSE LOOK</b> · this frame can't capture the pointer — keep the cursor over the game", 7);
-  };
   const requestLock = () => {
     if (disposed || state !== "playing" || isLocked()) return;
     if (performance.now() < lockCooldownUntil) return;
@@ -3225,9 +3198,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const refuse = () => {
       if (disposed || performance.now() < lockCooldownUntil) return;
       lockCooldownUntil = performance.now() + 1500;
-      // Never a popup: the unlocked look fallback takes over invisibly, and the
-      // player is told once, in the tip line, how to aim in that state.
-      noteNoCapture();
+      // Silent by design: a refused capture must never surface as a popup —
+      // the unlocked look fallback takes over invisibly.
     };
     // Must be invoked *on* the canvas: calling it detached throws
     // "Illegal invocation", which silently killed every request.
@@ -3323,7 +3295,6 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // re-lock after Escape). Stop asking rather than retrying forever.
   const onPointerLockError = () => {
     lockCooldownUntil = performance.now() + 1500;
-    noteNoCapture();
   };
   // A capture is only ever granted on a gesture, and the request has to be made
   // from inside it — so every click and key press while a run is live asks,
@@ -3485,9 +3456,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       releasePointer();
     },
     setSensitivity(v: number) {
-      // Clamped, not trusted: a stored 0 turns the view by nothing at all and a
-      // NaN freezes it, so a bad value must never reach the look code.
-      sensitivity = clampSensitivity(v);
+      sensitivity = v;
     },
     setInvert(on: boolean) {
       invertY = on;

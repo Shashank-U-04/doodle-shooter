@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { createGame } from "@/game/engine";
-import { readSensitivity } from "@/game/settings";
 import type { GameHandle } from "@/game/types";
 import type { GameOverStats, HudState } from "@/game/types";
 
@@ -45,7 +44,7 @@ export default function Game() {
   const [ads, setAds] = useState(false);
   // Settings live on the title screen and in localStorage; the run reads them
   // once at mount and they cannot change mid-play, so refs suffice.
-  const sens = useRef(readSensitivity());
+  const sens = useRef(Number(localStorage.getItem("dd_sens") || 100));
   const invert = useRef(localStorage.getItem("dd_invert") === "1");
   const sound = useRef(localStorage.getItem("dd_music") !== "0");
   const [best, setBest] = useState(() => Number(localStorage.getItem("dd_best") || 0));

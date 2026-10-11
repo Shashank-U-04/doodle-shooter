@@ -8,7 +8,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { createGame } from "@/game/engine";
-import { readSensitivity } from "@/game/settings";
 import { EMPTY_HUD, type GameHandle, type HudState, type NetPlayerState } from "@/game/types";
 import { INK_HEX } from "@/game/world";
 import { NetSession, makeRoomCode, type NetPlayer } from "@/game/net";
@@ -339,7 +338,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
     };
 
     handle.setPvp(true);
-    handle.setSensitivity(readSensitivity());
+    handle.setSensitivity(Number(localStorage.getItem("dd_sens") || 100));
     handle.setInvert(localStorage.getItem("dd_invert") === "1");
     handle.setMusic(localStorage.getItem("dd_music") !== "0");
     handle.start();
