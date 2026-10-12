@@ -351,6 +351,11 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
       onRemoteState: (id, s) => {
         remotes.current.set(id, s);
       },
+      // They left, or went silent. Forget their transform now, so a respawn or
+      // a rematch cannot rebuild a body out of a position nobody is holding.
+      onPeerGone: (id) => {
+        remotes.current.delete(id);
+      },
       onChange: () => {
         setPlayers(session.getPlayers());
         pushRemotes();

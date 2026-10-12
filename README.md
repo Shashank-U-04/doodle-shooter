@@ -50,6 +50,34 @@ two-player duel, but a duel is what it is tuned for.
 > `localhost`). The first connection can take a couple of seconds while the two
 > browsers negotiate, and each player needs a modern desktop browser.
 
+#### Playing across two networks
+
+A direct browser-to-browser route only exists if at least one of you can be
+reached — on the same WiFi that is always true, and across the internet it is
+true surprisingly often thanks to STUN. Two networks behind **symmetric NAT**
+(two separate mobile hotspots, a strict office firewall) have no direct route at
+all, and the only fix is a **TURN relay** to carry the traffic. That relay is the
+one piece of infrastructure this otherwise serverless game needs.
+
+Set one of the following, then reload (see [Environment](#environment)):
+
+1. **`VITE_TURN_CREDENTIALS_URL`** — an endpoint that returns an `RTCIceServer[]`.
+   Best option: the credentials expire and rotate without a redeploy.
+   [Metered Open Relay](https://www.metered.ca/tools/openrelay/) has a free tier
+   and serves exactly this. Cloudflare Realtime TURN and Twilio Network
+   Traversal also work, but expect to mint their credentials from a backend
+   rather than the browser.
+2. **`VITE_TURN_URLS` + `VITE_TURN_USERNAME` + `VITE_TURN_CREDENTIAL`** — a
+   static relay, fine for long-lived credentials. Prefer a `turns:` URL on port
+   443: it looks like ordinary HTTPS, which is what gets through a hostile
+   firewall.
+
+With none of these set the game is STUN-only: it logs a warning and the two
+browsers that cannot find a direct route will simply never connect. Open the
+console during a failed handshake — `net.ts` logs the gathering state, every
+candidate's type, and the final connection state, so a `TURN relay` candidate
+appearing (or never appearing) tells you whether the relay is in play.
+
 ### The studio theme
 
 The chrome around the game uses a **Studio theme** — gallery-clean, warm off-whites, thin framing, muted neutrals, careful spacing, soft editorial presentation. The game itself renders as pencil-and-ink on paper: outlines, hatching, toon shading, and a scribble vignette when hurt.
@@ -106,6 +134,9 @@ The app expects `VITE_CONVEX_URL` and a Convex deployment (see [Environment](#en
 | --- | --- | --- |
 | `VITE_CONVEX_URL` | Client | Convex backend URL used by the React client |
 | `CONVEX_DEPLOYMENT` | Client env | Ties the client to a specific Convex deployment |
+| `VITE_TURN_CREDENTIALS_URL` | Client | Preferred TURN setup: an endpoint returning an `RTCIceServer[]` (or `{ iceServers }`), e.g. Metered Open Relay. Expiring credentials, no redeploy to rotate |
+| `VITE_TURN_URLS` | Client | Static alternative: comma-separated `turn:` / `turns:` relay URLs |
+| `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` | Client | Credentials for `VITE_TURN_URLS` |
 | `JWKS`, `JWT_PRIVATE_KEY`, `SITE_URL` | Convex dashboard | Convex Auth signing material |
 
 Never commit `.env` files — set client env in your host's dashboard, and backend env in the Convex dashboard (`npx convex env set`).

@@ -13,12 +13,15 @@ import {
   PAPER,
   PAPER_RGB,
   makeInkMaterial,
+  depenetrate,
+  isStandable,
+  pickSafeSpawn,
   resolveMove,
   shared,
   type Collider,
   type InkId,
 } from "./world";
-import { buildDistrict, type District } from "./district";
+import { buildDistrict, SAFE_SPAWNS, type District } from "./district";
 import { makeBlobRig, makeRig, makeWaspRig, type Rig } from "./rig";
 import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
 import type { EngineCallbacks, GameHandle, HudState, NetPlayerState, NetRemotePlayer } from "./types";
@@ -1093,6 +1096,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       // rather than sliding the body across the whole district.
       if (a.pos.distanceToSquared(a.target) > 144) a.pos.copy(a.target);
       else a.pos.lerp(a.target, Math.min(1, dt * 14));
+      // A remote's packet is all we get, and a packet sent from inside a wall
+      // draws a body buried in one — which reads as "stuck", outlives the
+      // disconnect that caused it, and is ours to fix on this screen because
+      // nobody else is going to. No-op unless the body actually overlaps.
+      depenetrate(a.pos, 0.42, 1.7, world.colliders);
       let dy = a.targetYaw - a.yaw;
       while (dy > Math.PI) dy -= Math.PI * 2;
       while (dy < -Math.PI) dy += Math.PI * 2;
@@ -1256,6 +1264,59 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       return p;
     }
     return null;
+  }
+
+  /**
+   * A respawn point nobody has to be lucky to survive.
+   *
+   * The pads in the district are hand-placed, and a hand-placed pad can end up
+   * inside a building, under a walkway or over a void — teleporting there is a
+   * player frozen inside geometry. So every pad is tested for room before it is
+   * used, and a pad that fails falls through to a list of verified street
+   * corners and then to open ground around the player. The caller depenetrates
+   * the result as the final guard.
+   */
+  function safeRespawnPoint(preferIndex?: number): THREE.Vector3 {
+    // Street level only: several pads sit on rooftops, and landing on one is a
+    // fall the player never asked for. Lifted to drop height up front so the
+    // clearance test runs at the exact y the body will occupy.
+    const street = district.spawnPoints
+      .filter((s) => s.y <= 0.5)
+      .map((s) => s.clone().setY(Math.max(0.2, s.y)));
+    const opts = { radius: player.radius, height: player.height, colliders: world.colliders, groundOnly: 0.5 };
+
+    if (typeof preferIndex === "number" && street.length > 0) {
+      // The numbered pad the match handed out: how a fresh match spreads the
+      // players across the district instead of stacking them on the start line.
+      // Walk forward from it so two players who draw the same number, or a pad
+      // that fails its test, still land somewhere sane.
+      for (let i = 0; i < street.length; i++) {
+        const pad = street[(((preferIndex + i) % street.length) + street.length) % street.length];
+        if (isStandable(pad.x, pad.y, pad.z, player.radius, player.height, world.colliders)) return pad;
+      }
+    }
+
+    // Otherwise the pad nobody is standing near wins.
+    const roomy = pickSafeSpawn(street, {
+      ...opts,
+      score: (pad) => {
+        let d = Infinity;
+        for (const a of pvp.remotes.values()) d = Math.min(d, a.pos.distanceTo(pad));
+        return Number.isFinite(d) ? d : 1e4;
+      },
+    });
+    if (roomy) return roomy;
+
+    const known = pickSafeSpawn(SAFE_SPAWNS, opts);
+    if (known) return known.clone();
+
+    // Nothing hand-placed works: find open ground the same way an enemy that has
+    // been walled away does. No path check — we are allowed to be anywhere.
+    const open = findOpenSpot(player.pos, 16, 34, false);
+    if (open) return open;
+
+    // Last resort: stay put and let the caller push us out.
+    return player.pos.clone();
   }
 
   for (let cz = 0; cz < navH; cz++) {
@@ -3460,28 +3521,12 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     },
     netRespawn(preferIndex?: number) {
       if (!pvp.active) return;
-      // Street level only — a few of the map's spawn pads sit on rooftops, and
-      // respawning onto a roof is a fall the player never asked for.
-      const ground = district.spawnPoints.filter((s) => s.y <= 0.5);
-      const spots = ground.length > 0 ? ground : district.spawnPoints;
-      let best = spots[0] ?? new THREE.Vector3(0, 0.2, 38);
-      if (typeof preferIndex === "number" && spots.length > 0) {
-        // the numbered pad the match handed out: how a fresh match spreads the
-        // players across the district instead of stacking them on the start line
-        best = spots[((preferIndex % spots.length) + spots.length) % spots.length];
-      } else {
-        // otherwise the pad nobody is standing near wins
-        let bestD = -1;
-        for (const s of spots) {
-          let d = Infinity;
-          for (const a of pvp.remotes.values()) { const v = a.pos.distanceTo(s); if (v < d) d = v; }
-          if (d > bestD) {
-            bestD = d;
-            best = s;
-          }
-        }
-      }
-      player.pos.set(best.x, Math.max(0.2, best.y), best.z);
+      const spot = safeRespawnPoint(preferIndex);
+      // A pad can still overlap geometry the map was rebuilt around; get clear
+      // before the first frame of movement, so the mover never has to guess
+      // which way out is and a respawn can never wedge anyone.
+      depenetrate(spot, player.radius, player.height, world.colliders);
+      player.pos.copy(spot);
       player.vel.set(0, 0, 0);
       player.hp = player.maxHp;
       player.alive = true;

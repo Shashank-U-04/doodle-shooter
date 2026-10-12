@@ -91,6 +91,143 @@ export function box(
 
 export type Collider = AABB;
 
+/**
+ * Does a body of `radius`/`height` standing at (x, y, z) intersect `c`?
+ *
+ * Strict inequalities on purpose: standing exactly on a surface, or exactly
+ * against a wall, is *not* inside it. Every geometric question in the engine —
+ * movement, spawn pads, unsticking — goes through this one predicate, so none
+ * of them can disagree about what counts as an overlap.
+ */
+export function bodyHits(x: number, y: number, z: number, radius: number, height: number, c: Collider): boolean {
+  return (
+    x + radius > c.minX &&
+    x - radius < c.maxX &&
+    z + radius > c.minZ &&
+    z - radius < c.maxZ &&
+    y < c.maxY &&
+    y + height > c.minY
+  );
+}
+
+/**
+ * Is this a spot a body can actually stand on: clear of every collider, with a
+ * floor within `reach` of its feet?
+ *
+ * This is the test a spawn pad has to pass. A pad inside a building, under a
+ * walkway or hanging over a void passes a naive "is it in the list?" check and
+ * fails here — which is the whole point, because a teleport into geometry is a
+ * player who cannot move.
+ */
+export function isStandable(
+  x: number,
+  y: number,
+  z: number,
+  radius: number,
+  height: number,
+  colliders: Collider[],
+  reach = 1.2,
+): boolean {
+  for (const c of colliders) if (bodyHits(x, y, z, radius, height, c)) return false;
+
+  let floor = -Infinity;
+  for (const c of colliders) {
+    // the collider has to be under the footprint…
+    if (x + radius <= c.minX || x - radius >= c.maxX) continue;
+    if (z + radius <= c.minZ || z - radius >= c.maxZ) continue;
+    // …below the feet (anything at or above them is an obstruction, and was
+    // already rejected as an overlap above)…
+    if (c.maxY > y + 0.05) continue;
+    // …and close enough to be the surface we would stand on rather than a kerb
+    // far below that we would step off into thin air.
+    if (c.maxY < y - reach) continue;
+    if (c.maxY > floor) floor = c.maxY;
+  }
+  return floor > -Infinity;
+}
+
+/**
+ * AABB depth-penetration resolution for a *teleport*: the shortest way out of
+ * whatever the body is overlapping, return true if it moved.
+ *
+ * Deliberately narrower than the version inside resolveMove, which is allowed to
+ * drop a body out of the bottom of a box because movement put it there. A
+ * teleport has no such excuse, and "down" is how a respawn ends up under the
+ * ground with no way back — so this variant only ever escapes sideways or up.
+ */
+export function depenetrate(
+  pos: THREE.Vector3,
+  radius: number,
+  height: number,
+  colliders: Collider[],
+  iterations = 4,
+): boolean {
+  let moved = false;
+  for (let i = 0; i < iterations; i++) {
+    let hit: Collider | null = null;
+    for (const c of colliders) {
+      if (bodyHits(pos.x, pos.y, pos.z, radius, height, c)) {
+        hit = c;
+        break;
+      }
+    }
+    if (!hit) break;
+    moved = true;
+    const c = hit;
+    const up = c.maxY - pos.y; // stand on top of it
+    const px = c.maxX + radius - pos.x;
+    const nx = pos.x - (c.minX - radius);
+    const pz = c.maxZ + radius - pos.z;
+    const nz = pos.z - (c.minZ - radius);
+    const side = Math.min(px, nx, pz, nz);
+    if (up <= side) {
+      pos.y = c.maxY; // knee-high overlap: treat it as a step
+    } else if (px <= nx && px <= pz && px <= nz) {
+      pos.x = c.maxX + radius;
+    } else if (nx <= pz && nx <= nz) {
+      pos.x = c.minX - radius;
+    } else if (pz <= nz) {
+      pos.z = c.maxZ + radius;
+    } else {
+      pos.z = c.minZ - radius;
+    }
+  }
+  return moved;
+}
+
+/** What makes one spawn pad better than another, once it is safe at all. */
+export type SpawnScoring = {
+  radius: number;
+  height: number;
+  colliders: Collider[];
+  /** ignore pads above this height — keeps a respawn at street level */
+  groundOnly?: number;
+  /** higher wins; equal scores keep the earlier pad */
+  score?: (pad: THREE.Vector3) => number;
+};
+
+/**
+ * The best *safe* pad of `candidates`, or null when every one of them is inside
+ * geometry.
+ *
+ * Callers keep a list of known-good corners as the next resort, so one broken
+ * pad degrades into a good spawn instead of a stuck player.
+ */
+export function pickSafeSpawn(candidates: THREE.Vector3[], opts: SpawnScoring): THREE.Vector3 | null {
+  let best: THREE.Vector3 | null = null;
+  let bestScore = -Infinity;
+  for (const pad of candidates) {
+    if (opts.groundOnly !== undefined && pad.y > opts.groundOnly) continue;
+    if (!isStandable(pad.x, pad.y, pad.z, opts.radius, opts.height, opts.colliders)) continue;
+    const s = opts.score ? opts.score(pad) : 0;
+    if (best === null || s > bestScore) {
+      best = pad;
+      bestScore = s;
+    }
+  }
+  return best;
+}
+
 export function resolveMove(
   pos: THREE.Vector3,
   vel: THREE.Vector3,
@@ -105,15 +242,9 @@ export function resolveMove(
   let hitWall = false;
 
   // Does the body (a box of `radius` around x/z, `height` tall from y up)
-  // intersect this collider? Strict inequalities: standing exactly on a
-  // surface is not inside it.
-  const hits = (x: number, y: number, z: number, c: Collider) =>
-    x + radius > c.minX &&
-    x - radius < c.maxX &&
-    z + radius > c.minZ &&
-    z - radius < c.maxZ &&
-    y < c.maxY &&
-    y + height > c.minY;
+  // intersect this collider? The shared predicate, so a move and a spawn test
+  // can never disagree about whether the body is inside something.
+  const hits = (x: number, y: number, z: number, c: Collider) => bodyHits(x, y, z, radius, height, c);
 
   const anyHit = () => {
     for (const c of colliders) if (hits(pos.x, pos.y, pos.z, c)) return c;

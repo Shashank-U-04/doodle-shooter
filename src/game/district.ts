@@ -28,6 +28,26 @@ export type District = {
   update: (t: number) => void;
 };
 
+/**
+ * Street corners known to be open ground, used as the last resort when every
+ * hand-placed pad in the district fails its clearance test.
+ *
+ * A fixed list rather than a search: a player who cannot be placed anywhere
+ * sensible should still land on a real piece of pavement instead of wherever
+ * the nearest ceiling happens to be. Every point here was checked against the
+ * built colliders at the player's body size — re-check them if the map moves.
+ */
+export const SAFE_SPAWNS: THREE.Vector3[] = [
+  new THREE.Vector3(0, 0.2, -48),
+  new THREE.Vector3(0, 0.2, 48),
+  new THREE.Vector3(-48, 0.2, 0),
+  new THREE.Vector3(48, 0.2, 0),
+  new THREE.Vector3(-40, 0.2, -40),
+  new THREE.Vector3(40, 0.2, 32),
+  new THREE.Vector3(-24, 0.2, 24),
+  new THREE.Vector3(24, 0.2, -24),
+];
+
 /** [start, end, yStart?, yEnd?] along the wall's run; the y pair defaults to the full height */
 type Hole = [number, number, number?, number?];
 type Opts = { ink?: InkId; fill?: boolean; noCollide?: boolean };
@@ -168,8 +188,7 @@ export function buildDistrict(scene: THREE.Scene): District {
     addGeo(g, INK.ORANGE);
   };
 
-  const spawn = (x: number, y: number, z: number) => spawnPoints.push(new THREE.Vector3(x, y, z));
-  const sniper = (x: number, y: number, z: number) => sniperSpots.push(new THREE.Vector3(x, y, z));
+  const spawn = (x: number, y: number, z: number) => spawnPoints.push(new THREE.Vector3(x, y, z));  const sniper = (x: number, y: number, z: number) => sniperSpots.push(new THREE.Vector3(x, y, z));
   const pickup = (x: number, y: number, z: number) => pickupSpots.push(new THREE.Vector3(x, y, z));
 
   /* ---------------- ground, boundary walls, sky dome ---------------- */
