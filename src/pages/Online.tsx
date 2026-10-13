@@ -261,6 +261,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
   const msgTimer = useRef<number | null>(null);
   const tipTimer = useRef<number | null>(null);
   const winnerRef = useRef(false);
+  const respawnTimer = useRef<number | null>(null);
   const [hud, setHud] = useState<HudState>(EMPTY_HUD);
   const [players, setPlayers] = useState<NetPlayer[]>(() => session.getPlayers());
   const [feed, setFeed] = useState<{ id: number; text: string; hot: boolean }[]>([]);
@@ -276,6 +277,34 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
     setFeed((f) => [...f.slice(-5), { id, text, hot }]);
     window.setTimeout(() => setFeed((f) => f.filter((x) => x.id !== id)), 3800);
   }, []);
+
+  /**
+   * Start a round: the first one, or a rematch.
+   *
+   * Everything that survives a round lives in React state or a ref, so every
+   * one of them has to be put back here — the overlay flag, the pause, the
+   * cached remote transforms, the pending respawn timer. A rematch that only
+   * restarted the engine left the victory overlay derived from a scoreboard
+   * nobody had cleared, which is why the button looked dead.
+   */
+  const resetRound = useCallback(() => {
+    if (respawnTimer.current) {
+      window.clearTimeout(respawnTimer.current);
+      respawnTimer.current = null;
+    }
+    winnerRef.current = false;
+    setDown(false);
+    setPaused(false);
+    remotes.current.clear();
+    const handle = gameRef.current;
+    if (!handle) return;
+    handle.setRemotePlayers([]);
+    handle.start();
+    handle.netRespawn(session.getPlayers().find((p) => p.isMe)?.ink ?? 0);
+    // Tell the room about the teleport. The epoch is what lets every peer snap
+    // to the fresh pad instead of easing a body across the district.
+    session.reportRespawn(handle.netState().epoch);
+  }, [session]);
 
   useEffect(() => {
     const host = stageRef.current;
@@ -301,7 +330,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
       onResume: () => setPaused(false),
       onAim: setAds,
       // our rounds landed on someone: they are the authority on their own body
-      onNetHit: (id, dmg) => session.reportHit(id, dmg),
+      onNetHit: (hit) => session.reportHit(hit.victim, hit.dmg, hit.epoch, hit.origin),
       onNetDeath: (killerId) => {
         session.reportDeath(killerId ?? session.me);
         // A client never applies its own death envelope, so the victim's page
@@ -314,10 +343,16 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
           pushFeed(killer ? `${killer.name} ERASED ${who}` : `${who} ERASED THEMSELVES`, true);
         }
         setDown(true);
-        window.setTimeout(() => {
+        if (respawnTimer.current) window.clearTimeout(respawnTimer.current);
+        respawnTimer.current = window.setTimeout(() => {
+          respawnTimer.current = null;
+          // A rematch that started while we were down owns the respawn now;
+          // this timer must not teleport a body into a round that has moved on.
           if (winnerRef.current) return;
-          gameRef.current?.netRespawn();
-          session.reportRespawn();
+          const h = gameRef.current;
+          if (!h) return;
+          h.netRespawn();
+          session.reportRespawn(h.netState().epoch);
           setDown(false);
         }, 3200);
       },
@@ -344,6 +379,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
     handle.start();
     // our ink doubles as our spawn pad, so nobody starts on top of anyone
     handle.netRespawn(session.getPlayers().find((p) => p.isMe)?.ink ?? 0);
+    session.reportRespawn(handle.netState().epoch);
 
     session.setStateProvider(() => handle.netState());
     session.startTicking();
@@ -361,16 +397,19 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
         pushRemotes();
       },
       onFeed: pushFeed,
-      onHitMe: (dmg, killer) => handle.takeNetHit(dmg, killer),
-      // a rematch (or the very first start) rebuilds the arena from scratch
-      onStart: () => {
-        setDown(false);
-        setPaused(false);
-        remotes.current.clear();
-        handle.setRemotePlayers([]);
-        handle.start();
-        handle.netRespawn(session.getPlayers().find((p) => p.isMe)?.ink ?? 0);
+      // A hit from the net layer, validated here: the epoch says whether it
+      // belongs to the body we are in now (a shot that arrived after our
+      // respawn is not ours to take), and we hand back our own half round trip
+      // so the engine can rewind to where we were when it was fired.
+      onHitMe: (dmg, killer, epoch, origin) => {
+        const me = handle.netState();
+        if (epoch !== me.epoch) return;
+        handle.takeNetHit(dmg, killer, session.rewindMs, origin);
       },
+      onLatency: (ms) => handle.setNetLatency(ms),
+      // a rematch (or the very first start) rebuilds the arena from scratch
+      onStart: () => resetRound(),
+      onRematch: () => resetRound(),
       onError: (t) => pushFeed(t.toUpperCase(), true),
     });
     pushRemotes();
@@ -383,8 +422,10 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
       gameRef.current = null;
       if (msgTimer.current) window.clearTimeout(msgTimer.current);
       if (tipTimer.current) window.clearTimeout(tipTimer.current);
+      if (respawnTimer.current) window.clearTimeout(respawnTimer.current);
+      respawnTimer.current = null;
     };
-  }, [session, pushFeed]);
+  }, [session, pushFeed, resetRound]);
 
   // First to fifteen takes it. Every client builds the same scoreboard from the
   // same death messages, so nobody has to be told who won — the result is read
@@ -567,7 +608,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
             </div>
             <div className="mainbtns">
               {session.isHost ? (
-                <button type="button" className="start" onClick={() => session.beginMatch()}>
+                <button type="button" className="start" onClick={() => session.rematch()}>
                   REMATCH<i>everyone back to a fresh corner</i>
                 </button>
               ) : (

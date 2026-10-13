@@ -1,9 +1,43 @@
 // Weapon definitions transcribed from the original zr={} table, plus shared helpers.
 
+/**
+ * Melee configuration for the katana.
+ *
+ * A blade is not a short-range gun: it has no projectile, no muzzle flash and
+ * no hitscan ray, so its whole behaviour lives in these numbers. Reach and arc
+ * are the forward hitbox (the engine sweeps both against enemy rigs and against
+ * other players); the focus fields say what a landed hit is worth on the meter.
+ */
+export type MeleeConfig = {
+  /** how far the blade reaches from the eye, in world units */
+  reach: number;
+  /** half-angle of the hit cone, as a cosine (0.35 ≈ ±70°) */
+  cosArc: number;
+  /** what a landed slash takes off a body */
+  damage: number;
+  /** head multiplier for a slash that catches the head of the arc */
+  headMul: number;
+  /** one landed slash fills this much of the focus meter (three fills it) */
+  focusGain: number;
+  /** folding an incoming round back fills a larger chunk — the riskier play */
+  deflectGain: number;
+};
+
+export const KATANA_MELEE: MeleeConfig = {
+  reach: 2.9,
+  cosArc: 0.35,
+  damage: 75,
+  headMul: 1.6,
+  focusGain: 0.34,
+  deflectGain: 0.5,
+};
+
 export type WeaponDef = {
   name: string;
   hint: string;
   kind: "rifle" | "shotgun" | "sniper" | "revolver" | "katana";
+  /** present only on melee weapons; the engine reads the blade from here */
+  melee?: MeleeConfig;
   magSize: number;
   reserve: number;
   maxReserve: number;
@@ -128,6 +162,7 @@ export const WEAPONS: WeaponDef[] = [
     auto: false,
     falloff: null,
     moveSpread: 0,
+    melee: KATANA_MELEE,
   },
   {
     name: "REVOLVER",

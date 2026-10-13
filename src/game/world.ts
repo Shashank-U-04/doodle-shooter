@@ -228,6 +228,99 @@ export function pickSafeSpawn(candidates: THREE.Vector3[], opts: SpawnScoring): 
   return best;
 }
 
+/* ============================== combat geometry ============================== */
+
+/**
+ * One replayable frame of a body, kept so a shot that arrives late can be
+ * checked against where the body actually was when it was fired.
+ */
+export type PoseSample = { t: number; x: number; y: number; z: number; alive: boolean };
+
+/**
+ * The pose to validate a remote's shot against: the newest sample at or before
+ * `now - rewindMs`.
+ *
+ * A hit message carries the shooter's half round trip, so rewinding by exactly
+ * that much asks the only question that is fair — "was I standing there when
+ * they pulled the trigger?" — instead of the one that is not — "am I standing
+ * there now?", which two players on different connections answer differently.
+ * Falls back to the oldest sample (never null for a non-empty buffer) so a
+ * fresh client still has a body to be hit.
+ */
+export function poseAt(history: PoseSample[], now: number, rewindMs: number): PoseSample | null {
+  if (history.length === 0) return null;
+  const target = now - rewindMs;
+  let best: PoseSample | null = null;
+  for (const s of history) {
+    if (s.t > target) continue;
+    if (!best || s.t > best.t) best = s;
+  }
+  if (best) return best;
+  let oldest = history[0];
+  for (const s of history) if (s.t < oldest.t) oldest = s;
+  return oldest;
+}
+
+/**
+ * The melee test: is `point` inside a forward cone — within `reach` of the eye
+ * and inside `cosArc` of where we are looking?
+ *
+ * A cone is the honest shape for a blade: it has no magazine, no tracer and no
+ * travel time, so the question is only ever "is it in front of me and close",
+ * which is what a player expects a slash to answer. `cosArc` is a cosine, so
+ * 0.35 is roughly ±70°.
+ */
+export function meleeHits(
+  eye: THREE.Vector3,
+  fwd: THREE.Vector3,
+  point: THREE.Vector3,
+  reach: number,
+  cosArc: number,
+): boolean {
+  const to = point.clone().sub(eye);
+  const d = to.length();
+  if (d > reach) return false;
+  if (d < 1e-4) return true;
+  return to.divideScalar(d).dot(fwd) >= cosArc;
+}
+
+/**
+ * A tolerant body test for validating a remote's shot: does the segment
+ * `from → to` pass through a body standing at `feet` of `radius`/`height`?
+ *
+ * Deliberately a *box plus head sphere* sampled every 25 cm and deliberately
+ * wider than the body itself. Two players only ever see each other's packet
+ * positions, so an exact test would reject honest hits whenever the rigs differ
+ * by a few centimetres — which, at four players, is most of the time. The slack
+ * is what turns "imprecise hit registration" back into "their shot landed".
+ */
+export function segmentHitsBody(
+  from: THREE.Vector3,
+  to: THREE.Vector3,
+  feet: THREE.Vector3,
+  radius: number,
+  height: number,
+): boolean {
+  const d = to.clone().sub(from);
+  const len = d.length();
+  if (len < 1e-6) return false;
+  const steps = Math.min(64, Math.max(1, Math.ceil(len / 0.25)));
+  const step = d.divideScalar(steps);
+  const headY = feet.y + height - 0.16;
+  const p = from.clone();
+  for (let i = 0; i <= steps; i++) {
+    if (i > 0) p.add(step);
+    if (p.y < feet.y - 0.1 || p.y > feet.y + height + radius) continue;
+    const dx = p.x - feet.x;
+    const dz = p.z - feet.z;
+    if (Math.abs(dx) <= radius && Math.abs(dz) <= radius) return true;
+    // shoulders and hat are round on the rig: a sphere of slack around them
+    const dy = p.y - headY;
+    if (dx * dx + dz * dz + dy * dy <= radius * radius) return true;
+  }
+  return false;
+}
+
 export function resolveMove(
   pos: THREE.Vector3,
   vel: THREE.Vector3,

@@ -18,7 +18,7 @@ You are a hand-drawn survivor in a doodled district. Waves of sketched enemies c
 | **Waves** | Clear every enemy to advance. Every 5th wave spawns a boss with a health bar and a checkpoint. |
 | **Score & combo** | Kills build a combo meter that decays quickly — chain kills for score multipliers. Airborne kills pay +33%. |
 | **Weapons** | 5 slots, switch with `1–5` or mouse wheel: **Rifle · Shotgun · Sniper · Katana · Revolver**. |
-| **Katana** | Hold `F` to slash; three clean kills fill the Focus meter for a heavy strike. |
+| **Katana** | Left-click slashes a forward cone (~3 m) — no ammo, no tracers, no muzzle flash. Landed slashes and folded rounds fill the Focus meter; a full meter makes `F` a dash-and-strike. |
 | **Grenades** | `G` throws an ink grenade. Finite per run. |
 | **Movement** | WASD to move, `Space` to jump (double-jump supported), `Shift` sprint, `C`/`Ctrl` crouch, `X` dash. |
 | **Grapple** | Hold `Q` / `E` to reel toward points; release to let go. |
@@ -28,23 +28,30 @@ You are a hand-drawn survivor in a doodled district. Waves of sketched enemies c
 ### Online deathmatch (free for all)
 
 `PLAY ONLINE` on the title screen opens the lobby. One player **creates a
-match** and gets a 4-letter code; the other **joins** with that code; the host
-starts it and both drop into the district. First to 15 kills takes the match,
-and the host can call a rematch from the results screen.
+match** and gets a 4-letter code; the others **join** with that code; the host
+starts it and up to **four players** drop into the district. First to 15 kills
+takes the match, and the host can call a rematch from the results screen —
+scores reset on every client, and everyone is put back on a fresh spawn corner.
 
-- **Peer-to-peer over WebRTC.** The other player is drawn into the same map as
-a real doodle with their own ink colour, walk cycle and muzzle flash — no game
-server sits in the middle, so the two browsers talk directly (PeerJS is used
-only for the first handshake that introduces them).
+- **Peer-to-peer over WebRTC.** Every other player is drawn into the same map as
+a real doodle with their own ink colour, walk cycle and weapon — no game server
+sits in the middle, so the browsers talk directly (PeerJS is used only for the
+first handshake that introduces them). The host multiplexes: every body in the
+lobby is folded into a single snapshot packet per guest per tick, so four
+players cost three packets out rather than nine.
 - **Split authority.** Each client owns its own body: it moves, shoots, and
-decides when it is down. The shot is decided by the client that fired it,
-the damage is applied by the client that took it. Deaths are announced to the
-district, so both players build the same scoreboard and agree on the winner.
+decides when it is down. A hit is decided by the shooter — the ray is tested
+against the body the packet drew, led by half the round trip — and then
+*validated* by the victim, who rewinds to where they actually were when the shot
+was fired and allows a little slack for the mesh disagreement that always exists
+between four connections. Deaths are announced to the district, so every client
+builds the same scoreboard and agrees on the winner.
 - **Down, not out.** A death is a ~3 second wait; you respawn at the point
 furthest from the other doodles. Health regenerates out of combat, ammo comes
 from the pickups scattered around the district.
-- **Player count.** The host relays for everyone, so the code scales past a
-two-player duel, but a duel is what it is tuned for.
+- **Player count.** Four, and a fifth is refused with "match full". The star
+through the host is what keeps a match serverless; it is not a mesh, and the
+packet budget is what sets the ceiling.
 
 > WebRTC needs a secure context: play over the deployed `https://` URL (or
 > `localhost`). The first connection can take a couple of seconds while the two

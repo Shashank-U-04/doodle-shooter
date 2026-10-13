@@ -70,6 +70,70 @@ export type NetPlayerState = {
   firing: boolean;
   /** weapon name, so a remote's gun reads the same as ours */
   weapon: string;
+  /**
+   * Generation of this body. Bumped every time it is *teleported* (respawn,
+   * rematch, a focus dash) rather than walked. Peers snap to a new epoch and
+   * refuse anything older, which is what stops the packets still in flight when
+   * a player died from dragging their fresh body back to the death spot.
+   */
+  epoch: number;
+  /**
+   * Packet counter within one epoch. A transform that arrives out of order (the
+   * host relays two guests into one stream, so this happens) would otherwise
+   * rewind an avatar by one packet and read as jitter.
+   */
+  seq: number;
+};
+
+/** Where a shot was fired from, so the victim can check it against the world. */
+export type NetShotOrigin = { x: number; y: number; z: number };
+
+/**
+ * Should an arriving transform replace the one we already hold for a player?
+ *
+ * Two rules, both about what a star relay actually delivers:
+ *
+ *  - **older epoch = stale.** A body that has been teleported (respawn,
+ *    rematch, focus dash) carries a higher generation. Packets stamped before
+ *    that teleport are still in flight and would drag the fresh body back to
+ *    where it died — the "respawned into the death spot" bug, seen from the
+ *    other end of the wire.
+ *  - **older sequence within one epoch = out of order.** Four players relayed
+ *    through one host arrive interleaved; applying them in arrival order makes
+ *    an avatar hop backwards a packet's worth, which reads as bad hitreg.
+ *
+ * It lives here, next to the state it guards, so both the transport and any
+ * test can ask the same question.
+ */
+export function shouldApplyState(prev: NetPlayerState | undefined, next: NetPlayerState): boolean {
+  if (!next || !Number.isFinite(next.x) || !Number.isFinite(next.y) || !Number.isFinite(next.z) || !Number.isFinite(next.hp)) {
+    return false;
+  }
+  if (!prev) return true;
+  const pe = prev.epoch ?? 0;
+  const ne = next.epoch ?? 0;
+  if (ne < pe) return false;
+  if (ne === pe && (next.seq ?? 0) <= (prev.seq ?? 0)) return false;
+  return true;
+}
+
+/**
+ * One shot that the shooter watched land on another player.
+ *
+ * A struct rather than a parameter list on purpose: this crosses three files
+ * (engine → page → net → victim) and every field matters, so the compiler should
+ * be the thing that stops a caller from swapping the damage and the epoch.
+ */
+export type NetHitReport = {
+  /** the player who took it */
+  victim: string;
+  /** what they should lose — the shooter's read of their own weapon */
+  dmg: number;
+  head: boolean;
+  /** the generation of *their* body the shot was aimed at */
+  epoch: number;
+  /** where we fired from: the victim checks the path against the world */
+  origin: NetShotOrigin;
 };
 
 /** A remote player the engine should draw this frame. */
@@ -93,8 +157,8 @@ export type EngineCallbacks = {
   onResume: () => void;
   onAim: (ads: boolean) => void;
   // ---- online only: none of these fire during a solo run ----
-  /** our own shot landed on a remote player (dmg is what they should take) */
-  onNetHit?: (victimId: string, dmg: number, head: boolean) => void;
+  /** Our own shot landed on a remote player. */
+  onNetHit?: (hit: NetHitReport) => void;
   /** we were erased; killerId names the remote that did it (null = self/void) */
   onNetDeath?: (killerId: string | null) => void;
 };
@@ -116,8 +180,22 @@ export interface GameHandle {
   netState(): NetPlayerState;
   /** Authoritative list of remote players to draw (positions are smoothed). */
   setRemotePlayers(players: NetRemotePlayer[]): void;
-  /** A remote player's shot landed on us: take it and credit the killer. */
-  takeNetHit(dmg: number, killerId: string): void;
+  /**
+   * A remote player's shot landed on us.
+   *
+   * We are the authority on our own body, so this does not blindly apply the
+   * damage: the shot is validated against where we were `rewindMs` ago (their
+   * half round trip) and against the world between the two points. `origin` is
+   * where the shooter fired from; without it the geometric checks are skipped.
+   */
+  takeNetHit(dmg: number, killerId: string, rewindMs?: number, origin?: NetShotOrigin): void;
+  /**
+   * Our measured half round trip to the host, in ms, from the net layer. The
+   * engine leads moving targets by this much when a shot is fired, and rewinds
+   * its own body by the same when one arrives — two ends of the same fix for
+   * "my bullets go where they were, not where they are".
+   */
+  setNetLatency(ms: number): void;
   /**
    * Back into the fight after a death (full health).
    * `preferIndex` pins the spawn to a numbered pad — the match uses it to hand

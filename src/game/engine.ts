@@ -15,16 +15,21 @@ import {
   makeInkMaterial,
   depenetrate,
   isStandable,
+  meleeHits,
   pickSafeSpawn,
+  poseAt,
   resolveMove,
+  segmentHitsBody,
   shared,
   type Collider,
   type InkId,
+  type PoseSample,
 } from "./world";
 import { buildDistrict, SAFE_SPAWNS, type District } from "./district";
 import { makeBlobRig, makeRig, makeWaspRig, type Rig } from "./rig";
+import { KATANA_MELEE } from "./weapons";
 import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
-import type { EngineCallbacks, GameHandle, HudState, NetPlayerState, NetRemotePlayer } from "./types";
+import type { EngineCallbacks, GameHandle, HudState, NetPlayerState, NetRemotePlayer, NetShotOrigin } from "./types";
 
 THREE.ColorManagement.enabled = false;
 
@@ -334,8 +339,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   let fireCd = 0;
   let reloadT = 0;
   let recoil = 0;
-  let katanaStreak = 0;
-  const katanaNeed = 3;
+  // Focus meter: the blade fills it by *landing* slashes (and by folding rounds
+  // back), never by pulling the trigger. A whiff empties it. Filling it is what
+  // opens the SLASH window, so the meter measures how the katana is being used
+  // rather than how many bodies happen to be lying around.
+  let focusCharge = 0;
   let slowmoT = 0;
   let focusChain = 0;
   let blocking = false;
@@ -537,12 +545,25 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   const pickupGeo = new THREE.BoxGeometry(0.42, 0.42, 0.42);
   const pickupBarGeo = new THREE.BoxGeometry(0.5, 0.14, 0.14);
   const nadeGeo = new THREE.BoxGeometry(0.22, 0.22, 0.22);
-  const spawnBullet = (pos: THREE.Vector3, vel: THREE.Vector3, dmg: number, friendly: boolean, ink: InkId, source: string, headMul = 1) => {
+  const spawnBullet = (
+    pos: THREE.Vector3,
+    vel: THREE.Vector3,
+    dmg: number,
+    friendly: boolean,
+    ink: InkId,
+    source: string,
+    headMul = 1,
+    maxDist?: number,
+  ) => {
     const mesh = new THREE.Mesh(bulletGeo, makeInkMaterial(ink, false, THREE.FrontSide, true));
     mesh.position.copy(pos);
     mesh.lookAt(pos.clone().add(vel));
     scene.add(mesh);
-    bullets.push({ pos: pos.clone(), vel: vel.clone(), life: 2.2, dmg, headMul, friendly, ink, mesh, source });
+    // A tracer lives exactly as long as the shot it draws. When the round is
+    // spent on a body, the ink has to stop there — a streak continuing out the
+    // far side would say the opposite of what just happened.
+    const life = maxDist === undefined ? 2.2 : Math.min(2.2, Math.max(0.05, (maxDist - 0.6) / 70));
+    bullets.push({ pos: pos.clone(), vel: vel.clone(), life, dmg, headMul, friendly, ink, mesh, source });
   };
 
   const shardGeo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
@@ -663,11 +684,38 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       dir.y += rand(-spread, spread);
       dir.z += rand(-spread, spread);
       dir.normalize();
-      const hitT = raycastWorld(eye, dir, 160);
-      // friendly tracer
-      const hitPoint = eye.clone().addScaledVector(dir, hitT);
-      spawnBullet(eye.clone().addScaledVector(dir, 0.6), dir.multiplyScalar(70), def.damage, true, INK.BLUE, def.kind, def.headMul);
-      if (hitT < 160) spawnShards(hitPoint, INK.BLACK, 2, 2);
+      const wallT = raycastWorld(eye, dir, 160);
+      // Online, the shot is settled *here*, not when a tracer finally arrives:
+      // the body we test is the one the packet drew, led by our half round trip
+      // so it is standing where its owner will have moved to. The victim then
+      // re-checks the hit against where they really were. A travelling
+      // projectile could only ever re-decide this too late, which is why hit
+      // registration used to feel imprecise exactly when the lobby got busy.
+      const rem = pvp.active ? raycastRemote(eye, dir, wallT) : null;
+      const hitPoint = eye.clone().addScaledVector(dir, rem ? rem.dist : wallT);
+      spawnBullet(
+        eye.clone().addScaledVector(dir, 0.6),
+        dir.clone().multiplyScalar(70),
+        def.damage,
+        true,
+        INK.BLUE,
+        def.kind,
+        def.headMul,
+        rem ? rem.dist : undefined,
+      );
+      if (rem) {
+        spawnShards(hitPoint, INK.RED, rem.head ? 5 : 3, 2.5);
+        cb.onHitmarker(false, rem.head);
+        cb.onNetHit?.({
+          victim: rem.id,
+          dmg: def.damage * (rem.head ? def.headMul : 1),
+          head: rem.head,
+          epoch: rem.epoch,
+          origin: { x: eye.x, y: eye.y, z: eye.z },
+        });
+      } else if (wallT < 160) {
+        spawnShards(hitPoint, INK.BLACK, 2, 2);
+      }
     }
     pushHud();
   }
@@ -698,6 +746,16 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     pushHud();
   }
 
+  /**
+   * One slash.
+   *
+   * A blade is a forward cone and nothing else: no ammo, no ray, no tracer, no
+   * muzzle flash. It reaches `KATANA_MELEE.reach` from the eye, hits anything
+   * inside that arc — enemy rigs and other players alike — and a landed slash is
+   * what charges the focus meter. Against a remote player the hit is reported to
+   * them the same way a round is, because they remain the authority on their own
+   * body; a slash that touches nobody empties the meter.
+   */
   function katanaSlash() {
     fx.katana();
     netFireT = 0.2;
@@ -707,17 +765,53 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     let hitAny = false;
     for (const e of enemies) {
       if (!e.alive) continue;
-      const to = e.pos.clone().add(new THREE.Vector3(0, 1.2 * e.def.scale, 0)).sub(eye);
-      const dist = to.length();
-      if (dist > 2.8 * e.def.scale) continue;
-      to.normalize();
-      if (to.dot(fwd) < 0.35) continue;
+      const reach = KATANA_MELEE.reach * e.def.scale;
+      const chest = e.pos.clone().add(new THREE.Vector3(0, 1.2 * e.def.scale, 0));
+      if (!meleeHits(eye, fwd, chest, reach, KATANA_MELEE.cosArc)) continue;
       hitAny = true;
-      const headHit = to.dot(fwd) > 0.85;
+      const head = e.pos.clone().add(new THREE.Vector3(0, e.headY, 0));
+      const headHit = meleeHits(eye, fwd, head, reach, 0.85);
       damageEnemy(e, headHit ? 999 : 90 * (1 + wave * 0.03), headHit, "katana");
     }
-    if (!hitAny) katanaStreak = 0;
+    for (const a of pvp.remotes.values()) {
+      if (!a.state.alive) continue;
+      const chest = a.pos.clone().add(new THREE.Vector3(0, 1.05, 0));
+      if (!meleeHits(eye, fwd, chest, KATANA_MELEE.reach, KATANA_MELEE.cosArc)) continue;
+      hitAny = true;
+      const head = a.pos.clone().add(new THREE.Vector3(0, 1.62, 0));
+      const headHit = meleeHits(eye, fwd, head, KATANA_MELEE.reach, 0.9);
+      spawnShards(chest, INK.RED, headHit ? 7 : 4, 3);
+      cb.onHitmarker(false, headHit);
+      cb.onNetHit?.({
+        victim: a.id,
+        dmg: KATANA_MELEE.damage * (headHit ? KATANA_MELEE.headMul : 1),
+        head: headHit,
+        epoch: a.state.epoch ?? 0,
+        origin: { x: eye.x, y: eye.y, z: eye.z },
+      });
+      // The victim is the authority on their own health, so the slash is charged
+      // on the *connection*: the same rule a bullet hit uses, and the only one
+      // that works when the target is another player instead of a rig.
+      addFocus(KATANA_MELEE.focusGain);
+    }
+    if (!hitAny) focusCharge = 0;
     pushHud();
+  }
+
+  /**
+   * Add to the focus meter, and open the SLASH window when it fills.
+   *
+   * Charging on landed hits rather than on kills is what makes the meter mean
+   * something online: a wave enemy dies to one slash, but another player does
+   * not, so a kill-only meter could never fill against people at all.
+   */
+  function addFocus(amount: number) {
+    focusCharge = clamp(focusCharge + amount, 0, 1);
+    if (focusCharge < 1 || slowmoT > 0 || focusChain >= 2) return;
+    focusCharge = 0;
+    slowmoT = 2.6;
+    fx.focusIn();
+    cb.onTip("<b>SLASH READY</b> · press F near a target", 2.2);
   }
 
   function tryFocusDash() {
@@ -725,6 +819,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const eye = eyePos();
     const fwd = fwdVec();
     let target: Enemy | null = null;
+    let victim: RemoteActor | null = null;
     let bestD = 14;
     for (const e of enemies) {
       if (!e.alive) continue;
@@ -732,20 +827,54 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       const d = to.length();
       if (d < bestD && to.normalize().dot(fwd) > 0.4) {
         target = e;
+        victim = null;
         bestD = d;
       }
     }
-    if (!target) return;
+    // The dash used to ignore the other players entirely, so the katana's
+    // payoff move had no target at all in a deathmatch.
+    for (const a of pvp.remotes.values()) {
+      if (!a.state.alive) continue;
+      const to = a.pos.clone().add(new THREE.Vector3(0, 1, 0)).sub(eye);
+      const d = to.length();
+      if (d < bestD && to.normalize().dot(fwd) > 0.4) {
+        victim = a;
+        target = null;
+        bestD = d;
+      }
+    }
+    if (!target && !victim) return;
     focusChain++;
     slowmoT = 0;
-    const dest = target.pos.clone().sub(new THREE.Vector3(0, 0, 0));
+    const dest = (target ?? victim)!.pos.clone();
     const dir = dest.clone().sub(player.pos).normalize();
     player.pos.copy(dest.clone().addScaledVector(dir, -1.4));
+    // Land the dash somewhere a body fits: it is a teleport across the arena,
+    // and a teleport into a wall is the stuck player this file keeps refusing to
+    // create.
+    depenetrate(player.pos, player.radius, player.height, world.colliders);
+    player.vel.set(0, 0, 0);
     player.yaw = Math.atan2(-dir.x, -dir.z);
     fx.focusDash();
     shakeT = 0.2;
-    damageEnemy(target, 9999, false, "focus");
-    cb.onTip("<b>EXECUTED</b>", 1.2);
+    // A dash moves the body a long way in one frame: stamp it, so peers snap to
+    // the arrival instead of watching an avatar sprint through the district.
+    markTeleport();
+    if (target) {
+      damageEnemy(target, 9999, false, "focus");
+      cb.onTip("<b>EXECUTED</b>", 1.2);
+    } else if (victim) {
+      cb.onHitmarker(false, false);
+      cb.onNetHit?.({
+        victim: victim.id,
+        dmg: 95,
+        head: false,
+        epoch: victim.state.epoch ?? 0,
+        origin: { x: eye.x, y: eye.y, z: eye.z },
+      });
+      addFocus(KATANA_MELEE.focusGain);
+      cb.onTip("<b>SLASHED</b>", 1.2);
+    }
   }
 
   /* ---------- damage ---------- */
@@ -763,6 +892,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     }
     e.hp -= amount;
     e.t += 0.05;
+    // A landed slash charges the meter; a deflection is charged where it happens
+    // (blockDeflect), because folding a round back is the risky half of the
+    // play and the part a player needs to be told was worth it.
+    if (source === "katana") addFocus(KATANA_MELEE.focusGain);
     if (e.def.boss) cb.onBoss(e.def.name, clamp(e.hp / e.maxHp, 0, 1));
     spawnShards(e.pos.clone().add(new THREE.Vector3(0, 1.2 * e.def.scale, 0)), crit ? INK.RED : e.def.ink, crit ? 7 : 3, 2.4);
     if (e.hp <= 0) killEnemy(e, source, crit);
@@ -801,17 +934,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     spawnSplat(e.pos, e.def.ink);
     spawnShards(e.pos.clone().add(new THREE.Vector3(0, 1, 0)), e.def.ink, e.def.boss ? 22 : 12, 4);
 
-    if (credit && (source === "katana" || source === "focus")) {
-      katanaStreak++;
-      if (katanaStreak >= katanaNeed && slowmoT <= 0 && focusChain < 2) {
-        slowmoT = 2.6;
-        katanaStreak = 0;
-        fx.focusIn();
-        cb.onTip("<b>SLASH READY</b> · press F near an enemy", 2.2);
-      }
-    } else if (source !== "deflect" && source !== "blast") {
-      katanaStreak = 0;
-    }
+    // A blade kill is worth a second helping of focus (it is the harder thing to
+    // do), while any other weapon's kill wipes the meter: the SLASH window is
+    // the katana's, and letting a rifle charge it would make it meaningless.
+    if (credit && (source === "katana" || source === "focus")) addFocus(KATANA_MELEE.focusGain);
+    else if (source !== "deflect" && source !== "blast") focusCharge = 0;
     if (e.def.boss) {
       cb.onBoss(null, 0);
       cb.onKillFeed(`${e.def.name} ERASED`, true);
@@ -1034,29 +1161,78 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     yaw: number;
     targetYaw: number;
     state: NetPlayerState;
-    /** countdown to the next muzzle flash while they hold the trigger */
+    /** the weapon they hold, so their avatar can be drawn holding it too */
+    weapon: string;
+    /** countdown to the next attack flourish while they hold the trigger */
     fireT: number;
     walk: number;
+    /** speed estimated from packet deltas, for leading a shot */
+    vel: THREE.Vector3;
+    /** when their last transform landed, for that estimate */
+    lastT: number;
   };
 
   const pvp = {
     active: false,
     remotes: new Map<string, RemoteActor>(),
+    /**
+     * Generation of *our own* body. Bumped every time it is teleported rather
+     * than walked — a respawn, a rematch, a focus dash, a rescue from under the
+     * map. Peers snap on a new epoch and ignore anything older, which is how a
+     * respawn survives the pre-death packets still in flight.
+     */
+    epoch: 0,
+    /** packet counter inside one epoch — peers drop anything that goes back */
+    seq: 0,
+    /** half our round trip to the host, ms: how far to lead a body we shoot at */
+    leadMs: 0,
+    /** our own recent poses, so a shot that arrives late can be checked fairly */
+    history: [] as PoseSample[],
+    historyT: 0,
   };
+
+  /** Mark the next position as a teleport rather than movement. */
+  function markTeleport() {
+    pvp.epoch += 1;
+    pvp.seq = 0;
+    pvp.history.length = 0;
+  }
 
   function dropRemote(a: RemoteActor) {
     scene.remove(a.rig.root);
     releaseRig(a.rig.root);
   }
 
+  /** A weapon name from the wire → the rig variant that holds it. */
+  const RIG_WEAPON: Record<string, string> = {
+    KATANA: "blade",
+    SHOTGUN: "shotgun",
+    SNIPER: "sniper",
+    REVOLVER: "pistol",
+    RIFLE: "rifle",
+  };
+
+  function buildRemoteRig(ink: InkId, weapon: string): Rig {
+    return makeRig({
+      ink,
+      bodyW: 1,
+      headS: 1,
+      limbR: 0.032,
+      weapon: RIG_WEAPON[weapon] ?? "rifle",
+      scale: 1,
+      vest: true,
+    });
+  }
+
   function syncRemotePlayers(list: NetRemotePlayer[]) {
     const keep = new Set<string>();
+    const now = performance.now();
     for (const p of list) {
       keep.add(p.id);
       let a = pvp.remotes.get(p.id);
       if (!a) {
         const ink = PVP_INKS[((p.ink % PVP_INKS.length) + PVP_INKS.length) % PVP_INKS.length];
-        const built = makeRig({ ink, bodyW: 1, headS: 1, limbR: 0.032, weapon: "rifle", scale: 1, vest: true });
+        const built = buildRemoteRig(ink, p.state.weapon);
         built.root.position.set(p.state.x, p.state.y, p.state.z);
         built.root.rotation.y = p.state.yaw + Math.PI;
         scene.add(built.root);
@@ -1070,15 +1246,57 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
           yaw: p.state.yaw,
           targetYaw: p.state.yaw,
           state: p.state,
+          weapon: p.state.weapon,
           fireT: 0,
           walk: 0,
+          vel: new THREE.Vector3(),
+          lastT: now,
         };
         pvp.remotes.set(p.id, a);
       }
       a.name = p.name;
+
+      // A teleport is not movement, and two things say so: the sender stamped a
+      // new epoch (respawn, rematch, focus dash), or the body just came back
+      // from being gone. Snap either way — easing a fresh spawn in from the
+      // spot the player died on is the bug this whole path exists to prevent.
+      const wasAlive = a.state.alive;
+      const jumped = (p.state.epoch ?? 0) !== (a.state.epoch ?? 0) || (!wasAlive && p.state.alive);
+      const prev = a.target.clone();
       a.state = p.state;
       a.target.set(p.state.x, p.state.y, p.state.z);
       a.targetYaw = p.state.yaw;
+      if (jumped) {
+        a.pos.copy(a.target);
+        a.yaw = a.targetYaw;
+        a.vel.set(0, 0, 0);
+        a.fireT = 0;
+        a.walk = 0;
+        depenetrate(a.pos, 0.42, 1.7, world.colliders);
+      }
+
+      // Draw them holding what they actually hold. A katana rendered as a rifle
+      // (and firing muzzle puffs) is half of why the blade "looks like a gun".
+      if (a.weapon !== p.state.weapon) {
+        a.weapon = p.state.weapon;
+        const rebuilt = buildRemoteRig(a.ink, a.weapon);
+        rebuilt.root.position.copy(a.pos);
+        rebuilt.root.rotation.y = a.yaw + Math.PI;
+        scene.remove(a.rig.root);
+        releaseRig(a.rig.root);
+        scene.add(rebuilt.root);
+        a.rig = rebuilt;
+      }
+
+      // Their speed, straight from packet deltas: half a round trip of lead is
+      // the whole difference between hitting a runner and hitting their shadow.
+      const dt = a.lastT > 0 ? (now - a.lastT) / 1000 : 0;
+      if (dt > 0.004 && dt < 0.5) {
+        const v = a.target.clone().sub(prev).divideScalar(dt);
+        // A respawn-sized jump is not velocity; it must not launch the body.
+        if (v.lengthSq() < 3600) a.vel.lerp(v, 0.35);
+      }
+      a.lastT = now;
     }
     for (const [id, a] of [...pvp.remotes]) {
       if (keep.has(id)) continue;
@@ -1120,51 +1338,77 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       P.armR.rotation.x = swing * 0.7;
       P.torso.rotation.y = Math.sin(a.walk * 0.5) * 0.06 * (s.moving ? 1 : 0);
 
-      // muzzle ink: a splash the moment they start, then a flicker for as long
-      // as the trigger is held, so a burst reads as a burst
+      // Attack ink, drawn according to what they are holding: a muzzle splash
+      // the moment a gun starts and a flicker while the trigger is held, or a
+      // swept arc of ink for a blade. Firing a katana used to draw gunfire —
+      // puffs in a straight line from a body with no gun barrel — which is
+      // exactly what a katana "shooting bullets" looks like from the outside.
       a.fireT -= dt;
       if (!s.firing) a.fireT = 0;
       else if (a.fireT <= 0) {
-        a.fireT = 0.09;
+        const blade = a.weapon === "KATANA";
+        a.fireT = blade ? 0.22 : 0.09;
         const dir = new THREE.Vector3(Math.sin(a.yaw + Math.PI), 0, Math.cos(a.yaw + Math.PI));
-        const m = a.pos.clone().add(new THREE.Vector3(0, 1.25, 0)).addScaledVector(dir, 0.5);
-        spawnShards(m, a.ink, 3, 2.2);
-        spawnShards(m.clone().addScaledVector(dir, 3.5), a.ink, 1, 1.4);
+        const m = a.pos.clone().add(new THREE.Vector3(0, blade ? 1.15 : 1.25, 0)).addScaledVector(dir, blade ? 0.9 : 0.5);
+        if (blade) {
+          const side = new THREE.Vector3(-dir.z, 0, dir.x);
+          for (let i = 0; i < 5; i++) {
+            const k = i / 4 - 0.5; // across the swing
+            const at = m.clone().addScaledVector(side, k * 1.15);
+            at.y += 0.3 * (1 - Math.abs(k));
+            spawnShards(at, a.ink, 2, 2.4);
+          }
+        } else {
+          spawnShards(m, a.ink, 3, 2.2);
+          spawnShards(m.clone().addScaledVector(dir, 3.5), a.ink, 1, 1.4);
+        }
       }
     }
-  }
-
-  /** our rounds against the other players; true when the round is spent */
-  function hitRemoteSegment(from: THREE.Vector3, to: THREE.Vector3, b: Bullet): boolean {
-    if (!pvp.active) return false;
-    const seg = to.clone().sub(from);
-    const segLen = seg.length();
-    if (segLen < 1e-6) return false;
-    const segDir = seg.clone().divideScalar(segLen);
+  }  /**
+   * Where a shot meets another player, decided at the moment it is fired.
+   *
+   * This replaces waiting for a bullet to arrive. A tracer needs a frame or two
+   * of travel in which the target keeps moving, and at four players the bodies
+   * on screen are already 50–100 ms behind their owners, so a projectile could
+   * only ever "register" a hit that was aimed at the past. Testing the ray here
+   * — against the body the packet drew, led by half a round trip for how fast
+   * they are moving — and then letting the victim confirm it against where they
+   * actually were is the only version both ends can agree on.
+   *
+   * Returns the nearest remote in the line of fire, or null.
+   */
+  function raycastRemote(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxDist: number,
+  ): { id: string; epoch: number; dist: number; head: boolean; point: THREE.Vector3 } | null {
+    if (!pvp.active) return null;
+    // Lead the body by our half round trip: they will have moved by the time the
+    // hit reaches them, and that gap is the whole of "my shots miss when I aim
+    // right at them".
+    const lead = pvp.leadMs / 1000;
+    let best: { id: string; epoch: number; dist: number; head: boolean; point: THREE.Vector3 } | null = null;
     for (const a of pvp.remotes.values()) {
       if (!a.state.alive) continue;
-      const headC = a.pos.clone().add(new THREE.Vector3(0, 1.5, 0));
-      const toH = headC.clone().sub(from);
-      const proj = toH.dot(segDir);
-      if (proj >= 0 && proj <= segLen && from.clone().addScaledVector(segDir, proj).distanceTo(headC) < 0.32) {
-        spawnShards(headC, INK.RED, 4, 3);
-        cb.onHitmarker(false, true);
-        cb.onNetHit?.(a.id, b.dmg * b.headMul, true);
-        return true;
+      const body = a.pos.clone().addScaledVector(a.vel, lead);
+      const headC = body.clone().add(new THREE.Vector3(0, 1.52, 0));
+      const toH = headC.clone().sub(origin);
+      const projH = toH.dot(dir);
+      if (projH > 0 && projH < maxDist && origin.clone().addScaledVector(dir, projH).distanceTo(headC) < 0.34) {
+        if (!best || projH < best.dist) best = { id: a.id, epoch: a.state.epoch ?? 0, dist: projH, head: true, point: headC.clone() };
+        continue;
       }
       const c: Collider = {
-        minX: a.pos.x - 0.4, maxX: a.pos.x + 0.4,
-        minY: a.pos.y, maxY: a.pos.y + 1.75,
-        minZ: a.pos.z - 0.4, maxZ: a.pos.z + 0.4,
+        minX: body.x - 0.42, maxX: body.x + 0.42,
+        minY: body.y, maxY: body.y + 1.75,
+        minZ: body.z - 0.42, maxZ: body.z + 0.42,
       };
-      if (rayAABB(from, segDir, c, segLen) >= 0) {
-        spawnShards(a.pos.clone().add(new THREE.Vector3(0, 1.1, 0)), INK.RED, 3, 2);
-        cb.onHitmarker(false, false);
-        cb.onNetHit?.(a.id, b.dmg, false);
-        return true;
+      const t = rayAABB(origin, dir, c, maxDist);
+      if (t >= 0 && (!best || t < best.dist)) {
+        best = { id: a.id, epoch: a.state.epoch ?? 0, dist: t, head: false, point: origin.clone().addScaledVector(dir, t) };
       }
     }
-    return false;
+    return best;
   }
 
   /** blasts (grenades) reach the other players as well as us */
@@ -1174,7 +1418,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       if (!a.state.alive) continue;
       const d = a.pos.distanceTo(pos);
       if (d >= radius) continue;
-      cb.onNetHit?.(a.id, dmg * Math.sqrt(Math.max(0, 1 - d / radius)) * 1.5, false);
+      cb.onNetHit?.({
+        victim: a.id,
+        dmg: dmg * Math.sqrt(Math.max(0, 1 - d / radius)) * 1.5,
+        head: false,
+        epoch: a.state.epoch ?? 0,
+        origin: { x: pos.x, y: pos.y, z: pos.z },
+      });
     }
   }
 
@@ -2682,8 +2932,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
               break;
             }
           }
-          // online: the other players are targets too
-          if (!dead && hitRemoteSegment(from, to, b)) dead = true;
+          // Online, rounds are tracers: where they land was settled the moment
+          // the shot was fired (see fireWeapon) against the body the packet
+          // drew, and the victim re-checks it against where it really was. A
+          // travelling projectile can only ever re-decide that too late.
         } else if (segmentHitsPlayer(from, to)) {
           dead = true;
           if (blocking && blockDeflect(b)) {
@@ -2765,6 +3017,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     b.source = "deflect";
     spawnShards(b.pos, INK.ORANGE, 5, 3);
     fx.katana();
+    addFocus(KATANA_MELEE.deflectGain);
     cb.onKillFeed("DEFLECTED", false);
     return true;
   }
@@ -2863,7 +3116,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       hint: s.def.hint,
       slots: WEAPONS.map((w) => w.name),
       slot: curSlot,
-      focus: clamp(katanaStreak / katanaNeed, 0, 1),
+      focus: clamp(focusCharge, 0, 1),
       focusOn: slowmoT > 0,
       blips,
     };
@@ -2907,9 +3160,12 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     kills = 0;
     wave = 0;
     comboCount = 0;
-    katanaStreak = 0;
+    focusCharge = 0;
     slowmoT = 0;
     focusChain = 0;
+    // A restart (or a rematch) puts the body back on the start pad: that is a
+    // teleport for the same reason a respawn is, so peers must snap to it.
+    markTeleport();
     modifierName = "";
     queue = [];
     enemiesLeft = 0;
@@ -2977,6 +3233,18 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     if (player.pos.y < -6) {
       player.pos.set(0, 0.2, 38);
       player.vel.set(0, 0, 0);
+      markTeleport();
+    }
+    // Our own recent poses, sampled a few times a second. This is the victim's
+    // half of hit validation: "where was I when that shot was fired" cannot be
+    // answered from the current frame, and a rewind window needs real history.
+    if (pvp.active) {
+      const nowMs = performance.now();
+      if (nowMs - pvp.historyT >= 50) {
+        pvp.historyT = nowMs;
+        pvp.history.push({ t: nowMs, x: player.pos.x, y: player.pos.y, z: player.pos.z, alive: player.alive });
+        if (pvp.history.length > 24) pvp.history.shift();
+      }
     }
     for (const e of enemies) updateEnemy(e, dt);
     separateEnemies(dt);
@@ -3510,15 +3778,65 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
         moving: netMoving,
         firing: netFireT > 0,
         weapon: slots[curSlot].def.name,
+        epoch: pvp.epoch,
+        seq: ++pvp.seq,
       };
     },
     setRemotePlayers(list: NetRemotePlayer[]) {
       syncRemotePlayers(list);
     },
-    takeNetHit(dmg: number, killerId: string) {
+    setNetLatency(ms: number) {
+      pvp.leadMs = clamp(Number.isFinite(ms) ? ms : 0, 0, 250);
+    },
+    /**
+     * A remote's shot landed on us.
+     *
+     * The shooter decided *where* it landed; we decide whether it counts, which
+     * is the only split that works peer-to-peer. Validation is deliberately
+     * generous — the body they aimed at is the one our packets drew, half a
+     * round trip behind where we really are — but it is not blind: the shot has
+     * to line up with where we were when it was fired, and has to have a clear
+     * path to get here, so a hit reported through a building or after our
+     * death does not land.
+     */
+    takeNetHit(dmg: number, killerId: string, rewindMs?: number, origin?: NetShotOrigin) {
       if (!pvp.active) return;
+      if (!player.alive || state !== "playing") return;
+      if (!Number.isFinite(dmg) || dmg <= 0 || dmg > 300) return;
+      const pose = origin ? poseAt(pvp.history, performance.now(), clamp(rewindMs ?? 0, 0, 300)) : null;
+      if (origin && pose) {
+        if (!pose.alive) return; // the shot belongs to the body before our respawn
+        const eye = new THREE.Vector3(origin.x, origin.y, origin.z);
+        const feet = new THREE.Vector3(pose.x, pose.y, pose.z);
+        const chest = feet.clone().add(new THREE.Vector3(0, 1.0, 0));
+        const seg = chest.clone().sub(eye);
+        const len = seg.length();
+        if (len > 170) return; // further than any weapon in the rack reaches
+        // Where we were, or where we are: two ends of one 50 ms window, both
+        // honest answers to "was I there", and the packet jitter between four
+        // players means the truth can be either. Accepting only one of them is
+        // how a hit that clearly connected gets thrown away.
+        const here = new THREE.Vector3(player.pos.x, player.pos.y, player.pos.z);
+        const hit =
+          segmentHitsBody(eye, chest, feet, 0.55, 1.9) ||
+          segmentHitsBody(eye, chest, here, 0.55, 1.9);
+        if (!hit) return;
+        const dir = seg.divideScalar(len);
+        // A wall in the way means the shot never had a line on us. The margin
+        // keeps an honest hit from being rejected by the corner we were hugging.
+        if (raycastWorld(eye, dir, len - 0.6) < len - 0.6) return;
+      }
       damagePlayer(dmg, undefined, killerId);
     },
+    /**
+     * Back into the fight, at a pad that is provably clear.
+     *
+     * This is a full reset of everything attached to the body, not just its
+     * position. Dying while grappling used to leave the rope anchored, so the
+     * very first frame after the respawn reeled the player back to the spot they
+     * died on — the body was moved, and then yanked home by state nobody had
+     * cleared. Dash, jumps, crouch and the aim flags went the same way.
+     */
     netRespawn(preferIndex?: number) {
       if (!pvp.active) return;
       const spot = safeRespawnPoint(preferIndex);
@@ -3528,6 +3846,20 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       depenetrate(spot, player.radius, player.height, world.colliders);
       player.pos.copy(spot);
       player.vel.set(0, 0, 0);
+      player.height = CI;
+      player.onGround = false;
+      player.jumps = 0;
+      player.crouch = false;
+      player.sprint = false;
+      player.dashT = 0;
+      player.dashCd = 0;
+      player.nadeCd = 0;
+      player.grap.active = false;
+      player.grap.stam = 1;
+      // Face the middle of the district rather than whichever wall we died
+      // staring at; a spawn that keeps a player's old yaw reads as "stuck".
+      player.yaw = Math.atan2(spot.x, spot.z);
+      player.pitch = 0;
       player.hp = player.maxHp;
       player.alive = true;
       player.regenDelay = 0;
@@ -3538,9 +3870,21 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
         s.reserve = s.def.reserve;
       }
       reloadT = 0;
+      switchT = 0;
       fireCd = 0;
+      netFireT = 0;
+      blocking = false;
       mouseFire = false;
       mouseAim = false;
+      keys.clear();
+      // The camera follows the body a frame later, so snap it now: otherwise the
+      // first frame after a respawn is drawn from inside the wall we left.
+      camera.position.set(player.pos.x, player.pos.y + 1.6, player.pos.z);
+      camera.rotation.set(0, player.yaw, 0);
+      // A new epoch is the *broadcast* half of the same fix: peers snap to this
+      // position and refuse anything stamped older, so the packets still in
+      // flight from the death cannot drag the fresh body back to it.
+      markTeleport();
       pushHud();
     },
     isAlive() {

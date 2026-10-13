@@ -17,7 +17,9 @@
 // counts.
 
 import Peer, { type DataConnection } from "peerjs";
-import type { NetPlayerState } from "./types";
+// The transform gate lives beside the state it guards, in types.ts, so the
+// transport and any test ask the same question about a stale packet.
+import { shouldApplyState, type NetPlayerState, type NetShotOrigin } from "./types";
 
 /** One player as the lobby and the scoreboard see them. */
 export type NetPlayer = {
@@ -38,12 +40,19 @@ type RosterEntry = { id: string; name: string; ink: number };
 
 type NetMsg =
   | { t: "hello"; name: string }
+  | { t: "full" }
   | { t: "roster"; list: RosterEntry[] }
+  /** guest → host: one body */
   | { t: "state"; s: NetPlayerState }
-  | { t: "hit"; victim: string; dmg: number }
+  /** host → guest: every body, in one ordered packet (see tick()) */
+  | { t: "states"; list: { id: string; s: NetPlayerState }[] }
+  | { t: "hit"; victim: string; dmg: number; epoch: number; origin: NetShotOrigin }
   | { t: "death"; killer: string }
-  | { t: "respawn" }
+  | { t: "respawn"; epoch: number }
   | { t: "start" }
+  | { t: "rematch" }
+  | { t: "ping"; t0: number }
+  | { t: "pong"; t0: number }
   | { t: "bye" };
 
 type Envelope = NetMsg & { from: string; name?: string; ink?: number };
@@ -51,10 +60,18 @@ type Envelope = NetMsg & { from: string; name?: string; ink?: number };
 export type NetHandlers = {
   /** a remote player's transform arrived — hand it straight to the engine */
   onRemoteState?: (id: string, state: NetPlayerState) => void;
-  /** someone's shot landed on us (killerId is the shooter's peer id) */
-  onHitMe?: (dmg: number, killerId: string) => void;
+  /**
+   * Someone's shot landed on us. `epoch` is the generation of our body the
+   * shooter aimed at (so a hit that predates our respawn can be dropped) and
+   * `origin` is where the shot came from (so its path can be checked).
+   */
+  onHitMe?: (dmg: number, killerId: string, epoch: number, origin: NetShotOrigin) => void;
   onDeath?: (victimId: string, killerId: string) => void;
-  onRespawn?: (id: string) => void;
+  onRespawn?: (id: string, epoch: number) => void;
+  /** the host restarted the match: clear the scoreboard and drop the overlay */
+  onRematch?: () => void;
+  /** our measured half round trip changed — feed it to the engine's aim model */
+  onLatency?: (ms: number) => void;
   /** the host said go */
   onStart?: () => void;
   onFeed?: (text: string, hot: boolean) => void;
@@ -68,8 +85,18 @@ export type NetHandlers = {
 
 const PREFIX = "ds-pvp-";
 
-/** How long a peer may go quiet before we treat it as gone (ms). */
-const SILENCE_MS = 6000;
+/**
+ * How long a peer may go quiet before we treat it as gone (ms).
+ *
+ * Generous on purpose: the host relays three other players' transforms, so a
+ * guest on a mobile link can lose a couple of seconds to a stall and still be
+ * in the match. Six seconds used to be "gone" and that is a drop, not a
+ * disconnect — the player never left, the phone just hiccuped.
+ */
+const SILENCE_MS = 12000;
+
+/** Hard ceiling on the lobby. The star topology does not scale past this. */
+export const MAX_PLAYERS = 4;
 
 /**
  * The ICE server list, resolved once per page.
@@ -141,6 +168,7 @@ export function describeIce(list: RTCIceServer[]): string {
 const IDLE: NetPlayerState = {
   x: 0, y: 0.2, z: 38, yaw: Math.PI, pitch: 0,
   hp: 120, alive: false, moving: false, firing: false, weapon: "RIFLE",
+  epoch: 0, seq: 0,
 };
 
 /** A short, readable, unambiguous room code (no O/0, no I/1). */
@@ -191,6 +219,22 @@ export class NetSession {
   private lastSeen = new Map<string, number>();
   private sendTimer = 0;
   private snapshot: NetPlayer[] = [];
+  /** host only: the newest transform per player, flushed as one packet a tick */
+  private pendingState = new Map<string, NetPlayerState>();
+  /** our own measured round trip, ms */
+  private rtt = 0;
+  private pingTimer = 0;
+
+  /**
+   * Half the measured round trip, capped at a quarter second.
+   *
+   * This one number fixes both ends of a laggy exchange: the shooter leads a
+   * moving body by it, and the body rewinds by it when the shot arrives, so
+   * both players agree about where the target was when the trigger was pulled.
+   */
+  get rewindMs() {
+    return Math.min(250, Math.round(this.rtt / 2));
+  }
 
   constructor(code: string, name: string, isHost: boolean) {
     this.code = code.toUpperCase();
@@ -220,6 +264,7 @@ export class NetSession {
     if (this.phase === "closed") return; // the page left while we were looking
     window.clearInterval(this.sweepTimer);
     this.sweepTimer = window.setInterval(() => this.sweepSilent(), 2000);
+    this.startPinging();
     if (this.isHost) this.startHosting();
     else this.startGuest();
   }
@@ -270,7 +315,7 @@ export class NetSession {
       });
       conn.on("data", (d) => this.receive(this.hostId, d));
       conn.on("close", () => this.drop(this.hostId));
-      conn.on("error", () => this.drop(this.hostId));
+      conn.on("error", (err) => this.channelError(conn, err));
     });
     peer.on("disconnected", () => {
       if (this.phase !== "closed") peer.reconnect();
@@ -332,6 +377,7 @@ export class NetSession {
     this.phase = "closed";
     window.clearInterval(this.sendTimer);
     window.clearInterval(this.sweepTimer);
+    window.clearInterval(this.pingTimer);
     this.peer?.destroy();
     this.peer = null;
     this.conns.clear();
@@ -365,7 +411,7 @@ export class NetSession {
     else conn.on("open", register);
     conn.on("data", (d) => this.receive(conn.peer, d));
     conn.on("close", () => this.drop(conn.peer));
-    conn.on("error", () => this.drop(conn.peer));
+    conn.on("error", (err) => this.channelError(conn, err));
   }
 
   private drop(id: string) {
@@ -376,6 +422,7 @@ export class NetSession {
     this.roster.delete(id);
     delete this.lastState[id];
     this.lastSeen.delete(id);
+    this.pendingState.delete(id);
     this.scores.delete(id);
     if (id !== this.me && this.phase !== "closed") this.handlers.onFeed?.(`${gone} LEFT THE MATCH`, false);
     // Tell the page too: its own cache of that player's position is the thing
@@ -404,22 +451,58 @@ export class NetSession {
     }
   }
 
-  private send(msg: NetMsg, conn?: DataConnection) {
-    const env: Envelope = { ...msg, from: this.me, name: this.name, ink: this.roster.get(this.me)?.ink ?? 0 };
-    if (conn) {
-      if (conn.open) conn.send(env);
+  /**
+   * Send through one channel, and never let one bad channel take the rest down.
+   *
+   * PeerJS throws synchronously if a channel closed between the `open` check
+   * and the send, and that throw used to escape into whichever loop was
+   * broadcasting — one dead peer and the whole tick stopped for everyone, which
+   * at four players is exactly the "two or three of us dropped" report. A
+   * channel that is merely not open yet is skipped, not punished: only a throw
+   * means it is really gone.
+   */
+  private safeSend(conn: DataConnection | undefined, env: Envelope): "sent" | "skip" | "dead" {
+    if (!conn || !conn.open) return "skip";
+    try {
+      conn.send(env);
+      return "sent";
+    } catch (err) {
+      console.warn(`[net ${this.code}] send to ${conn.peer} failed`, err);
+      return "dead";
+    }
+  }
+
+  /** A data-channel error is only a disconnect if the channel is really shut. */
+  private channelError(conn: DataConnection, err: unknown) {
+    if (conn.open) {
+      console.warn(`[net ${this.code}] channel ${conn.peer} reported an error but is still open`, err);
       return;
     }
-    for (const c of this.conns.values()) if (c.open) c.send(env);
+    this.drop(conn.peer);
+  }
+
+  private send(msg: NetMsg, conn?: DataConnection) {
+    const env: Envelope = { ...msg, from: this.me, name: this.name, ink: this.roster.get(this.me)?.ink ?? 0 };
+    const one = conn;
+    if (one) {
+      if (this.safeSend(one, env) === "dead") this.drop(one.peer);
+      return;
+    }
+    const dead: string[] = [];
+    for (const [id, c] of this.conns) if (this.safeSend(c, env) === "dead") dead.push(id);
+    for (const id of dead) this.drop(id);
   }
 
   /** Hand a message on untouched — the sender's id has to survive the trip. */
   private forward(env: Envelope, conn?: DataConnection) {
-    if (conn) {
-      if (conn.open) conn.send(env);
+    const one = conn;
+    if (one) {
+      if (this.safeSend(one, env) === "dead") this.drop(one.peer);
       return;
     }
-    for (const c of this.conns.values()) if (c.open) c.send(env);
+    const dead: string[] = [];
+    for (const [id, c] of this.conns) if (this.safeSend(c, env) === "dead") dead.push(id);
+    for (const id of dead) this.drop(id);
   }
 
   private sendRoster() {
@@ -429,10 +512,12 @@ export class NetSession {
 
   /** Host: everybody but the sender. Guest: the host. */
   private relayToOthers(sender: string, env: Envelope) {
+    const dead: string[] = [];
     for (const [id, c] of this.conns) {
       if (id === sender) continue;
-      if (c.open) c.send(env);
+      if (this.safeSend(c, env) === "dead") dead.push(id);
     }
+    for (const id of dead) this.drop(id);
   }
 
   private receive(from: string, raw: unknown) {
@@ -460,8 +545,25 @@ export class NetSession {
         this.applyState(src, env.s);
         return;
       }
+      if (env.t === "states") {
+        // One packet per tick from the host, carrying every other body. Ours is
+        // in there too — we are the authority on it, so it is skipped rather
+        // than echoed back into the avatar list.
+        for (const e of env.list) if (e.id !== this.me) this.applyState(e.id, e.s);
+        return;
+      }
       if (env.t === "hit") {
-        if (env.victim === this.me) this.takeHit(env.dmg, src);
+        if (env.victim === this.me) this.takeHit(env.dmg, src, env.epoch, env.origin);
+        return;
+      }
+      if (env.t === "full") {
+        this.handlers.onError?.("That match is full — it holds four players. The host can run a rematch to free a slot.");
+        // No point holding a channel that will never carry a snapshot.
+        this.close();
+        return;
+      }
+      if (env.t === "pong") {
+        this.noteRtt(env.t0);
         return;
       }
       this.apply(src, env);
@@ -470,6 +572,13 @@ export class NetSession {
 
     /* -------------------------- host: the hub -------------------------- */
     if (env.t === "hello") {
+      // The star has one host, so "full" is the host's call — and saying so is
+      // kinder than letting a fifth player hold a connection that will never
+      // receive a snapshot.
+      if (!this.roster.has(from) && this.roster.size >= MAX_PLAYERS) {
+        this.forward({ t: "full", from: this.me }, this.conns.get(from));
+        return;
+      }
       this.roster.set(from, { name: String(env.name ?? "PLAYER").slice(0, 16), ink: this.freeInk(from) });
       this.lastState[from] = this.lastState[from] ?? { ...IDLE };
       this.handlers.onFeed?.(`${this.roster.get(from)?.name ?? "A PLAYER"} JOINED`, false);
@@ -482,13 +591,26 @@ export class NetSession {
     }
     if (env.t === "hit") {
       // A hit only ever interests one person: the one who took it.
-      if (env.victim === this.me) this.takeHit(env.dmg, from);
+      if (env.victim === this.me) this.takeHit(env.dmg, from, env.epoch, env.origin);
       else this.forward(env, this.conns.get(env.victim));
       return;
     }
     if (env.t === "state") {
-      this.applyState(from, env.s);
-      this.relayToOthers(from, env);
+      // Held, not relayed on arrival: every guest's body is folded into the
+      // next single snapshot (see tick()). Three guests cost three packets out
+      // per tick instead of nine, and each one receives a single ordered stream
+      // instead of three interleaved ones. Only transforms that passed the gate
+      // are held — a late-arriving packet must not be handed to everyone else,
+      // which is exactly how a single reordered packet became lobby-wide jitter.
+      if (this.applyState(from, env.s)) this.pendingState.set(from, env.s);
+      return;
+    }
+    if (env.t === "ping") {
+      this.forward({ t: "pong", t0: env.t0, from: this.me }, this.conns.get(from));
+      return;
+    }
+    if (env.t === "pong") {
+      this.noteRtt(env.t0);
       return;
     }
     this.apply(from, env);
@@ -501,10 +623,12 @@ export class NetSession {
     return this.roster.size % 6;
   }
 
-  private applyState(id: string, s: NetPlayerState) {
-    if (!s || typeof s.x !== "number" || typeof s.hp !== "number") return;
+  /** Returns true when the transform was applied (and is worth passing on). */
+  private applyState(id: string, s: NetPlayerState): boolean {
+    if (!shouldApplyState(this.lastState[id], s)) return false;
     this.lastState[id] = s;
     this.handlers.onRemoteState?.(id, s);
+    return true;
   }
 
   private apply(from: string, env: Envelope) {
@@ -523,12 +647,15 @@ export class NetSession {
         break;
       }
       case "respawn":
-        this.handlers.onRespawn?.(from);
+        this.handlers.onRespawn?.(from, env.epoch ?? 0);
         this.publish();
         break;
       case "start":
         this.phase = "playing";
         this.handlers.onStart?.();
+        break;
+      case "rematch":
+        this.beginRematch();
         break;
       case "bye":
         this.drop(from);
@@ -544,16 +671,39 @@ export class NetSession {
     this.scores.set(id, { kills: cur.kills + (add.kills ?? 0), deaths: cur.deaths + (add.deaths ?? 0) });
   }
 
-  private takeHit(dmg: number, killer: string) {
-    this.handlers.onHitMe?.(dmg, killer);
+  private takeHit(dmg: number, killer: string, epoch: number, origin: NetShotOrigin) {
+    this.handlers.onHitMe?.(dmg, killer, epoch ?? 0, origin);
+  }
+
+  /**
+   * Clear the board for a fresh round, on every client.
+   *
+   * Scores live in this class and the victory overlay is *derived* from them —
+   * `kills >= KILLS_TO_WIN` on each screen. A rematch that only restarts the
+   * engine leaves those numbers at fifteen, so the overlay comes straight back
+   * up and the button that was supposed to dismiss it is the only thing you can
+   * see. Resetting here is what makes `winner` false again everywhere.
+   */
+  private beginRematch() {
+    this.scores.clear();
+    this.pendingState.clear();
+    this.phase = "playing";
+    this.handlers.onRematch?.();
+    this.publish();
   }
 
   /* -------------------------------- actions -------------------------------- */
 
-  /** Called from the shooter's engine when a round lands on a remote player. */
-  reportHit(victim: string, dmg: number) {
+  /**
+   * Called from the shooter's engine the instant a round lands on a remote.
+   *
+   * `victimEpoch` is the body the shooter aimed at (the victim drops the hit if
+   * they have respawned since) and `origin` is where the shot came from, so the
+   * victim can check the path against the world instead of taking our word.
+   */
+  reportHit(victim: string, dmg: number, victimEpoch: number, origin: NetShotOrigin) {
     if (victim === this.me || this.phase !== "playing") return;
-    this.send({ t: "hit", victim, dmg });
+    this.send({ t: "hit", victim, dmg, epoch: victimEpoch, origin });
   }
 
   reportDeath(killer: string) {
@@ -564,24 +714,90 @@ export class NetSession {
     this.publish();
   }
 
-  reportRespawn() {
-    this.send({ t: "respawn" });
+  /** `epoch` is the generation of the body that just teleported to a pad. */
+  reportRespawn(epoch: number) {
+    this.send({ t: "respawn", epoch });
   }
 
   /** Host only: everyone drops into the arena together. */
   beginMatch() {
+    this.scores.clear();
     this.phase = "playing";
     this.send({ t: "start" });
     this.handlers.onStart?.();
+    this.publish();
+  }
+
+  /**
+   * Host only: run the match again.
+   *
+   * One broadcast is enough — every client already holds its own scoreboard, so
+   * each clears it locally from this message and the engine is restarted from
+   * the page's `onRematch`. Nobody has to be teleported by the host: the
+   * respawn that follows stamps a new epoch, and the snapshot gate turns that
+   * into a snap for every peer instead of a slide.
+   */
+  rematch() {
+    if (!this.isHost) return;
+    this.send({ t: "rematch" });
+    this.beginRematch();
   }
 
   /** Push our transform to the room 20× a second. */
   startTicking() {
     window.clearInterval(this.sendTimer);
-    this.sendTimer = window.setInterval(() => {
-      if (this.phase === "closed" || !this.stateProvider) return;
-      this.send({ t: "state", s: this.stateProvider() });
-    }, 50);
+    this.sendTimer = window.setInterval(() => this.tick(), 50);
+  }
+
+  /**
+   * One tick of the state stream.
+   *
+   * A guest sends its own body to the host. The host sends *everyone's* newest
+   * body to each guest in one packet — the multiplex that keeps four players on
+   * one uplink alive, because the host's outbound cost stops growing with the
+   * square of the lobby and each guest has exactly one stream to de-jitter.
+   */
+  private tick() {
+    if (this.phase === "closed" || !this.stateProvider) return;
+    const s = this.stateProvider();
+    if (!this.isHost) {
+      this.lastState[this.me] = s;
+      this.send({ t: "state", s });
+      return;
+    }
+    this.lastState[this.me] = s;
+    this.pendingState.set(this.me, s);
+    const list = [...this.pendingState].map(([id, st]) => ({ id, s: st }));
+    this.pendingState.clear();
+    if (list.length > 0) this.forward({ t: "states", list, from: this.me });
+  }
+
+  /* --------------------------------- latency -------------------------------- */
+
+  /**
+   * A heartbeat that measures the one hop that matters: us to the host.
+   *
+   * Half of it is the correct rewind for a shot that had to cross the network
+   * before it could be validated, and the correct lead for aiming at a body
+   * that will have moved by the time our shot is checked.
+   */
+  private startPinging() {
+    window.clearInterval(this.pingTimer);
+    this.pingTimer = window.setInterval(() => this.sendPing(), 2000);
+  }
+
+  private sendPing() {
+    if (this.phase === "closed" || this.conns.size === 0) return;
+    this.send({ t: "ping", t0: performance.now() });
+  }
+
+  /** A pong carries our own timestamp back; the echo is the round trip. */
+  private noteRtt(t0: number) {
+    const ms = performance.now() - t0;
+    if (!Number.isFinite(ms) || ms < 0 || ms > 5000) return;
+    // Eased, so one slow heartbeat cannot swing the rewind window by 200 ms.
+    this.rtt = this.rtt === 0 ? ms : this.rtt * 0.7 + ms * 0.3;
+    this.handlers.onLatency?.(this.rewindMs);
   }
 
   /* --------------------------------- roster --------------------------------- */
