@@ -18,7 +18,7 @@ You are a hand-drawn survivor in a doodled district. Waves of sketched enemies c
 | **Waves** | Clear every enemy to advance. Every 5th wave spawns a boss with a health bar and a checkpoint. |
 | **Score & combo** | Kills build a combo meter that decays quickly — chain kills for score multipliers. Airborne kills pay +33%. |
 | **Weapons** | 5 slots, switch with `1–5` or mouse wheel: **Rifle · Shotgun · Sniper · Katana · Revolver**. |
-| **Katana** | Left-click slashes a forward cone (~3 m) — no ammo, no tracers, no muzzle flash. Landed slashes and folded rounds fill the Focus meter; a full meter makes `F` a dash-and-strike. |
+| **Katana** | Left-click slashes a forward cone (~3 m) — no ammo, no tracers, no muzzle flash, and the blade carves a single diagonal across the view (raised over the left shoulder, down past the right hip) instead of kicking back like a gun. Landed slashes and folded rounds fill the Focus meter; a full meter makes `F` a dash-and-strike. |
 | **Grenades** | `G` throws an ink grenade. Finite per run. |
 | **Movement** | WASD to move, `Space` to jump (double-jump supported), `Shift` sprint, `C`/`Ctrl` crouch, `X` dash. |
 | **Grapple** | Hold `Q` / `E` to reel toward points; release to let go. |

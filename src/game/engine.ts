@@ -339,6 +339,46 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   let fireCd = 0;
   let reloadT = 0;
   let recoil = 0;
+  // The blade gets its own clock, because a katana is not a gun: nothing about
+  // a slash kicks straight back toward the shoulder. Counts down from
+  // `KATANA_SWING_DUR`; see `KATANA_SWING` for the arc it drives.
+  let swingT = 0;
+  const KATANA_SWING_DUR = 0.3;
+  /**
+   * First-person katana arc, as offsets from the resting blade (camera space:
+   * +X right, +Y up, blade down -Z).
+   *
+   * The cut is a single diagonal drawn in three moves: coil, blade raised over
+   * the left shoulder with the edge rolled open, then a fast fall across the
+   * view to the right hip, then the follow-through and a settle back to rest.
+   * Rotation.x pitches the tip up/down, rotation.y swings it across, rotation.z
+   * rolls the edge into the direction of travel — a slash is a plane, not a
+   * jolt along the barrel.
+   */
+  const KATANA_SWING: { t: number; x: number; y: number; z: number; rx: number; ry: number; rz: number }[] = [
+    { t: 0.0, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 },
+    { t: 0.22, x: -0.24, y: 0.26, z: 0.06, rx: 0.52, ry: 0.45, rz: -0.95 }, // top-left windup
+    { t: 0.5, x: 0.2, y: -0.14, z: -0.06, rx: -0.52, ry: -0.5, rz: 0.45 }, // cut through
+    { t: 0.7, x: 0.13, y: -0.2, z: 0.05, rx: -0.6, ry: -0.36, rz: 0.8 }, // follow-through
+    { t: 1.0, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 },
+  ];
+  /** sample `KATANA_SWING` at progress p (0 = rest, 1 = recovered) */
+  const swingPose = (p: number) => {
+    let i = 0;
+    while (i < KATANA_SWING.length - 2 && p > KATANA_SWING[i + 1].t) i++;
+    const a = KATANA_SWING[i];
+    const b = KATANA_SWING[i + 1];
+    const u = clamp((p - a.t) / (b.t - a.t), 0, 1);
+    const e = u * u * (3 - 2 * u);
+    return {
+      x: a.x + (b.x - a.x) * e,
+      y: a.y + (b.y - a.y) * e,
+      z: a.z + (b.z - a.z) * e,
+      rx: a.rx + (b.rx - a.rx) * e,
+      ry: a.ry + (b.ry - a.ry) * e,
+      rz: a.rz + (b.rz - a.rz) * e,
+    };
+  };
   // Focus meter: the blade fills it by *landing* slashes (and by folding rounds
   // back), never by pulling the trigger. A whiff empties it. Filling it is what
   // opens the SLASH window, so the meter measures how the katana is being used
@@ -759,7 +799,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   function katanaSlash() {
     fx.katana();
     netFireT = 0.2;
-    recoil = 2.5;
+    // Restart the arc. The blade must never be animated by `recoil`: that is the
+    // gun's straight-back kick, and it is exactly what made a slash read as a
+    // pistol shot.
+    swingT = KATANA_SWING_DUR;
     const eye = eyePos();
     const fwd = fwdVec();
     let hitAny = false;
@@ -856,6 +899,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     player.vel.set(0, 0, 0);
     player.yaw = Math.atan2(-dir.x, -dir.z);
     fx.focusDash();
+    // The dash is a strike, so the blade arrives mid-cut rather than already
+    // hanging at rest: start the arc from the windup, not the top.
+    swingT = KATANA_SWING_DUR * 0.22;
     shakeT = 0.2;
     // A dash moves the body a long way in one frame: stamp it, so peers snap to
     // the arrival instead of watching an avatar sprint through the district.
@@ -1165,6 +1211,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     weapon: string;
     /** countdown to the next attack flourish while they hold the trigger */
     fireT: number;
+    /** countdown on the blade's arc, so spectators see the swing and not a
+     *  body standing still while ink appears in front of it */
+    swingT: number;
     walk: number;
     /** speed estimated from packet deltas, for leading a shot */
     vel: THREE.Vector3;
@@ -1248,6 +1297,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
           state: p.state,
           weapon: p.state.weapon,
           fireT: 0,
+          swingT: 0,
           walk: 0,
           vel: new THREE.Vector3(),
           lastT: now,
@@ -1336,7 +1386,27 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       P.legR.rotation.x = -swing;
       P.armL.rotation.x = -swing * 0.7;
       P.armR.rotation.x = swing * 0.7;
+      P.armR.rotation.z = 0;
+      P.foreR.rotation.z = 0;
       P.torso.rotation.y = Math.sin(a.walk * 0.5) * 0.06 * (s.moving ? 1 : 0);
+
+      // The blade, seen from outside: the sword arm climbs over the far
+      // shoulder and falls across the body, the torso turning with it. The
+      // blade hangs off `foreR`, so rotating the shoulder carries the sword
+      // through the same diagonal the first-person arc draws. Guns are left
+      // alone — their kick is a twitch, not a cut.
+      a.swingT = Math.max(0, a.swingT - dt);
+      if (a.weapon === "KATANA" && a.swingT > 0) {
+        const p = 1 - a.swingT / KATANA_SWING_DUR;
+        const up = clamp(p / 0.3, 0, 1); // blade climbing
+        const fall = clamp((p - 0.3) / 0.45, 0, 1); // the cut
+        const settle = clamp((p - 0.78) / 0.22, 0, 1); // back to guard
+        const arc = (from: number, to: number) => (from * up + (to - from * up) * fall) * (1 - settle);
+        P.armR.rotation.z = arc(2.05, -0.75);
+        P.armR.rotation.x = arc(0.55, -0.35);
+        P.foreR.rotation.z = arc(0.5, 0.1);
+        P.torso.rotation.y = arc(-0.32, 0.42);
+      }
 
       // Attack ink, drawn according to what they are holding: a muzzle splash
       // the moment a gun starts and a flicker while the trigger is held, or a
@@ -1348,6 +1418,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       else if (a.fireT <= 0) {
         const blade = a.weapon === "KATANA";
         a.fireT = blade ? 0.22 : 0.09;
+        if (blade) a.swingT = KATANA_SWING_DUR;
         const dir = new THREE.Vector3(Math.sin(a.yaw + Math.PI), 0, Math.cos(a.yaw + Math.PI));
         const m = a.pos.clone().add(new THREE.Vector3(0, blade ? 1.15 : 1.25, 0)).addScaledVector(dir, blade ? 0.9 : 0.5);
         if (blade) {
@@ -2856,6 +2927,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       if (!slots[curSlot].def.auto) mouseFire = false;
     }
     recoil = Math.max(0, recoil - dt * 14);
+    if (swingT > 0) swingT = Math.max(0, swingT - dt);
     blocking = mouseAim && slots[curSlot].def.katana === true;
 
     // camera
@@ -2889,8 +2961,16 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       const aimX = def.katana ? 0.27 : 0.22 * (1 - ads * 0.9);
       const aimY = -0.2 + ads * 0.03 - (reloadT > 0 ? 0.14 : 0) - switchT * 0.6;
       const aimZ = -0.42 + ads * 0.12;
-      vm.position.set(aimX + bobX * 0.5, aimY + bobY * 0.5, aimZ + recoil * 0.02);
-      vm.rotation.set(recoil * 0.04 + (reloadT > 0 ? 0.7 : 0), 0, 0);
+      if (def.katana) {
+        // Mid-slash the blade travels its diagonal arc; idle, the offsets are
+        // all zero and the sword simply rests where it always did.
+        const sw = swingPose(swingT > 0 ? 1 - swingT / KATANA_SWING_DUR : 1);
+        vm.position.set(aimX + sw.x + bobX * 0.5, aimY + sw.y + bobY * 0.5, aimZ + sw.z);
+        vm.rotation.set(sw.rx, sw.ry, sw.rz + (reloadT > 0 ? 0.7 : 0));
+      } else {
+        vm.position.set(aimX + bobX * 0.5, aimY + bobY * 0.5, aimZ + recoil * 0.02);
+        vm.rotation.set(recoil * 0.04 + (reloadT > 0 ? 0.7 : 0), 0, 0);
+      }
     }
   }
 
