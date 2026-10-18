@@ -601,7 +601,10 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
 
   const add = (i: Interaction) => interactions.push(i);
 
-  const addChest = (id: string, zone: Zone, x: number, zz: number, big: boolean, prompt: THREE.Vector3) => {
+  /** `radius` is how close a body must be for the prompt; a chest sealed in a
+   * thin-walled vault needs a shorter one or it advertises itself through the
+   * wall from the next room. */
+  const addChest = (id: string, zone: Zone, x: number, zz: number, big: boolean, prompt: THREE.Vector3, radius = 3.0) => {
     const s = chestBase(zone, x, zz, big);
     let opened = false;
     const lid = new THREE.Group();
@@ -614,7 +617,7 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
     add({
       id,
       pos: prompt,
-      radius: 3.0,
+      radius,
       label: () => (opened ? null : "OPEN TREASURE CHEST"),
       run: () => {
         if (opened) return null;
@@ -862,7 +865,7 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   sliders.push({ obj: templeSecret, base: templeSecret.position.clone(), dir: new THREE.Vector3(0, -1, 0), dist: 6.2, open: () => templeSecretOpen, collider: templeSecretCol, owner: S.colliders, colliderLive: true, k: 0 });
   // tucked deep enough that the vault's own wall denies the prompt: standing in
   // the sanctum must not advertise a chest behind a hidden door
-  addChest("chest-temple-secret", S, TX + 14.5, TZ - 5.5, true, new THREE.Vector3(TX + 14.5, 1.4, TZ - 5.5));
+  addChest("chest-temple-secret", S, TX + 14.5, TZ - 5.5, true, new THREE.Vector3(TX + 14.5, 1.4, TZ - 5.5), 2.0);
   treasurePile(S, TX + 13.4, TZ - 4.4);
   const templeLever = S.mesh(0.2, 1.4, 0.2, INK.GOLD, TX + 9.4, 1.1, TZ - 5.5);
   S.box(TX + 9.4, 1.0, TZ - 5.5, 0.7, 0.4, 0.9, INK.STONE, false, false);
