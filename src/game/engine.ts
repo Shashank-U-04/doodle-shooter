@@ -8,6 +8,7 @@ import { AudioFX } from "./audio";
 import { PAPER_FRAG } from "./shaders";
 import {
   INK,
+  INK_LIST,
   INK_RGB,
   LIGHT_DIR_WORLD,
   PAPER,
@@ -26,7 +27,8 @@ import {
   type PoseSample,
 } from "./world";
 import { buildDistrict, SAFE_SPAWNS, type District } from "./district";
-import { makeBlobRig, makeRig, makeWaspRig, type Rig } from "./rig";
+import { buildEgypt, type EgyptMap, type Mood, type Outcome as EgyptOutcome, type ZoneId as EgyptZoneId } from "./egypt";
+import { makeBlobRig, makeMummyRig, makeRig, makeWaspRig, type Rig } from "./rig";
 import { KATANA_MELEE } from "./weapons";
 import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
 import type { EngineCallbacks, GameHandle, HudState, NetPlayerState, NetRemotePlayer, NetShotOrigin } from "./types";
@@ -65,7 +67,7 @@ type Enemy = {
   strafe: number;
   dying: number;
   // ---- reference AI state ----
-  state: "spawn" | "hunt" | "stunned";
+  state: "spawn" | "hunt" | "stunned" | "idle";
   yaw: number;
   yawT: number;
   los: boolean;
@@ -104,6 +106,11 @@ type Enemy = {
   flyState: "orbit" | "dive" | "stunned";
   flyT: number;
   diveHit: boolean;
+  // ---- Egypt mummies: a room they belong to, and a stagger when hit ----
+  home: THREE.Vector3;
+  patrolT: number;
+  patrolGoal: THREE.Vector3;
+  hitT: number;
 };
 
 type BossAtk = {
@@ -181,7 +188,9 @@ type Pickup = { kind: "ammo" | "health"; pos: THREE.Vector3; mesh: THREE.Group }
 
 /* ============================== engine ============================== */
 
-export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHandle {
+export type MapId = "district" | "egypt";
+
+export function createGame(container: HTMLElement, cb: EngineCallbacks, opts: { map?: MapId } = {}): GameHandle {
   /* ---------- renderer / scene / paper post ---------- */
   const canvas = document.createElement("canvas");
   canvas.className = "dd-canvas";
@@ -225,10 +234,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       uLowHp: { value: 0 },
       uOutline: { value: 1 },
       uPaper: { value: new THREE.Vector3(...PAPER_RGB) },
+      uChalk: { value: 0 },
       uInks: {
-        value: [INK.BLUE, INK.RED, INK.BLACK, INK.ORANGE, INK.GREEN, INK.PINK].map(
-          (i) => new THREE.Vector3(...INK_RGB[i]),
-        ),
+        value: INK_LIST.map((i) => new THREE.Vector3(...INK_RGB[i])),
       },
       uNear: { value: camera.near },
       uFar: { value: camera.far },
@@ -245,9 +253,75 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   });
   postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
 
-  const district: District = buildDistrict(scene);
-  const world = { colliders: district.colliders, bounds: district.bounds };
+  // The district and the valley share the engine. Only the active area's
+  // geometry is visible and only its colliders are in the physics list, which
+  // is what lets a tomb sit 300 m below the dunes without costing a frame.
+  const districtGroup = new THREE.Group();
+  scene.add(districtGroup);
+  const district: District = buildDistrict(districtGroup);
+  let egypt: EgyptMap | null = opts.map === "egypt" ? buildEgypt(scene) : null;
+  // The two maps sit at the same coordinates; only one may draw at a time.
+  districtGroup.visible = !egypt;
+
+  type ActiveZone = {
+    id: string;
+    title: string;
+    sub: string;
+    colliders: Collider[];
+    bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
+    floorY: number;
+    spawns: THREE.Vector3[];
+    start: THREE.Vector3;
+    startYaw: number;
+    mood?: Mood;
+  };
+
+  const districtZone: ActiveZone = {
+    id: "district",
+    title: "DOODLE DISTRICT",
+    sub: "street level · waves incoming",
+    colliders: district.colliders,
+    bounds: district.bounds,
+    floorY: 0,
+    spawns: district.spawnPoints,
+    start: new THREE.Vector3(0, 0.2, 38),
+    startYaw: Math.PI,
+  };
+  const zoneFor = (id: EgyptZoneId): ActiveZone => {
+    const z = egypt!.zones[id];
+    return {
+      id: z.id,
+      title: z.title,
+      sub: z.sub,
+      colliders: z.colliders,
+      bounds: z.bounds,
+      floorY: z.floorY,
+      spawns: z.spawnPoints,
+      start: z.start,
+      startYaw: z.startYaw,
+      mood: z.mood,
+    };
+  };
+  let active: ActiveZone = egypt ? zoneFor("surface") : districtZone;
+  const world = { colliders: active.colliders, bounds: active.bounds, floorY: active.floorY };
   const fx = new AudioFX();
+
+  /**
+   * Paint the frame for the area we are standing in.
+   *
+   * The renderer is one shared ink pipeline, so "lighting" here means the paper
+   * the ink sits on: warm sunlit sand above ground, a lamplit ochre sanctuary,
+   * and near-black tomb stone with the strokes lifted towards chalk so the
+   * hatching still reads by torchlight.
+   */
+  const applyMood = (mood?: Mood) => {
+    const paper = mood ? mood.paper : PAPER_RGB;
+    (postMat.uniforms.uPaper.value as THREE.Vector3).set(paper[0], paper[1], paper[2]);
+    postMat.uniforms.uChalk.value = mood ? mood.chalk : 0;
+    postMat.uniforms.uLineMode.value = mood ? mood.lines : 0;
+    if (scene.background instanceof THREE.Color) scene.background.setHex(mood ? mood.background : PAPER);
+  };
+  applyMood(active.mood);
 
   /* ---------- input state ---------- */
   const keys = new Set<string>();
@@ -308,9 +382,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
 
   /* ---------- player ---------- */
   const player = {
-    pos: new THREE.Vector3(0, 0.2, 38),
+    pos: active.start.clone(),
     vel: new THREE.Vector3(),
-    yaw: Math.PI,
+    yaw: active.startYaw,
     pitch: 0,
     hp: 120,
     maxHp: 120,
@@ -631,7 +705,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     const mesh = new THREE.Mesh(splatGeo, makeInkMaterial(ink, false, THREE.FrontSide, true));
     mesh.rotation.x = -Math.PI / 2;
     mesh.rotation.z = rand(0, Math.PI * 2);
-    mesh.position.set(pos.x, 0.02 + splats.length * 0.0004, pos.z);
+    mesh.position.set(pos.x, world.floorY + 0.02 + splats.length * 0.0004, pos.z);
     mesh.scale.setScalar(rand(0.7, 1.4));
     scene.add(mesh);
     splats.push({ mesh, life: 12 });
@@ -672,7 +746,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   function raycastWorld(origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number, minTopY = 1.2): number {
     let best = maxDist;
     for (const c of world.colliders) {
-      if (c.maxY < minTopY) continue;
+      if (c.maxY < world.floorY + minTopY) continue;
       const t = rayAABB(origin, dir, c, best);
       if (t >= 0 && t < best) best = t;
     }
@@ -926,6 +1000,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   /* ---------- damage ---------- */
   function damageEnemy(e: Enemy, amount: number, crit: boolean, source: string) {
     if (!e.alive) return;
+    // A dormant guardian shot from across the room wakes where it stands; it
+    // does not get the sarcophagus-climb animation for a bullet.
+    if (e.state === "idle") e.state = "hunt";
+    e.hitT = 0.3;
     if (e.def.shield && e.shieldMesh && source !== "katana" && source !== "blast" && source !== "focus") {
       const toPlayer = player.pos.clone().sub(e.pos).normalize();
       const facing = new THREE.Vector3(Math.sin(e.root.rotation.y), 0, Math.cos(e.root.rotation.y));
@@ -979,6 +1057,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     cb.onHitmarker(true, crit);
     spawnSplat(e.pos, e.def.ink);
     spawnShards(e.pos.clone().add(new THREE.Vector3(0, 1, 0)), e.def.ink, e.def.boss ? 22 : 12, 4);
+    // Tomb guardians carry tomb goods: one supply drop, on the floor, in reach.
+    if (e.kind === "mummy") spawnPickupAt(Math.random() < 0.58 ? "ammo" : "health", e.pos.clone().setY(world.floorY + 0.55));
 
     // A blade kill is worth a second helping of focus (it is the harder thing to
     // do), while any other weapon's kill wipes the meter: the SLASH window is
@@ -1043,6 +1123,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   function makeLocalRig(def: EnemyDef) {
     let rigB: Rig;
     if (def.model === "flyer") rigB = makeWaspRig({ ink: def.ink, bodyW: 1, headS: 1, limbR: 0.03, scale: def.scale });
+    else if (def.model === "mummy") rigB = makeMummyRig({ ink: def.ink, accent: def.accent ?? INK.TURQ, bodyW: def.bodyW ?? 1, headS: def.headS ?? 1, limbR: def.limbR ?? 0.036, scale: def.scale });
     else if (def.model === "blob") rigB = makeBlobRig({ ink: def.ink, bodyW: 1, headS: 1, limbR: 0.03, scale: def.scale, weapon: def.weapon }, def.bossKind);
     else rigB = makeRig({ ink: def.ink, accent: def.accent ?? INK.BLACK, bodyW: def.bodyW ?? 1, headS: def.headS ?? 1, limbR: def.limbR ?? 0.032, hat: def.hat, shield: def.shield, weapon: def.weapon, scale: def.scale, smile: def.weapon === "blade", vest: def.vest, coat: def.coat, visor: def.visor, bulky: def.bulky, backpack: def.backpack });
     const P = rigB.parts;
@@ -1064,11 +1145,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       headY: rigB.headWorldY,
     };
   }
-  function spawnEnemy(kind: EnemyKind): Enemy {
+  function spawnEnemy(kind: EnemyKind, at?: THREE.Vector3, idle = false, faceYaw?: number): Enemy {
     const def = ED[kind];
     const built = makeLocalRig(def);
     let pos: THREE.Vector3;
-    if (def.flying) {
+    if (at) {
+      pos = at.clone();
+    } else if (def.flying) {
       const a = rand(0, Math.PI * 2);
       const r = rand(20, 34);
       pos = new THREE.Vector3(clamp(player.pos.x + Math.cos(a) * r, world.bounds.minX, world.bounds.maxX), rand(4, 9), clamp(player.pos.z + Math.sin(a) * r, world.bounds.minZ, world.bounds.maxZ));
@@ -1078,16 +1161,16 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       let best: THREE.Vector3 | null = null;
       let bestD = -1;
       for (let i = 0; i < 14; i++) {
-        const sp = pick(district.spawnPoints);
+        const sp = pick(active.spawns);
         const d = sp.distanceTo(player.pos);
         if (d < 14 || d <= bestD) continue;
-        if (!navOpen(sp.x, sp.z) || pointInSolid(sp.x, 0.2, sp.z, 0.7)) continue;
+        if (!navOpen(sp.x, sp.z) || pointInSolid(sp.x, world.floorY + 0.2, sp.z, 0.7)) continue;
         bestD = d;
         best = sp;
       }
-      if (!best) best = findOpenSpot(player.pos, 22, 40, true) ?? player.pos.clone().setY(0.2);
+      if (!best) best = findOpenSpot(player.pos, 22, 40, true) ?? player.pos.clone().setY(world.floorY + 0.2);
       pos = best.clone();
-      pos.y = 0.2;
+      pos.y = world.floorY + 0.2;
     }
     const e: Enemy = {
       kind,
@@ -1117,8 +1200,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       t: 0,
       strafe: Math.random() < 0.5 ? 1 : -1,
       dying: 0,
-      state: "spawn",
-      yaw: rand(0, Math.PI * 2),
+      state: idle ? "idle" : "spawn",
+      yaw: faceYaw ?? rand(0, Math.PI * 2),
       yawT: 0,
       los: false,
       losT: 0,
@@ -1155,9 +1238,13 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       flyState: "orbit",
       flyT: 0,
       diveHit: false,
+      home: pos.clone(),
+      patrolT: rand(1, 4),
+      patrolGoal: pos.clone(),
+      hitT: 0,
     };
     built.root.position.copy(pos);
-    built.root.rotation.y = rand(0, Math.PI * 2);
+    built.root.rotation.y = e.yaw;
     scene.add(built.root);
     enemies.push(e);
     if (def.boss) cb.onBoss(def.name, 1);
@@ -1533,16 +1620,19 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // instead of leaning into a wall forever. Low geometry (stairs, kerbs) stays
   // walkable; anything tall at body height blocks a cell.
   const NAV_CELL = 2;
-  const navMinX = world.bounds.minX - 2;
-  const navMinZ = world.bounds.minZ - 2;
-  const navW = Math.max(2, Math.ceil((world.bounds.maxX + 2 - navMinX) / NAV_CELL));
-  const navH = Math.max(2, Math.ceil((world.bounds.maxZ + 2 - navMinZ) / NAV_CELL));
-  const navBlocked = new Uint8Array(navW * navH);
-  const navG = new Float32Array(navW * navH);
-  const navF = new Float32Array(navW * navH);
-  const navFrom = new Int32Array(navW * navH);
-  const navSeen = new Int32Array(navW * navH);
-  const navDone = new Int32Array(navW * navH);
+  // Rebuilt whenever the player crosses into another area: a tomb corridor and
+  // a dune field have nothing in common, and a single grid spanning both would
+  // be mostly unreachable rock.
+  let navMinX = active.bounds.minX - 2;
+  let navMinZ = active.bounds.minZ - 2;
+  let navW = 2;
+  let navH = 2;
+  let navBlocked = new Uint8Array(4);
+  let navG = new Float32Array(4);
+  let navF = new Float32Array(4);
+  let navFrom = new Int32Array(4);
+  let navSeen = new Int32Array(4);
+  let navDone = new Int32Array(4);
   let navEpoch = 0;
   let spawnSlot = 0;
 
@@ -1553,10 +1643,43 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     return navBlocked[navIdx(navCellX(x), navCellZ(z))] === 0;
   }
 
+  function buildNav() {
+    navMinX = world.bounds.minX - 2;
+    navMinZ = world.bounds.minZ - 2;
+    navW = Math.max(2, Math.ceil((world.bounds.maxX + 2 - navMinX) / NAV_CELL));
+    navH = Math.max(2, Math.ceil((world.bounds.maxZ + 2 - navMinZ) / NAV_CELL));
+    const cells = navW * navH;
+    navBlocked = new Uint8Array(cells);
+    navG = new Float32Array(cells);
+    navF = new Float32Array(cells);
+    navFrom = new Int32Array(cells);
+    navSeen = new Int32Array(cells);
+    navDone = new Int32Array(cells);
+    navEpoch = 0;
+    const floor = world.floorY;
+    for (let cz = 0; cz < navH; cz++) {
+      for (let cx = 0; cx < navW; cx++) {
+        const x0 = navMinX + cx * NAV_CELL;
+        const z0 = navMinZ + cz * NAV_CELL;
+        const x1 = x0 + NAV_CELL;
+        const z1 = z0 + NAV_CELL;
+        let blocked = 0;
+        for (const c of world.colliders) {
+          if (c.maxY - floor <= 0.55) continue; // walkable step or kerb
+          if (c.minY - floor > 2.2) continue; // overhead deck
+          if (c.maxX <= x0 || c.minX >= x1 || c.maxZ <= z0 || c.minZ >= z1) continue;
+          blocked = 1;
+          break;
+        }
+        navBlocked[navIdx(cx, cz)] = blocked;
+      }
+    }
+  }
+
   // is this spot inside a wall/block rather than standing room?
   function pointInSolid(x: number, y: number, z: number, pad = 0.5) {
     for (const c of world.colliders) {
-      if (c.maxY - 0.2 <= 0.55) continue; // floor and steps are fine
+      if (c.maxY - world.floorY <= 0.55) continue; // floor and steps are fine
       if (x > c.minX - pad && x < c.maxX + pad && z > c.minZ - pad && z < c.maxZ + pad && y > c.minY - pad && y < c.maxY) {
         return true;
       }
@@ -1573,14 +1696,14 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       const r = rand(minD, maxD);
       const x = clamp(center.x + Math.cos(a) * r, world.bounds.minX, world.bounds.maxX);
       const z = clamp(center.z + Math.sin(a) * r, world.bounds.minZ, world.bounds.maxZ);
-      if (!navOpen(x, z) || pointInSolid(x, 0.2, z, 0.7)) continue;
-      const p = new THREE.Vector3(x, 0.2, z);
+      if (!navOpen(x, z) || pointInSolid(x, world.floorY + 0.2, z, 0.7)) continue;
+      const p = new THREE.Vector3(x, world.floorY + 0.2, z);
       if (needPath) {
         // Only a couple of candidates are ever path-checked: a search that
         // cannot reach the player explores the whole grid, and 26 of those in
         // one frame is a stall, not a spawn.
         if (pathTries++ >= 2) break;
-        if (!navFindPath(p, center.clone().setY(0.2))) continue;
+        if (!navFindPath(p, center.clone().setY(world.floorY + 0.2))) continue;
       }
       return p;
     }
@@ -1601,10 +1724,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // Street level only: several pads sit on rooftops, and landing on one is a
     // fall the player never asked for. Lifted to drop height up front so the
     // clearance test runs at the exact y the body will occupy.
-    const street = district.spawnPoints
-      .filter((s) => s.y <= 0.5)
-      .map((s) => s.clone().setY(Math.max(0.2, s.y)));
-    const opts = { radius: player.radius, height: player.height, colliders: world.colliders, groundOnly: 0.5 };
+    const floor = world.floorY;
+    const street = active.spawns
+      .filter((s) => s.y - floor <= 0.5)
+      .map((s) => s.clone().setY(floor + 0.2));
+    const opts = { radius: player.radius, height: player.height, colliders: world.colliders, groundOnly: floor + 0.5 };
 
     if (typeof preferIndex === "number" && street.length > 0) {
       // The numbered pad the match handed out: how a fresh match spreads the
@@ -1628,8 +1752,10 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     });
     if (roomy) return roomy;
 
-    const known = pickSafeSpawn(SAFE_SPAWNS, opts);
-    if (known) return known.clone();
+    if (!egypt) {
+      const known = pickSafeSpawn(SAFE_SPAWNS, opts);
+      if (known) return known.clone();
+    }
 
     // Nothing hand-placed works: find open ground the same way an enemy that has
     // been walled away does. No path check — we are allowed to be anywhere.
@@ -1640,23 +1766,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     return player.pos.clone();
   }
 
-  for (let cz = 0; cz < navH; cz++) {
-    for (let cx = 0; cx < navW; cx++) {
-      const x0 = navMinX + cx * NAV_CELL;
-      const z0 = navMinZ + cz * NAV_CELL;
-      const x1 = x0 + NAV_CELL;
-      const z1 = z0 + NAV_CELL;
-      let blocked = 0;
-      for (const c of world.colliders) {
-        if (c.maxY - 0.2 <= 0.55) continue; // walkable step or kerb
-        if (c.minY > 2.2) continue; // overhead deck
-        if (c.maxX <= x0 || c.minX >= x1 || c.maxZ <= z0 || c.minZ >= z1) continue;
-        blocked = 1;
-        break;
-      }
-      navBlocked[navIdx(cx, cz)] = blocked;
-    }
-  }
+  buildNav();
 
   function navFindPath(from: THREE.Vector3, goal: THREE.Vector3): THREE.Vector3[] | null {
     const startI = navIdx(navCellX(from.x), navCellZ(from.z));
@@ -1773,7 +1883,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     while (i !== startI && i >= 0 && pts.length < 200) {
       const cx = i % navW;
       const cz = (i - cx) / navW;
-      pts.push(new THREE.Vector3(navMinX + (cx + 0.5) * NAV_CELL, 0.2, navMinZ + (cz + 0.5) * NAV_CELL));
+      pts.push(new THREE.Vector3(navMinX + (cx + 0.5) * NAV_CELL, world.floorY + 0.2, navMinZ + (cz + 0.5) * NAV_CELL));
       i = navFrom[i];
     }
     pts.reverse();
@@ -1788,7 +1898,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     if (len < 0.2) return true;
     tmpLosDir.divideScalar(len);
     for (const c of world.colliders) {
-      if (c.maxY <= 0.35) continue; // the floor never blocks sight
+      if (c.maxY <= world.floorY + 0.35) continue; // the floor never blocks sight
       const t = rayAABB(from, tmpLosDir, c, len);
       if (t >= 0 && t < len - 0.15) return false;
     }
@@ -2462,15 +2572,30 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       if (e.dying <= 0) scene.remove(e.root);
       return;
     }
-    // pop-in, exactly like the original: a quick scale-up wobble
+    // pop-in, exactly like the original: a quick scale-up wobble. A mummy does
+    // not pop — it climbs out of the sarcophagus, so the body rises while the
+    // wrappings unfold instead of inflating from nothing.
     if (e.state === "spawn") {
-      const k = clamp(e.t / 0.6, 0, 1);
-      e.root.scale.setScalar(Math.max(0.001, k * e.def.scale * (1 + Math.sin(e.t * 60) * 0.12 * (1 - k))));
-      e.root.position.copy(e.pos);
-      e.root.rotation.y = e.yaw;
-      if (e.t >= 0.6) {
+      const dur = e.def.model === "mummy" ? 1.1 : 0.6;
+      const k = clamp(e.t / dur, 0, 1);
+      if (e.def.model === "mummy") {
+        e.root.scale.setScalar(e.def.scale);
+        e.root.position.copy(e.pos);
+        e.root.position.y = e.pos.y - (1 - k) * 1.35;
+        e.root.rotation.y = e.yaw;
+        e.torso.rotation.x = 0.95 * (1 - k) + 0.16;
+        e.armL.rotation.x = e.armR.rotation.x = -0.5 - (1 - k) * 1.1;
+        e.head.rotation.x = -0.5 * (1 - k);
+      } else {
+        e.root.scale.setScalar(Math.max(0.001, k * e.def.scale * (1 + Math.sin(e.t * 60) * 0.12 * (1 - k))));
+        e.root.position.copy(e.pos);
+        e.root.rotation.y = e.yaw;
+      }
+      if (e.t >= dur) {
         e.state = "hunt";
         e.root.scale.setScalar(e.def.scale);
+        e.root.position.copy(e.pos);
+        e.torso.rotation.x = 0.16;
       }
       return;
     }
@@ -2489,6 +2614,41 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       e.los = losClear(tmpLosFrom, eyePos());
     }
     e.cooldown -= dt;
+
+    // Dormant mummy: a slow patrol around its own crypt, with one ear open.
+    // Anything inside 13 m with a clear line wakes it — or a bullet does, from
+    // anywhere (see damageEnemy).
+    if (e.state === "idle") {
+      if ((dist < 13 && e.los) || dist < 3.2) {
+        e.state = "spawn";
+        e.t = 0;
+        fx.mummy();
+        cb.onTip("<b>THE MUMMY AWAKENS</b>", 1.5);
+      } else {
+        e.patrolT -= dt;
+        if (e.patrolT <= 0) {
+          e.patrolT = rand(3.5, 6.5);
+          e.patrolGoal.set(e.home.x + rand(-3.2, 3.2), e.home.y, e.home.z + rand(-3.2, 3.2));
+        }
+        const gx = e.patrolGoal.x - e.pos.x;
+        const gz = e.patrolGoal.z - e.pos.z;
+        if (Math.hypot(gx, gz) > 1.2) steer(e, dt, e.patrolGoal.x, e.patrolGoal.z, 1.35, 10);
+        else {
+          e.vel.x *= Math.max(0, 1 - 5 * dt);
+          e.vel.z *= Math.max(0, 1 - 5 * dt);
+        }
+        e.vel.y -= 24 * dt;
+        const rmov = resolveMove(e.pos, e.vel, 0.45 * e.def.scale, 1.85 * e.def.scale, world.colliders, dt);
+        e.onGround = rmov.onGround;
+        e.pos.x = clamp(e.pos.x, world.bounds.minX, world.bounds.maxX);
+        e.pos.z = clamp(e.pos.z, world.bounds.minZ, world.bounds.maxZ);
+        e.yaw += (e.yawT - e.yaw) * (1 - Math.exp(-4 * dt));
+        e.root.position.copy(e.pos);
+        e.root.rotation.y = e.yaw;
+        animateRig(e, dt, dist, dy);
+        return;
+      }
+    }
 
     if (e.state === "stunned") {
       e.stunDur -= dt;
@@ -2561,7 +2721,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     e.hitWall = rmov.hitWall;
     e.pos.x = clamp(e.pos.x, world.bounds.minX, world.bounds.maxX);
     e.pos.z = clamp(e.pos.z, world.bounds.minZ, world.bounds.maxZ);
-    if (e.pos.y < -6) {
+    if (e.pos.y < world.floorY - 6) {
       killEnemy(e, "self", false);
       dropLaser(e);
       return;
@@ -2591,6 +2751,33 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
   // comes from a small hip roll and a torso counter-rotation.
   function animateRig(e: Enemy, dt: number, dist: number, dy: number) {
     const spd = Math.hypot(e.vel.x, e.vel.z);
+    // mummies shamble: stiff-legged, arms out in front, torso permanently
+    // hunched, and they flinch away from a hit before recovering.
+    if (e.def.model === "mummy") {
+      e.hitT = Math.max(0, e.hitT - dt);
+      const awake = e.state !== "idle";
+      const ph = e.t * (2.4 + spd * 0.9);
+      const amp = awake ? 0.34 : 0.05;
+      const sw = Math.sin(ph);
+      e.legL.rotation.x = -sw * amp;
+      e.legR.rotation.x = sw * amp;
+      e.shinL.rotation.x = Math.max(0, Math.sin(ph - 0.9)) * amp * 0.8;
+      e.shinR.rotation.x = Math.max(0, Math.sin(ph + Math.PI - 0.9)) * amp * 0.8;
+      const atk = e.attackT > 0 ? 1 : 0;
+      e.armL.rotation.x = -1.05 - sw * amp * 0.3 + atk * 0.7;
+      e.armR.rotation.x = -1.15 + sw * amp * 0.3 - atk * 1.4;
+      e.armL.rotation.z = 0.16;
+      e.armR.rotation.z = -0.16;
+      e.foreL.rotation.x = -0.45 + atk * 0.4;
+      e.foreR.rotation.x = -0.55 + atk * 0.7;
+      e.torso.rotation.x = 0.16 - atk * 0.12 + e.hitT * 0.9 + Math.sin(ph) * 0.03;
+      e.torso.rotation.y = sw * 0.08;
+      e.torso.rotation.z = 0;
+      e.hips.rotation.z = Math.sin(ph * 0.5) * 0.05;
+      e.head.rotation.y = Math.sin(e.t * 0.8) * (awake ? 0.04 : 0.16);
+      e.head.rotation.x = Math.sin(e.t * 1.3) * 0.05;
+      return;
+    }
     // blobs and the wasp have no skeleton to pose: a wobble and a few wiggling
     // limbs read better than a walk cycle on a body with no knees.
     if (e.def.model) {
@@ -2686,6 +2873,12 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       cb.onMessage(`WAVE ${n}`, n === 1 ? subs[0] : modifierName || pick(subs), 2.6);
     }
     const avail = SPAWN_TABLE.filter((r) => n >= r.from);
+    // The valley's own roster: mummies join the waves, and a buried room has no
+    // business spawning a paper wasp at 8 m up.
+    if (egypt && (active.id === "interior" || active.id === "tomb")) {
+      avail.push({ t: "mummy", from: 1, w: 8 });
+      for (let i = avail.length - 1; i >= 0; i--) if (avail[i].t === "flyer" || avail[i].t === "sniper") avail.splice(i, 1);
+    }
     const totalW = avail.reduce((a, c) => a + c.w, 0);
     for (let i = 0; i < count; i++) {
       let c = Math.random() * totalW;
@@ -2718,25 +2911,36 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     pushHud();
   }
 
+  function spawnPickupAt(kind: "ammo" | "health", pos: THREE.Vector3) {
+    const g = new THREE.Group();
+    const ink: InkId = kind === "ammo" ? INK.BLUE : INK.GREEN;
+    const m = makeInkMaterial(ink, true);
+    const box = new THREE.Mesh(pickupGeo, m);
+    g.add(box);
+    if (kind === "health") {
+      const bar = new THREE.Mesh(pickupBarGeo, m);
+      bar.rotation.z = Math.PI / 4;
+      g.add(bar);
+    }
+    g.position.copy(pos);
+    scene.add(g);
+    pickups.push({ kind, pos, mesh: g });
+  }
+
   function spawnPickups() {
-    for (let i = 0; i < 7; i++) {
-      const kind: "ammo" | "health" = i < 5 ? "ammo" : "health";
-      const a = rand(0, Math.PI * 2);
-      const r = rand(8, 40);
-      const pos = new THREE.Vector3(clamp(Math.cos(a) * r, world.bounds.minX, world.bounds.maxX), 0.6, clamp(Math.sin(a) * r, world.bounds.minZ, world.bounds.maxZ));
-      const g = new THREE.Group();
-      const ink: InkId = kind === "ammo" ? INK.BLUE : INK.GREEN;
-      const m = makeInkMaterial(ink, true);
-      const box = new THREE.Mesh(pickupGeo, m);
-      g.add(box);
-      if (kind === "health") {
-        const bar = new THREE.Mesh(pickupBarGeo, m);
-        bar.rotation.z = Math.PI / 4;
-        g.add(bar);
+    const n = egypt ? 5 : 7;
+    for (let i = 0; i < n; i++) {
+      const kind: "ammo" | "health" = i < n - 2 ? "ammo" : "health";
+      let pos: THREE.Vector3;
+      if (egypt && active.spawns.length > 0) {
+        // A supply crate in a tomb belongs on a paved pad, not inside a wall.
+        pos = pick(active.spawns).clone().setY(world.floorY + 0.6);
+      } else {
+        const a = rand(0, Math.PI * 2);
+        const r = rand(8, 40);
+        pos = new THREE.Vector3(clamp(Math.cos(a) * r, world.bounds.minX, world.bounds.maxX), world.floorY + 0.6, clamp(Math.sin(a) * r, world.bounds.minZ, world.bounds.maxZ));
       }
-      g.position.copy(pos);
-      scene.add(g);
-      pickups.push({ kind, pos, mesh: g });
+      spawnPickupAt(kind, pos);
     }
   }
 
@@ -3199,12 +3403,139 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       focus: clamp(focusCharge, 0, 1),
       focusOn: slowmoT > 0,
       blips,
+      area: active.title,
+      prompt: egypt ? (egypt.nearest(player.pos)?.label ?? "") : "",
+      dark: !!active.mood && active.mood.chalk > 0.6,
     };
     cb.onHud(hud);
   }
 
+  /* ---------- Egypt: area travel and interaction ---------- */
+  const visitedZones = new Set<string>();
+
+  /**
+   * Move to another area.
+   *
+   * Only the destination's colliders, bounds, floor, spawn pads and palette go
+   * live; the other groups are hidden. The player's health, ammo, grenades and
+   * scores are deliberately untouched — a doorway is not a reset. Living wave
+   * enemies that came from the wave are put back in the queue so it continues
+   * in the new room instead of being stranded behind a stone door, while the
+   * mummies that guard a chamber are left to it rather than trailing you.
+   */
+  function travelTo(dest: NonNullable<EgyptOutcome["travel"]>) {
+    if (!egypt) return;
+    // A wave that started in the valley cannot send its paper wasps or snipers
+    // into a sealed tomb: the roster is re-rolled to the room you are entering,
+    // so the count survives the door even when the kind cannot.
+    const enclosed = dest.zone !== "surface";
+    for (const e of enemies) {
+      if (e.alive) {
+        if (e.kind !== "mummy") {
+          const airy = e.kind === "flyer" || e.kind === "sniper";
+          queue.push(airy && enclosed ? (dest.zone === "tomb" ? "mummy" : "grunt") : e.kind);
+        }
+      }
+      dropLaser(e);
+      scene.remove(e.root);
+      releaseRig(e.root);
+    }
+    enemies.length = 0;
+    for (const b of bullets) scene.remove(b.mesh);
+    bullets.length = 0;
+    for (const g of grenades) scene.remove(g.mesh);
+    grenades.length = 0;
+    for (const p of pickups) scene.remove(p.mesh);
+    pickups.length = 0;
+
+    active = zoneFor(dest.zone);
+    egypt.setZone(dest.zone);
+    world.colliders = active.colliders;
+    world.bounds = active.bounds;
+    world.floorY = active.floorY;
+    buildNav();
+
+    player.pos.set(dest.x, dest.y, dest.z);
+    player.vel.set(0, 0, 0);
+    player.yaw = dest.yaw;
+    player.pitch = 0;
+    player.onGround = false;
+    player.grap.active = false;
+    player.height = CI;
+    camera.position.set(player.pos.x, player.pos.y + 1.6, player.pos.z);
+    camera.rotation.set(0, player.yaw, 0);
+    applyMood(active.mood);
+    enemiesLeft = queue.length;
+    markTeleport();
+    cb.onMessage(active.title, active.sub, 2.8);
+
+    // A buried room introduces its standing guardians once; kill them and they
+    // stay gone, which is what makes clearing the tomb feel permanent.
+    if (!visitedZones.has(dest.zone)) {
+      visitedZones.add(dest.zone);
+      for (const d of egypt.zones[dest.zone].dormant) spawnEnemy("mummy", d.pos.clone(), true, d.yaw);
+    }
+    pushHud();
+  }
+
+  /** Use the nearest doorway, chest, sarcophagus, lever or hatch. */
+  function interact() {
+    if (!egypt || state !== "playing" || !player.alive) return;
+    const near = egypt.nearest(player.pos);
+    if (!near) return;
+    const out = egypt.activate(near.id);
+    if (!out) return;
+    if (out.sound === "stone") fx.stone();
+    else if (out.sound === "chest") fx.pickup();
+    else if (out.sound === "mummy") fx.mummy();
+    if (out.loot) {
+      const l = out.loot;
+      if (l.health) player.hp = clamp(player.hp + l.health, 0, player.maxHp);
+      if (l.grenades) player.grenades = Math.min(player.maxGrenades, player.grenades + l.grenades);
+      if (l.ammo) {
+        for (const s of slots) {
+          if (Number.isFinite(s.def.maxReserve)) s.reserve = Math.min(s.def.maxReserve, s.reserve + l.ammo);
+        }
+      }
+      if (l.score) addScore(l.score, "TREASURE");
+      fx.pickup();
+    }
+    if (out.awaken) for (const p of out.awaken) spawnEnemy("mummy", p, false, 0);
+    if (out.tip) cb.onTip(out.tip, 2.6);
+    if (out.travel) travelTo(out.travel);
+    else pushHud();
+  }
+
   /* ---------- state transitions ---------- */
+  // A fresh run gets a fresh valley: doors closed, sarcophagi sealed, chests
+  // full again. Rebuilding is simpler (and far less error-prone) than unwinding
+  // every interactable's private state, and it happens only on a restart.
+  let egyptBuiltThisRun = false;
   function resetRun() {
+    // A restart always begins at the map's own starting area, not wherever the
+    // previous run happened to end.
+    if (egypt) {
+      if (egyptBuiltThisRun) {
+        for (const z of Object.values(egypt.zones)) {
+          scene.remove(z.group);
+          z.group.traverse((o) => {
+            const mesh = o as THREE.Mesh;
+            if (mesh.geometry) mesh.geometry.dispose();
+          });
+        }
+        egypt = buildEgypt(scene);
+        districtGroup.visible = false;
+      }
+      egyptBuiltThisRun = true;
+      active = zoneFor("surface");
+      egypt.setZone("surface");
+      world.colliders = active.colliders;
+      world.bounds = active.bounds;
+      world.floorY = active.floorY;
+      buildNav();
+      applyMood(active.mood);
+      visitedZones.clear();
+    }
     for (const e of enemies) {
       scene.remove(e.root);
       releaseRig(e.root);
@@ -3225,9 +3556,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
       s.mag = s.def.magSize;
       s.reserve = s.def.reserve;
     }
-    player.pos.set(0, 0.2, 38);
+    player.pos.copy(active.start);
     player.vel.set(0, 0, 0);
-    player.yaw = Math.PI;
+    player.yaw = active.startYaw;
     player.pitch = 0;
     player.hp = player.maxHp;
     player.alive = true;
@@ -3304,16 +3635,33 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
     // A non-finite position is unrecoverable: the camera matrix goes NaN and
     // the scene stops drawing entirely. Recover instead of freezing.
     if (!Number.isFinite(player.pos.x + player.pos.y + player.pos.z)) {
-      player.pos.set(0, 0.2, 38);
+      player.pos.copy(active.start);
       player.vel.set(0, 0, 0);
     }
     // Fell out of the world (through a seam, off the arena rim): back to the
     // start point instead of being stranded under the map forever. Enemies
     // already have this net; the player deserved the same.
-    if (player.pos.y < -6) {
-      player.pos.set(0, 0.2, 38);
+    if (player.pos.y < world.floorY - 6) {
+      player.pos.copy(active.start);
       player.vel.set(0, 0, 0);
       markTeleport();
+    }
+    // ---- Egypt: doors, traps, hatches and area transitions ----
+    if (egypt) {
+      const collidersBefore = world.colliders.length;
+      const egyptFrame = egypt.update(t, dtRaw, player.pos);
+      if (egyptFrame.tip) cb.onTip(egyptFrame.tip, 2.2);
+      // A stone door leaving the collider list opens a route through it. The
+      // nav grid was baked with it shut, so refresh it — otherwise a wave queued
+      // outside a gate the player has just opened would only ever reach them
+      // through the path-fail valve.
+      if (world.colliders.length !== collidersBefore) buildNav();
+      const spike = egypt.hazard(player.pos, performance.now());
+      if (spike > 0) damagePlayer(spike);
+      if (player.alive) {
+        const door = egypt.travelAt(player.pos);
+        if (door) travelTo(door);
+      }
     }
     // Our own recent poses, sampled a few times a second. This is the victim's
     // half of hit validation: "where was I when that shot was fired" cannot be
@@ -3493,6 +3841,9 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks): GameHan
         break;
       case "KeyG":
         throwGrenade();
+        break;
+      case "KeyH":
+        interact();
         break;
       case "KeyX":
       case "AltLeft":

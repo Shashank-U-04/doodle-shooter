@@ -153,4 +153,15 @@ export class AudioFX {
   uiClick() {
     this.tone(700, 500, 0.05, 0.08, "square");
   }
+  /** granite sliding over sand — doors, hatches, hidden walls */
+  stone() {
+    this.noise(0.55, 0.22, "lowpass", 260);
+    this.tone(64, 42, 0.6, 0.18, "sawtooth");
+    this.tone(120, 70, 0.35, 0.1, "square", 0.06);
+  }
+  /** a dry, dusty groan from inside the wrappings */
+  mummy() {
+    this.tone(110, 62, 0.55, 0.16, "sawtooth");
+    this.noise(0.5, 0.12, "bandpass", 420);
+  }
 }

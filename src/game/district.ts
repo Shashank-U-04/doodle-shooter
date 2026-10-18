@@ -53,7 +53,7 @@ type Hole = [number, number, number?, number?];
 type Opts = { ink?: InkId; fill?: boolean; noCollide?: boolean };
 type StepOpts = Opts & { rise?: number; run?: number };
 
-export function buildDistrict(scene: THREE.Scene): District {
+export function buildDistrict(scene: THREE.Object3D): District {
   const colliders: Collider[] = [];
   const spawnPoints: THREE.Vector3[] = [];
   const sniperSpots: THREE.Vector3[] = [];

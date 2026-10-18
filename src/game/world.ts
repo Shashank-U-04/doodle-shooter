@@ -3,10 +3,28 @@
 import * as THREE from "three";
 import { INK_FRAG, INK_VERT } from "./shaders";
 
-export const INK = { BLUE: 0, RED: 1, BLACK: 2, ORANGE: 3, GREEN: 4, PINK: 5 } as const;
+export const INK = {
+  BLUE: 0,
+  RED: 1,
+  BLACK: 2,
+  ORANGE: 3,
+  GREEN: 4,
+  PINK: 5,
+  // Egypt palette. The rendering pipeline hands an ink *index* to the post
+  // pass, so extending the palette is how a new map gets its own colours
+  // without a second material system: sand, ochre, tomb stone, turquoise and
+  // gold all shade and hatch exactly like the six original inks.
+  SAND: 6,
+  OCHRE: 7,
+  STONE: 8,
+  TURQ: 9,
+  GOLD: 10,
+  BONE: 11,
+} as const;
 export type InkId = (typeof INK)[keyof typeof INK];
 
-// The reference game's ink palette, verbatim.
+// The reference game's ink palette, verbatim, plus the five warm Egyptian inks
+// and the bleached bandage ink the mummies are wrapped in.
 export const INK_RGB: Record<InkId, [number, number, number]> = {
   [INK.BLUE]: [0.1, 0.19, 0.76],
   [INK.RED]: [0.86, 0.12, 0.2],
@@ -14,6 +32,12 @@ export const INK_RGB: Record<InkId, [number, number, number]> = {
   [INK.ORANGE]: [0.92, 0.55, 0.08],
   [INK.GREEN]: [0.12, 0.6, 0.3],
   [INK.PINK]: [0.9, 0.4, 0.66],
+  [INK.SAND]: [0.86, 0.71, 0.44],
+  [INK.OCHRE]: [0.72, 0.47, 0.24],
+  [INK.STONE]: [0.35, 0.27, 0.21],
+  [INK.TURQ]: [0.19, 0.56, 0.54],
+  [INK.GOLD]: [0.93, 0.73, 0.25],
+  [INK.BONE]: [0.89, 0.86, 0.76],
 };
 
 export const INK_HEX: Record<InkId, string> = {
@@ -23,7 +47,29 @@ export const INK_HEX: Record<InkId, string> = {
   [INK.ORANGE]: "#eb8c14",
   [INK.GREEN]: "#1f994d",
   [INK.PINK]: "#e666a8",
+  [INK.SAND]: "#dbb570",
+  [INK.OCHRE]: "#b8783d",
+  [INK.STONE]: "#594536",
+  [INK.TURQ]: "#308f8a",
+  [INK.GOLD]: "#edba40",
+  [INK.BONE]: "#e3dbc2",
 };
+
+/** Every ink, in index order — what the post pass' `uInks` array is filled from. */
+export const INK_LIST: InkId[] = [
+  INK.BLUE,
+  INK.RED,
+  INK.BLACK,
+  INK.ORANGE,
+  INK.GREEN,
+  INK.PINK,
+  INK.SAND,
+  INK.OCHRE,
+  INK.STONE,
+  INK.TURQ,
+  INK.GOLD,
+  INK.BONE,
+];
 
 // paper: (0.965, 0.955, 0.905) in the reference renderer
 export const PAPER_RGB: [number, number, number] = [0.965, 0.955, 0.905];
@@ -53,7 +99,9 @@ export function makeInkMaterial(
   side: THREE.Side = THREE.FrontSide,
   flat = false,
 ): THREE.ShaderMaterial {
-  const key = ink | (fill ? 8 : 0) | (side === THREE.BackSide ? 16 : side === THREE.DoubleSide ? 32 : 0) | (flat ? 64 : 0);
+  // The ink index gets its own byte: the palette grew past 8, so packing it
+  // into the low bits would make `SAND` collide with a filled `BLUE`.
+  const key = ink * 128 + (fill ? 8 : 0) + (side === THREE.BackSide ? 16 : side === THREE.DoubleSide ? 32 : 0) + (flat ? 64 : 0);
   const cached = inkMaterials.get(key);
   if (cached) return cached;
   const made = new THREE.ShaderMaterial({
@@ -585,7 +633,7 @@ function clamp(v: number, a: number, b: number) {
 
 /* ============================== sketchy enemies ============================== */
 
-export type EnemyKind = "grunt" | "rusher" | "bomber" | "sniper" | "flyer" | "heavy" | "shield" | "boss" | "eraser" | "inkblot";
+export type EnemyKind = "grunt" | "rusher" | "bomber" | "sniper" | "flyer" | "heavy" | "shield" | "boss" | "eraser" | "inkblot" | "mummy";
 
 export type EnemyDef = {
   hp: number;
@@ -616,6 +664,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
   boss: { hp: 2600, speed: 3.2, weapon: "boss", range: 32, stop: 6, cool: [2.6, 3.6], dmg: 22, score: 2500, scale: 2.7, name: "THE DOODLER", ink: INK.BLACK, boss: true, hat: "crown" },
   eraser: { hp: 3400, speed: 4.2, weapon: "boss", range: 30, stop: 8, cool: [2.2, 3.2], dmg: 26, score: 3200, scale: 2.6, name: "THE ERASER", ink: INK.PINK, boss: true },
   inkblot: { hp: 3000, speed: 3, weapon: "boss", range: 34, stop: 10, cool: [2.4, 3.4], dmg: 20, score: 3600, scale: 2.4, name: "THE INKBLOT", ink: INK.BLACK, boss: true },
+  mummy: { hp: 150, speed: 3.7, weapon: "blade", range: 3, stop: 1.7, cool: [1.2, 1.8], dmg: 14, score: 170, scale: 1.05, name: "MUMMY", ink: INK.BONE },
 };
 
 export type Enemy = {

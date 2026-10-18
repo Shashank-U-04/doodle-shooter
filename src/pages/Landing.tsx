@@ -11,6 +11,7 @@ const KEYBOARD: [string, string][] = [
   ["C / Ctrl", "crouch &nbsp; · &nbsp; <b>X</b> dash"],
   ["Q / E", "grapple: hold to reel in, release to let go"],
   ["F", "katana slash &nbsp; · &nbsp; <b>R</b> reload &nbsp; · &nbsp; <b>G</b> grenade"],
+  ["H", "open doors, chests, sarcophagi &nbsp; · &nbsp; Ancient Egypt"],
   ["1-5 / wheel", "rifle · shotgun · sniper · katana · revolver"],
   ["M", "music &nbsp; · &nbsp; <b>P / Esc</b> pause"],
 ];
@@ -38,7 +39,10 @@ export default function Landing() {
 
           <div className="mainbtns">
             <button type="button" className="start" onClick={() => navigate("/game")}>
-              START<i>solo · survive the waves</i>
+              START<i>doodle district · survive the waves</i>
+            </button>
+            <button type="button" className="start egypt" onClick={() => navigate("/game?map=egypt")}>
+              ENTER THE VALLEY<i>ancient egypt · pyramids · cursed tomb</i>
             </button>
             <button type="button" onClick={online}>
               PLAY ONLINE<i>free for all · share a code, play a friend</i>

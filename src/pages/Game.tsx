@@ -23,6 +23,9 @@ const EMPTY_HUD: HudState = {
   focus: 0,
   focusOn: false,
   blips: [],
+  area: "",
+  prompt: "",
+  dark: false,
 };
 
 type Overlay =
@@ -62,6 +65,10 @@ export default function Game() {
     let disposed = false;
     let lastFeed = 0;
 
+    // The valley is a second map on the same engine: the title screen picks it
+    // with ?map=egypt, and everything else — HUD, waves, weapons — is unchanged.
+    const map = new URLSearchParams(window.location.search).get("map") === "egypt" ? "egypt" : "district";
+
     const handle = createGame(host, {
       onHud: (h) => setHud(h),
       onMessage: (t, s) => {
@@ -94,7 +101,7 @@ export default function Game() {
       onPause: (s) => setOverlay({ kind: "paused", wave: s.wave, score: s.score }),
       onResume: () => setOverlay({ kind: "menu" }),
       onAim: (a) => setAds(a),
-    });
+    }, { map });
 
     if (disposed) {
       handle.dispose();
@@ -114,7 +121,6 @@ export default function Game() {
       if (msgTimer.current) window.clearTimeout(msgTimer.current);
       if (tipTimer.current) window.clearTimeout(tipTimer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // pause on tab-away handled by engine; Escape opens pause overlay through onPause
@@ -139,7 +145,7 @@ export default function Game() {
   const hpFrac = Math.max(0, hud.hp / hud.maxHp);
 
   return (
-    <div className={`dd-root ${playing ? "dd-live" : ""}`}>
+    <div className={`dd-root ${playing ? "dd-live" : ""} ${hud.dark ? "dd-dark" : ""}`}>
       <div ref={stageRef} className="dd-stage absolute inset-0" />
 
       {/* HUD */}
@@ -172,6 +178,7 @@ export default function Game() {
         </div>
 
         <div className="dd-hud-tl">
+          <div className="dd-area">{hud.area}</div>
           <div className="score">
             SCORE <b>{hud.score}</b>
           </div>
@@ -225,11 +232,31 @@ export default function Game() {
           <div className="dd-tip" dangerouslySetInnerHTML={{ __html: tip }} />
         )}
 
+        {hud.prompt && live && (
+          <div className="dd-prompt">
+            <kbd>H</kbd>
+            <span>{hud.prompt}</span>
+          </div>
+        )}
+
         <div className="dd-hud-bl">
           <div className="health">
             <span>HP</span>
             <div className="bar">
-              <div className="fill" style={{ width: `${hpFrac * 100}%`, background: hpFrac < 0.3 ? "#b32b3a" : "#3947b8" }} />
+              <div
+                className="fill"
+                style={{
+                  width: `${hpFrac * 100}%`,
+                  background:
+                    hpFrac < 0.3
+                      ? hud.dark
+                        ? "#e0643e"
+                        : "#b32b3a"
+                      : hud.dark
+                        ? "#e8d6a8"
+                        : "#3947b8",
+                }}
+              />
             </div>
             <span className="hpnum">{hud.hp}</span>
           </div>

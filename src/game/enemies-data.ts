@@ -23,7 +23,7 @@ export const KATANA_STREAK = 3;
 export const FOCUS_DUR = 2.6;
 export const FOCUS_MAX = 2;
 
-export type EnemyKind = "grunt" | "rusher" | "bomber" | "sniper" | "flyer" | "heavy" | "shield" | "boss" | "eraser" | "inkblot";
+export type EnemyKind = "grunt" | "rusher" | "bomber" | "sniper" | "flyer" | "heavy" | "shield" | "boss" | "eraser" | "inkblot" | "mummy";
 
 export type EnemyDef = {
   hp: number;
@@ -48,7 +48,7 @@ export type EnemyDef = {
   bodyW: number;
   headS: number;
   limbR: number;
-  model?: "blob" | "bomber" | "flyer";
+  model?: "blob" | "bomber" | "flyer" | "mummy";
   bossKind?: string;
   // ---- kit: what the figure is wearing, so each class reads at a glance ----
   /** secondary ink for gear (boots, gloves, helmet, vest) */
@@ -88,6 +88,11 @@ export const ED: Record<EnemyKind, EnemyDef> = {
   boss: { hp: 2600, speed: 3.2, weapon: "boss", range: 32, stop: 6, keep: 0, cool: [2.6, 3.6], dmg: 22, spread: 0.055, pspeed: 45, score: 2500, scale: 2.7, name: "THE DOODLER", ink: INK.BLACK, boss: true, bossKind: "doodler", hat: "crown", bodyW: 1.35, headS: 1.15, limbR: 0.06, vest: true, coat: true, bulky: 1.2, accent: INK.ORANGE, backpack: "small" },
   eraser: { hp: 3400, speed: 4.2, weapon: "boss", range: 30, stop: 8, keep: 0, cool: [2.2, 3.2], dmg: 26, spread: 0.06, pspeed: 45, score: 3200, scale: 2.6, name: "THE ERASER", ink: INK.PINK, boss: true, model: "blob", bossKind: "eraser", bodyW: 1, headS: 1, limbR: 0.04 },
   inkblot: { hp: 3000, speed: 3, weapon: "boss", range: 34, stop: 10, keep: 0, cool: [2.4, 3.4], dmg: 20, spread: 0.06, pspeed: 45, score: 3600, scale: 2.4, name: "THE INKBLOT", ink: INK.BLACK, boss: true, model: "blob", bossKind: "inkblot", bodyW: 1, headS: 1, limbR: 0.04 },
+  // Ancient Egypt. A wrapped tomb guardian: slow but relentless, hits with
+  // both fists, and is only ever found where a sarcophagus or a burial chamber
+  // put it. Model "mummy" swaps in the bandaged rig; weapon "blade" routes it
+  // through the existing rusher brain (chase, lunge, melee) untouched.
+  mummy: { hp: 170, speed: 3.6, weapon: "blade", range: 3, stop: 1.7, keep: 0, lunge: 2.2, reach: 2.7, standoff: 1.7, cool: [1.25, 1.8], dmg: 15, score: 175, scale: 1.06, name: "MUMMY", ink: INK.BONE, model: "mummy", bodyW: 0.94, headS: 1, limbR: 0.036, accent: INK.TURQ },
 };
 
 export const SPAWN_TABLE: { t: EnemyKind; from: number; w: number }[] = [

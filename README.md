@@ -25,6 +25,33 @@ You are a hand-drawn survivor in a doodled district. Waves of sketched enemies c
 | **Mouse look** | Pointer Lock with adjustable sensitivity (`25%–250%`) and optional inverted Y — configured on the title screen. |
 | **Pause** | `P` or `Esc` pauses; the menu hands the OS cursor back. |
 
+### Ancient Egypt — The Pharaoh's Valley
+
+`ENTER THE VALLEY` on the title screen loads a second, fully explorable map on
+the same engine. It is built from modular ink geometry (no backdrop image) and
+is split into **three connected areas** with their own colliders, spawn pads and
+palette — the other two are hidden while you are in one, so the tomb costs
+nothing while you cross the dunes.
+
+| Area | What is there |
+| --- | --- |
+| **The Pharaoh's Valley** (surface) | The great pyramid and two enterable smaller pyramids, a colonnaded temple with a hidden alcove, a sphinx, obelisks, Anubis statues, broken ruins, market tents, an abandoned camp, treasure chests, palm trees, cacti, a small oasis, dunes, cracked ground and a dry canyon cut into the western cliffs. No coastline, no sea. |
+| **The Forgotten Sanctuary** (pyramid interior) | A carved sandstone chamber with columns, hieroglyph walls, torchlight, a side chapel, an armed floor-spike trap, pharaoh statues and the concealed dais hatch that leads down. |
+| **The Cursed Tomb** (underground) | Burial chambers, a treasure vault, a pharaoh's room and a secret vault; sealed stone doors, sarcophagi, a pressure plate, spike pits, levers, a hidden wall, gold hoards and wandering mummies. |
+
+- **Doors and objects.** Press **`H`** near a door, chest, sarcophagus, lever or
+  hatch. Stone doors physically slide up and drop their collider, so you walk
+  through the gap; exits, hatch descents and the return stair keep your health,
+  ammo, grenades and score exactly as they were.
+- **Mummies.** Wrapped guardians patrol their crypt until they see you (or are
+  shot), then rise, shamble, lunge and swing. They use the existing enemy rig,
+  wave, damage and loot systems — killing one can drop ammo or health.
+- **Traps.** The tomb's pressure plate opens the sealed gate and arms the burial
+  spikes; the north corridor's spike pit is live from the start. Spike hits have
+  a short cooldown so standing in a pit drains, rather than deletes, a run.
+- **Waves still run.** Egypt uses the same wave survival loop; underground the
+  roster swaps to mummies and drops the open-air snipers and paper wasps.
+
 ### Online deathmatch (free for all)
 
 `PLAY ONLINE` on the title screen opens the lobby. One player **creates a
@@ -108,6 +135,7 @@ src/
 │   ├── engine.ts    # Game loop, waves, combat, pointer-lock camera
 │   ├── world.ts     # Wave spawning, enemy stats, boss behavior
 │   ├── district.ts  # District map builder (streets, buildings, staircases)
+│   ├── egypt.ts     # Ancient Egypt map: surface, pyramid interior, tomb
 │   ├── rig.ts       # Doodle character models (sphere-and-tube people)
 │   ├── shaders.ts   # Pencil/ink shaders, vignette effects
 │   ├── weapons.ts   # Weapon definitions and firing logic
@@ -206,6 +234,7 @@ In Vercel → Project → **Settings → Domains**, add your domain and follow t
 | `1–5` / wheel | Weapon slots |
 | `M` | Music toggle |
 | `P` / `Esc` | Pause |
+| `H` | Interact — doors, chests, sarcophagi, levers (Ancient Egypt) |
 
 ## License
 

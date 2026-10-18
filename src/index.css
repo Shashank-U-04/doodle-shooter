@@ -446,6 +446,58 @@
   mix-blend-mode: multiply;
 }
 .dd-tip b { color: #d02030; }
+
+/* proximity action (Ancient Egypt): doors, chests, sarcophagi, the tomb stair */
+.dd-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 23%;
+  transform: translateX(-50%) rotate(-0.6deg);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 26px;
+  color: #1a30c0;
+  background: rgba(250, 248, 238, 0.82);
+  border: 2.5px solid #1a30c0;
+  border-radius: 10px 14px 9px 12px / 13px 9px 12px 10px;
+  padding: 4px 16px;
+  white-space: nowrap;
+}
+.dd-prompt kbd {
+  font: inherit;
+  font-size: 20px;
+  border: 2px solid #1a30c0;
+  border-radius: 5px;
+  padding: 0 8px;
+  line-height: 1.25;
+}
+.dd-hud .dd-area { font-size: 19px; letter-spacing: 2px; color: #b8783d; margin-bottom: 2px; }
+
+/* Underground: the HUD cannot multiply blue ink onto near-black paper, so it
+   swaps to warm chalk and normal blending. Same layout, readable in a tomb. */
+.dd-root.dd-dark .dd-hud { color: #f2e5c6; }
+.dd-root.dd-dark .dd-hud > * { mix-blend-mode: normal; }
+.dd-root.dd-dark .dd-hud .dd-area { color: #edba40; }
+.dd-root.dd-dark .dd-hud .bar { border-color: #e8d6a8; }
+.dd-root.dd-dark .dd-hud .bar .fill { background: repeating-linear-gradient(-55deg, #e8d6a8 0 2.5px, transparent 2.5px 6px); }
+.dd-root.dd-dark .dd-hud .fill.red { background: repeating-linear-gradient(-55deg, #e0643e 0 3px, transparent 3px 7px); }
+.dd-root.dd-dark .dd-hud .fill.ready { background: repeating-linear-gradient(-55deg, #edba40 0 2.5px, transparent 2.5px 6px); }
+.dd-root.dd-dark .dd-hud .combo,
+.dd-root.dd-dark .dd-hud .modifier,
+.dd-root.dd-dark .dd-hud .reloading,
+.dd-root.dd-dark .dd-killfeed .kf.hot { color: #e8a23c; }
+.dd-root.dd-dark .dd-hud .slot.on,
+.dd-root.dd-dark .dd-hud .slot .num { border-color: #e8d6a8; }
+.dd-root.dd-dark .dd-crosshair i,
+.dd-root.dd-dark .dd-aim i { background: #edba40; }
+.dd-root.dd-dark .dd-crosshair { filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9)); }
+.dd-root.dd-dark .dd-msg .t { color: #f2e5c6; }
+.dd-root.dd-dark .dd-msg .sub { color: #e8d6a8; }
+.dd-root.dd-dark .dd-tip { color: #f2e5c6; mix-blend-mode: normal; }
+.dd-root.dd-dark .dd-tip b { color: #edba40; }
+.dd-root.dd-dark .dd-prompt { color: #f2e5c6; background: rgba(26, 20, 16, 0.86); border-color: #c9a96a; mix-blend-mode: normal; }
+.dd-root.dd-dark .dd-prompt kbd { border-color: #c9a96a; }
 /* a tip belongs to live play: while any panel is up the tip layer is inert, so
    a stale line can never show through or beside a menu */
 .dd-root:has(.dd-screen) .dd-tip { display: none; }
@@ -472,6 +524,9 @@
 .dd-screen .mainbtns button.start { min-width: 420px; font-size: 54px; padding: 18px 48px; border-width: 4px; transform: rotate(-1deg); box-shadow: 6px 7px 0 rgba(0, 0, 0, 0.18); }
 .dd-screen .mainbtns button.start i { font-size: 18px; margin-top: 4px; }
 .dd-screen .mainbtns button.start:hover { transform: rotate(-1deg) scale(1.03); }
+/* the valley gets its own ochre door, next to the district's blue one */
+.dd-screen .mainbtns button.egypt { background: #b8783d; border-color: #8a5426; color: #fff6e2; transform: rotate(1deg); }
+.dd-screen .mainbtns button.egypt:hover { transform: rotate(1deg) scale(1.03); }
 .dd-screen .mainbtns button.alt { color: #1a30c0; background: transparent; font-size: 22px; padding: 6px 18px; }
 
 .dd-screen .settings { display: flex; flex-direction: column; gap: 4px; align-items: center; font-size: 21px; margin-top: 12px; border-top: 2px solid #1a30c0; padding-top: 10px; }

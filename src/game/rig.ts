@@ -467,6 +467,177 @@ export function makeRig(style: RigStyle): Rig {
   return buildHumanoid(style);
 }
 
+/* ------------------------------------------------------------------ *
+ * mummy: a wrapped, hunched tomb guardian
+ *
+ * Built on the same skeleton as the humanoid so the engine's AI, walk cycle
+ * and hit tests work unchanged — but every limb is bandaged instead of dressed,
+ * the spine is hunched forward, and the eyes are two gold points inside the
+ * gap in the wrappings. The silhouette is deliberately lopsided and ragged so
+ * it reads as "risen", not "soldier".
+ * ------------------------------------------------------------------ */
+export function makeMummyRig(style: RigStyle): Rig {
+  const root = new THREE.Group();
+  const wrap = INK.BONE;
+  const band = INK.SAND;
+  const rot = INK.OCHRE;
+  const amulet = INK.TURQ;
+  const glow = INK.GOLD;
+  const s = style.scale;
+  const bw = 0.94;
+  void style.ink; // the mummy's palette is fixed; the style only supplies scale
+
+  const hipY = HIP_Y * 0.96;
+  const thighL = THIGH;
+  const shinL = hipY - thighL - FOOT;
+
+  const hips = new THREE.Group();
+  hips.position.y = hipY;
+  root.add(hips);
+  {
+    const b: Buckets = new Map();
+    cy(b, 0.16 * bw, 0.15 * bw, 0.26, { y: 0.02, sz: 0.82 }, wrap);
+    // loosed strips hanging off the pelvis
+    bx(b, 0.1, 0.34, 0.03, { x: -0.13, y: -0.12, z: 0.11, rz: 0.12, rx: 0.2 }, wrap, true);
+    bx(b, 0.08, 0.26, 0.025, { x: 0.15, y: -0.09, z: -0.1, rz: -0.2, rx: -0.1 }, wrap, true);
+    flush(hips, b);
+    const k: Buckets = new Map();
+    for (let i = 0; i < 3; i++) tp(k, 0.158 * bw, 0.018, { y: 0.12 - i * 0.09, rx: Math.PI / 2, sz: 0.84, ry: i * 0.5 }, band, true);
+    bx(k, 0.07, 0.07, 0.03, { y: 0.1, z: 0.135 }, rot, true);
+    flush(hips, k);
+  }
+
+  const torso = new THREE.Group();
+  hips.add(torso);
+  torso.rotation.x = 0.16; // permanent hunch
+  {
+    const b: Buckets = new Map();
+    cy(b, 0.15 * bw, 0.17 * bw, 0.5, { y: 0.26, sz: 0.72 }, wrap);
+    sp(b, 0.093 * bw, { x: -0.2 * bw, y: SHOULDER_Y, sy: 0.85, sz: 0.95 }, wrap, false, 9);
+    sp(b, 0.093 * bw, { x: 0.2 * bw, y: SHOULDER_Y - 0.02, sy: 0.85, sz: 0.95 }, wrap, false, 9);
+    cy(b, 0.055, 0.062, 0.16, { y: 0.6, z: 0.01 }, rot);
+    flush(torso, b);
+    const k: Buckets = new Map();
+    for (let i = 0; i < 9; i++) {
+      const y = 0.06 + i * 0.062;
+      tp(k, (0.157 + Math.sin(i * 1.7) * 0.012) * bw, 0.019, { y, rx: Math.PI / 2, sz: 0.74, rz: i * 0.31, ry: 0.12 * i }, i % 3 === 0 ? band : wrap, true);
+    }
+    // exposed dark chest gap and a turquoise scarab amulet
+    bx(k, 0.19, 0.16, 0.035, { y: 0.4, z: 0.135 }, INK.BLACK, true);
+    bx(k, 0.075, 0.075, 0.028, { y: 0.41, z: 0.158, rz: Math.PI / 4 }, amulet, true);
+    bx(k, 0.12, 0.03, 0.02, { y: 0.45, z: 0.158 }, glow, true);
+    // tattered ends
+    bx(k, 0.09, 0.28, 0.03, { x: 0.17, y: 0.02, z: -0.12, rz: -0.18 }, wrap, true);
+    bx(k, 0.07, 0.22, 0.025, { x: -0.18, y: 0.0, z: 0.06, rz: 0.25 }, band, true);
+    flush(torso, k);
+  }
+
+  const head = new THREE.Group();
+  head.position.y = HEAD_Y - 0.03;
+  torso.add(head);
+  {
+    const b: Buckets = new Map();
+    sp(b, 0.125, { y: 0.1, sx: 0.94, sy: 1.06, sz: 0.96 }, wrap, false, 12);
+    cy(b, 0.085, 0.075, 0.09, { y: 0.02, z: 0.012 }, rot);
+    flush(head, b);
+    const k: Buckets = new Map();
+    for (let i = 0; i < 7; i++) {
+      tp(k, (0.126 + Math.sin(i * 2.3) * 0.007), 0.016, { y: 0.03 + i * 0.028, rx: Math.PI / 2, sz: 0.96, rz: i * 0.4, ry: i * 0.7 }, i % 2 ? band : wrap, true);
+    }
+    // the eye gap: a dark slot, two gold points, and a strip of jaw wrap
+    bx(k, 0.17, 0.052, 0.06, { y: 0.135, z: 0.098, rx: -0.08 }, INK.BLACK, true);
+    sp(k, 0.017, { x: -0.046, y: 0.137, z: 0.128 }, glow, true, 8);
+    sp(k, 0.017, { x: 0.046, y: 0.137, z: 0.128 }, glow, true, 8);
+    bx(k, 0.16, 0.045, 0.025, { y: 0.06, z: 0.112 }, band, true);
+    // loose wrap flapping behind the skull
+    bx(k, 0.05, 0.02, 0.3, { x: 0.06, y: 0.16, z: -0.19, rx: 0.2, rz: 0.2 }, wrap, true);
+    flush(head, k);
+  }
+
+  const mkArm = (side: number) => {
+    const arm = new THREE.Group();
+    arm.position.set(side * 0.205 * bw, SHOULDER_Y - 0.02, 0);
+    arm.rotation.z = side * 0.12;
+    torso.add(arm);
+    {
+      const b: Buckets = new Map();
+      cy(b, 0.07, 0.062, UP_ARM + 0.02, { y: -UP_ARM * 0.5 }, wrap);
+      flush(arm, b);
+      const k: Buckets = new Map();
+      for (let i = 0; i < 4; i++) tp(k, 0.073, 0.016, { y: -0.03 - i * 0.06, rx: Math.PI / 2, rz: side * (0.2 + i * 0.1) }, i % 2 ? band : wrap, true);
+      flush(arm, k);
+    }
+    const fore = new THREE.Group();
+    fore.position.y = -UP_ARM;
+    arm.add(fore);
+    {
+      const b: Buckets = new Map();
+      cy(b, 0.058, 0.05, FOREARM, { y: -FOREARM * 0.5 }, wrap);
+      flush(fore, b);
+      const k: Buckets = new Map();
+      for (let i = 0; i < 4; i++) tp(k, 0.06, 0.014, { y: -0.03 - i * 0.055, rx: Math.PI / 2, rz: side * 0.3 }, i % 2 ? wrap : band, true);
+      // wrapped fist with a few fingers showing
+      sp(k, 0.065, { y: -FOREARM - 0.03, sy: 0.9 }, wrap, true, 8);
+      bx(k, 0.09, 0.025, 0.03, { y: -FOREARM - 0.09, z: 0.03 }, rot, true);
+      bx(k, 0.05, 0.2, 0.02, { x: side * 0.05, y: -FOREARM + 0.06, z: -0.05, rz: side * 0.3 }, wrap, true);
+      flush(fore, k);
+    }
+    return { arm, fore };
+  };
+  const L = mkArm(-1);
+  const R = mkArm(1);
+
+  const mkLeg = (side: number) => {
+    const leg = new THREE.Group();
+    leg.position.set(side * 0.108 * bw, -0.01, 0);
+    hips.add(leg);
+    {
+      const b: Buckets = new Map();
+      cy(b, 0.09, 0.08, thighL, { y: -thighL * 0.5 - 0.02 }, wrap);
+      flush(leg, b);
+      const k: Buckets = new Map();
+      for (let i = 0; i < 4; i++) tp(k, 0.092, 0.016, { y: -0.08 - i * 0.1, rx: Math.PI / 2, rz: side * 0.15 }, i % 2 ? band : wrap, true);
+      flush(leg, k);
+    }
+    const shin = new THREE.Group();
+    shin.position.y = -thighL;
+    leg.add(shin);
+    {
+      const b: Buckets = new Map();
+      cy(b, 0.072, 0.058, shinL, { y: -shinL * 0.5 }, wrap);
+      flush(shin, b);
+      const k: Buckets = new Map();
+      for (let i = 0; i < 4; i++) tp(k, 0.074, 0.015, { y: -0.06 - i * 0.09, rx: Math.PI / 2, rz: side * 0.1 }, i % 2 ? wrap : band, true);
+      // bare, blackened foot and trailing bandage
+      bx(k, 0.11, 0.09, 0.24, { y: -shinL - 0.045, z: 0.045 }, rot, true);
+      bx(k, 0.09, 0.02, 0.3, { y: -shinL - 0.09, z: 0.05 }, INK.BLACK, true);
+      bx(k, 0.05, 0.18, 0.02, { x: side * 0.06, y: -shinL + 0.1, z: -0.06, rz: side * 0.25 }, wrap, true);
+      flush(shin, k);
+    }
+    return { leg, shin };
+  };
+  const LL = mkLeg(-1);
+  const RL = mkLeg(1);
+
+  const gun = new THREE.Group();
+  root.add(gun);
+  root.scale.setScalar(s);
+
+  return {
+    root,
+    parts: {
+      hips, torso, head,
+      armL: L.arm, armR: R.arm,
+      foreL: L.fore, foreR: R.fore,
+      legL: LL.leg, legR: RL.leg,
+      shinL: LL.shin, shinR: RL.shin,
+      gun, shield: null,
+    },
+    headWorldY: (hipY + HEAD_Y + 0.1) * s,
+    hitHeads: [head],
+  };
+}
+
 /* ---------- blobs: the ink bombs and the two blob bosses ---------- */
 
 export function makeBlobRig(style: RigStyle, bossKind?: string): Rig {

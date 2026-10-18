@@ -59,7 +59,11 @@ uniform float uLineSpacing;
 uniform float uLineMode;
 uniform float uLowHp;
 uniform vec3 uPaper;
-uniform vec3 uInks[6];
+uniform vec3 uInks[12];
+// 0 = the original blue biro on paper. 1 = "chalk on a tomb wall": the same
+// hand-drawn strokes, lifted towards a pale warm ink so hatching and outlines
+// stay readable on the dark paper of the underground.
+uniform float uChalk;
 uniform mat4 uInvProj;
 uniform mat4 uInvView;
 uniform float uOutline;
@@ -73,8 +77,23 @@ float vnoise(vec2 p) {
 float linDepth(float z) { float zn = z * 2.0 - 1.0; return 2.0 * uNear * uFar / (uFar + uNear - zn * (uFar - uNear)); }
 vec3 inkColor(float id) {
   int i = int(id + 0.5);
-  if (i <= 0) return uInks[0]; if (i == 1) return uInks[1]; if (i == 2) return uInks[2];
-  if (i == 3) return uInks[3]; if (i == 4) return uInks[4]; return uInks[5];
+  if (i <= 0) return uInks[0];
+  if (i == 1) return uInks[1];
+  if (i == 2) return uInks[2];
+  if (i == 3) return uInks[3];
+  if (i == 4) return uInks[4];
+  if (i == 5) return uInks[5];
+  if (i == 6) return uInks[6];
+  if (i == 7) return uInks[7];
+  if (i == 8) return uInks[8];
+  if (i == 9) return uInks[9];
+  if (i == 10) return uInks[10];
+  return uInks[11];
+}
+vec3 chalkInk(vec3 c) {
+  // A chalk stroke is not a lighter version of the same hue (that would just
+  // wash out); it is the ink dragged towards warm bone, with its hue kept.
+  return mix(c, vec3(0.93, 0.88, 0.75), uChalk * 0.66);
 }
 float stripes(vec2 p, vec2 dir, float spacing, float width) {
   float t = dot(p, vec2(-dir.y, dir.x));
@@ -176,7 +195,7 @@ void main() {
     paper = mix(paper, vec3(0.58, 0.70, 0.92), rule * 0.5);
     float margin = 1.0 - smoothstep(0.9 * sc, 2.3 * sc, abs(pp.x - uRes.x * 0.07));
     paper = mix(paper, vec3(0.92, 0.48, 0.55), margin * 0.55);
-  } else {
+  } else if (uLineMode < 1.5) {
     // graph paper: a faint green grid, the field-notebook look; kept light so the ink stays the subject
     float gs = ls * 0.62;
     float gx = mod(pp.x + gs * 0.5, gs), gy = mod(pp.y + gs * 0.5, gs);
@@ -184,18 +203,21 @@ void main() {
     float g2 = 1.0 - smoothstep(0.35 * sc, 1.15 * sc, abs(gy - gs * 0.5));
     paper = mix(paper, vec3(0.58, 0.76, 0.63), max(g1, g2) * 0.19);
   }
+  // 2 = no ruling at all: a tomb wall is not a notebook page.
 
   vec3 col = paper;
-  col = mix(col, inkColor(s.g), hatch * 0.72 * fade);
+  vec3 bodyInk = chalkInk(inkColor(s.g));
+  vec3 edgeInk = chalkInk(inkColor(inkId) * 0.92);
+  col = mix(col, bodyInk, hatch * 0.72 * fade);
   float ew = 0.75 + 0.35 * vnoise(pp * 0.35);
-  col = mix(col, inkColor(inkId) * 0.92, clamp(edge * ew, 0.0, 1.0) * fadeE);
+  col = mix(col, edgeInk, clamp(edge * ew, 0.0, 1.0) * fadeE);
 
   // hurt: red scribble vignette; low hp: pulsing
   vec2 vc = (vUv - 0.5) * vec2(uAspect, 1.0);
   float vig = smoothstep(0.32, 0.9, length(vc));
   float scr = 0.55 + 0.45 * stripes(pp + wob * 8.0, normalize(vec2(1.0, 0.8)), 7.0 * sc, 2.2 * sc);
   float hurt = clamp(uHurt + uLowHp * (0.35 + 0.25 * sin(uTime * 6.0)), 0.0, 1.0);
-  col = mix(col, uInks[1] * 0.9, hurt * vig * scr);
+  col = mix(col, chalkInk(uInks[1]) * 0.9, hurt * vig * scr);
   col = mix(col, uPaper, uFlash);
   float lum = dot(col, vec3(0.3, 0.5, 0.2));
   col = mix(col, vec3(lum) * vec3(0.8, 0.86, 1.0), uSlow * 0.55);

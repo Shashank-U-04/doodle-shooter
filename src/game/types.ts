@@ -18,6 +18,12 @@ export type HudState = {
   focusOn: boolean;
   /** enemies in the player's own frame: x = right, z = forward, both -1..1 */
   blips: { x: number; z: number; boss: boolean }[];
+  /** name of the area the player is in, when the map has distinct areas */
+  area?: string;
+  /** proximity action, e.g. "OPEN THE GREAT STONE DOOR" (Egypt only) */
+  prompt?: string;
+  /** true underground, where the HUD has to switch off multiply blending */
+  dark?: boolean;
 };
 
 /** The HUD before the first frame is pushed — shared by every game screen. */
@@ -40,6 +46,9 @@ export const EMPTY_HUD: HudState = {
   focus: 0,
   focusOn: false,
   blips: [],
+  area: "",
+  prompt: "",
+  dark: false,
 };
 
 export type GameOverStats = {
