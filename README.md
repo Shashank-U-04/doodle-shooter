@@ -35,14 +35,16 @@ nothing while you cross the dunes.
 
 | Area | What is there |
 | --- | --- |
-| **The Pharaoh's Valley** (surface) | The great pyramid and two enterable smaller pyramids, a colonnaded temple with a hidden alcove, a sphinx, obelisks, Anubis statues, broken ruins, market tents, an abandoned camp, treasure chests, palm trees, cacti, a small oasis, dunes, cracked ground and a dry canyon cut into the western cliffs. No coastline, no sea. |
-| **The Forgotten Sanctuary** (pyramid interior) | A carved sandstone chamber with columns, hieroglyph walls, torchlight, a side chapel, an armed floor-spike trap, pharaoh statues and the concealed dais hatch that leads down. |
+| **The Pharaoh's Valley** (surface) | The great pyramid and two enterable smaller pyramids, a colonnaded temple with a hidden alcove, a sphinx, obelisks, Anubis statues, broken ruins, market tents with wooden crates, an abandoned camp, treasure chests, palm trees, cacti, a small oasis, dunes, cracked ground and a dry canyon cut into the western cliffs. No coastline, no sea. |
+| **The Forgotten Sanctuary** (pyramid interior) | A low processional corridor into a carved sandstone chamber with columns, hieroglyph walls, torchlight, a side chapel, an armed floor-spike trap, pharaoh statues and the concealed dais hatch that leads down. |
 | **The Cursed Tomb** (underground) | Burial chambers, a treasure vault, a pharaoh's room and a secret vault; sealed stone doors, sarcophagi, a pressure plate, spike pits, levers, a hidden wall, gold hoards and wandering mummies. |
 
 - **Doors and objects.** Press **`H`** near a door, chest, sarcophagus, lever or
-  hatch. Stone doors physically slide up and drop their collider, so you walk
-  through the gap; exits, hatch descents and the return stair keep your health,
-  ammo, grenades and score exactly as they were.
+  hatch. Stone doors physically slide open — most sink into the sand or the
+  floor, the sanctuary door retracts into its wall — and the collider drops once
+  the slab has cleared, so you walk through the gap; exits, hatch descents and
+  the return stair keep your health, ammo, grenades and score exactly as they
+  were.
 - **Mummies.** Wrapped guardians patrol their crypt until they see you (or are
   shot), then rise, shamble, lunge and swing. They use the existing enemy rig,
   wave, damage and loot systems — killing one can drop ammo or health.

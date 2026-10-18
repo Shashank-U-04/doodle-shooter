@@ -249,12 +249,24 @@ class Zone {
     this.addGeo(geo, ink, fill);
   }
 
-  /** a half-buried dune: a squashed upper hemisphere */
+  /**
+   * A half-buried dune: a squashed upper hemisphere you can climb over.
+   *
+   * The smooth mound is the drawing; the physics is a short flight of steps
+   * hidden inside it. Without them the mound would be a ghost you walk
+   * through — back-face culling makes it vanish the moment you are inside it.
+   */
   dune(x: number, z: number, r: number, height: number) {
     const geo = new THREE.SphereGeometry(r, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2);
     geo.scale(1, height / r, 0.78);
     geo.translate(x, this.baseY, z);
     this.addGeo(geo, INK.SAND);
+    const steps = Math.max(3, Math.ceil(height / 0.48));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const f = Math.sqrt(Math.max(0, 1 - t * t));
+      this.collide(x, 0, z, 2 * r * f, height * t, 2 * r * f * 0.78);
+    }
   }
 
   /** a flat disc lying on the floor */
@@ -432,6 +444,14 @@ function cactus(z: Zone, x: number, zz: number) {
   z.cyl(x - 0.42, 0.7, zz, 0.16, 0.8, INK.GREEN, true, false, 6);
   z.cyl(x + 0.38, 1.0, zz, 0.15, 0.7, INK.GREEN, true, false, 6);
   z.sphere(x, 1.95, zz, 0.28, INK.GREEN, true, 0.6, 6);
+}
+
+function crate(z: Zone, x: number, zz: number, s = 1) {
+  z.box(x, 0, zz, 1.2 * s, 1.05 * s, 1.2 * s, INK.OCHRE);
+  for (const [y, w] of [[0.08, 1.32], [0.52, 1.27], [0.96, 1.24]] as const) {
+    z.box(x, y * s, zz, w * s, 0.11 * s, w * s, INK.STONE, false, false);
+  }
+  z.box(x, 1.05 * s, zz, 0.16 * s, 0.06 * s, 1.26 * s, INK.SAND, false, false);
 }
 
 function tent(z: Zone, x: number, zz: number, ink: InkId) {
@@ -716,8 +736,10 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   }
 
   // --- dunes, rocks, cracked ground ---
-  S.dune(-44, -36, 11, 2.8);
-  S.dune(-28, -47, 9, 2.2);
+  // Drifts pile up against the southern cliffs, clear of the temple: a mound
+  // swelling over the colonnade would read as a modelling slip, not weather.
+  S.dune(-48, -52, 9, 2.6);
+  S.dune(-24, -53, 8, 2.2);
   S.dune(46, 20, 12, 3.2);
   S.dune(38, -44, 10, 2.6);
   S.dune(-12, -50, 8, 1.8);
@@ -725,7 +747,13 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   for (let i = 0; i < 16; i++) {
     const a = i * 2.399 + 0.6;
     const r = 8 + (i % 5) * 6;
-    S.sphere(Math.cos(a) * r, 0, Math.sin(a) * r, 0.5 + (i % 3) * 0.35, i % 2 ? INK.STONE : INK.OCHRE, false, 0.7, 6);
+    const rad = 0.5 + (i % 3) * 0.35;
+    const sx = Math.cos(a) * r;
+    const sz = Math.sin(a) * r;
+    S.sphere(sx, 0, sz, rad, i % 2 ? INK.STONE : INK.OCHRE, false, 0.7, 6);
+    // a low block tucked inside the stone's silhouette: you clamber over a
+    // boulder instead of walking through it
+    S.collide(sx, 0, sz, rad * 1.5, Math.min(0.5, rad * 0.5), rad * 1.5);
   }
   for (let i = 0; i < 12; i++) {
     const a = i * 1.7;
@@ -740,7 +768,10 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
     S.ring(x, 5.4, zz, 0.9, 0.13, INK.GOLD);
     S.box(x, 7.2, zz, 2.3, 0.4, 2.3, INK.OCHRE);
   }
-  S.glyphs(0, 1.0, 15.36, "x", 9, 2.2, 2);
+  // banded either side of the doorway: a glyph strip across the opening would
+  // hang in the doorway once the stone door lifts
+  S.glyphs(-6.5, 1.0, 15.36, "x", 8, 2.2, 2);
+  S.glyphs(6.5, 1.0, 15.36, "x", 8, 2.2, 2);
   S.glyphs(-15.35, 1.0, 0, "z", 10, 2.2, 2);
   S.glyphs(15.35, 1.0, 0, "z", 10, 2.2, 2);
   S.glyphs(0, 1.0, -15.36, "x", 9, 2.2, 2);
@@ -757,14 +788,18 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   const small = (cx: number, cz: number, idp: string) => {
     const p = pyramid(S, cx, cz, 9, 5, 2.2, 1.8, 2.4, 2.1);
     S.slab(cx - 7.2, cz - 7.2, cx + 7.2, cz + 7.2, 0.06, 0.1, INK.OCHRE, false);
-    S.glyphs(cx, 0.5, cz + 7.2, "x", 5, 1.1, 2);
+    S.glyphs(cx - 4, 0.5, cz + 7.2, "x", 3.6, 1.1, 2);
+    S.glyphs(cx + 4, 0.5, cz + 7.2, "x", 3.6, 1.1, 2);
     S.glyphs(cx, 0.5, cz - 7.2, "x", 5, 1.1, 2);
     torch(S, cx - 3, 0.8, cz - 3, flames);
     torch(S, cx + 3, 0.8, cz - 3, flames);
     addSarc(`${idp}-sarc`, S, cx - 1.8, cz - 2, false, new THREE.Vector3(cx - 1.8, 1.2, cz - 2));
     addChest(`${idp}-chest`, S, cx + 3.2, cz + 2.4, false, new THREE.Vector3(cx + 3.2, 1.2, cz + 2.4));
     let open = false;
-    sliders.push({ obj: p.door, base: p.door.position.clone(), dir: new THREE.Vector3(0, 1, 0), dist: 2.5, open: () => open, collider: p.doorCol, owner: S.colliders, colliderLive: true, k: 0 });
+    // The stepped face has no masonry above the doorway for a slab to vanish
+    // into, so a small tomb's door sinks into the sand instead of hanging in
+    // the air over the entrance.
+    sliders.push({ obj: p.door, base: p.door.position.clone(), dir: new THREE.Vector3(0, -1, 0), dist: 2.1, open: () => open, collider: p.doorCol, owner: S.colliders, colliderLive: true, k: 0 });
     add({
       id: `${idp}-door`,
       pos: new THREE.Vector3(cx, 1.2, p.doorZ + 2.2),
@@ -802,7 +837,8 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   S.wallZ(TZ - 8.5, TZ + 8, TX + 11.5, 0.9, 8.4, 1, [[TZ - 7, TZ - 4, 0, 5.6]], INK.SAND);
   S.wallX(TX - 11.5, TX + 11.5, TZ - 8.5, 0.9, 8.4, 1, [], INK.SAND);
   S.wallX(TX - 11.5, TX + 11.5, TZ - 2, 0.9, 8.4, 0.9, [[TX - 1.7, TX + 1.7, 0, 4.6]], INK.OCHRE);
-  S.glyphs(TX, 2.2, TZ + 7.45, "x", 8, 3.4, 3);
+  S.glyphs(TX - 7.4, 2.2, TZ + 7.45, "x", 6, 3.4, 3);
+  S.glyphs(TX + 7.4, 2.2, TZ + 7.45, "x", 6, 3.4, 3);
   S.glyphs(TX - 11.02, 2.2, TZ + 2, "z", 12, 3.4, 3);
   S.glyphs(TX + 11.02, 2.2, TZ + 2, "z", 12, 3.4, 3);
   // pharaoh in the sanctum
@@ -823,8 +859,10 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   const templeSecret = S.mesh(0.7, 6, 3.2, INK.STONE, TX + 11.5, 0.9, TZ - 5.5);
   const templeSecretCol: Collider = { minX: TX + 11.15, maxX: TX + 11.85, minY: 0.9, maxY: 6.9, minZ: TZ - 7.1, maxZ: TZ - 3.9 };
   S.colliders.push(templeSecretCol);
-  sliders.push({ obj: templeSecret, base: templeSecret.position.clone(), dir: new THREE.Vector3(0, 1, 0), dist: 6.3, open: () => templeSecretOpen, collider: templeSecretCol, owner: S.colliders, colliderLive: true, k: 0 });
-  addChest("chest-temple-secret", S, TX + 14, TZ - 5.5, true, new THREE.Vector3(TX + 14, 1.4, TZ - 5.5));
+  sliders.push({ obj: templeSecret, base: templeSecret.position.clone(), dir: new THREE.Vector3(0, -1, 0), dist: 6.2, open: () => templeSecretOpen, collider: templeSecretCol, owner: S.colliders, colliderLive: true, k: 0 });
+  // tucked deep enough that the vault's own wall denies the prompt: standing in
+  // the sanctum must not advertise a chest behind a hidden door
+  addChest("chest-temple-secret", S, TX + 14.5, TZ - 5.5, true, new THREE.Vector3(TX + 14.5, 1.4, TZ - 5.5));
   treasurePile(S, TX + 13.4, TZ - 4.4);
   const templeLever = S.mesh(0.2, 1.4, 0.2, INK.GOLD, TX + 9.4, 1.1, TZ - 5.5);
   S.box(TX + 9.4, 1.0, TZ - 5.5, 0.7, 0.4, 0.9, INK.STONE, false, false);
@@ -866,7 +904,7 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   }
 
   // great pyramid entrance: open the door, then walk through it
-  sliders.push({ obj: main.door, base: main.door.position.clone(), dir: new THREE.Vector3(0, 1, 0), dist: 3.5, open: () => mainDoorOpen, collider: main.doorCol, owner: S.colliders, colliderLive: true, k: 0 });
+  sliders.push({ obj: main.door, base: main.door.position.clone(), dir: new THREE.Vector3(0, -1, 0), dist: 3.0, open: () => mainDoorOpen, collider: main.doorCol, owner: S.colliders, colliderLive: true, k: 0 });
   add({
     id: "main-door",
     pos: new THREE.Vector3(0, 1.2, 20.4),
@@ -874,7 +912,7 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
     label: () => (mainDoorOpen ? null : "OPEN THE GREAT STONE DOOR"),
     run: () => {
       mainDoorOpen = true;
-      return { tip: "the stone grinds upward · enter the sanctuary", sound: "stone" };
+      return { tip: "the stone grinds down into the sand · enter the sanctuary", sound: "stone" };
     },
   });
   S.flush();
@@ -886,7 +924,7 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   zones.interior = {
     id: "interior",
     title: "THE FORGOTTEN SANCTUARY",
-    sub: "carved chamber · columns · hidden stair",
+    sub: "processional corridor · carved chamber · hidden stair",
     group: F.group,
     colliders: F.colliders,
     bounds: { minX: -17, maxX: 17, minZ: -17, maxZ: 17 },
@@ -907,7 +945,20 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   // one closed slab roof: a carved chamber needs a ceiling that does not leak
   // the desert sky through its seams when the player looks up
   F.slab(-16, -16, 16, 16, 9.8, 0.8, INK.STONE, false);
-  F.glyphs(0, 1.0, 15.45, "x", 8, 2.6, 3);
+  // A low processional corridor from the outer door to the chamber. Zone B is
+  // meant to feel like the inside of a pyramid — a squeeze before the hall — not
+  // one open room with a door on it. It also gives the doorway a shadowed
+  // approach instead of showing the whole sanctuary at once.
+  F.wallZ(5.5, 16, -2.7, 0, 7, 0.8, [], INK.STONE);
+  F.wallZ(5.5, 16, 2.7, 0, 7, 0.8, [], INK.STONE);
+  F.slab(-3.1, 5.5, 3.1, 16, 7.4, 0.5, INK.STONE, false);
+  F.glyphs(-2.28, 1.0, 10.5, "z", 6, 2.2, 2);
+  F.glyphs(2.28, 1.0, 10.5, "z", 6, 2.2, 2);
+  torch(F, -2.15, 1.7, 6.5, flames);
+  torch(F, 2.15, 1.7, 14.4, flames);
+  F.glyphs(-9.5, 1.0, 15.45, "x", 12, 2.6, 3);
+  F.glyphs(9.5, 1.0, 15.45, "x", 12, 2.6, 3);
+  F.glyphs(0, 3.7, 15.45, "x", 4, 1.2, 1);
   F.glyphs(0, 1.0, -15.45, "x", 8, 2.6, 3);
   F.glyphs(-15.45, 1.0, 0, "z", 9, 2.6, 3);
   F.glyphs(15.45, 1.0, 0, "z", 9, 2.6, 3);
@@ -957,7 +1008,9 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   const innerDoorCol: Collider = { minX: -1.7, maxX: 1.7, minY: -140, maxY: -136.7, minZ: 15.15, maxZ: 16.05 };
   F.colliders.push(innerDoorCol);
   sliders.push({ obj: innerDoor, base: innerDoor.position.clone(), dir: new THREE.Vector3(0, 1, 0), dist: 3.5, open: () => innerDoorOpen, collider: innerDoorCol, owner: F.colliders, colliderLive: true, k: 0 });
-  sliders.push({ obj: innerHatch, base: innerHatch.position.clone(), dir: new THREE.Vector3(1, 0, 0), dist: 3.1, open: () => hatchOpen, colliderLive: false, k: 0 });
+  // The hatch is wider than the dais is free on either side, so it sinks into
+  // the stone rather than sliding out over the floor.
+  sliders.push({ obj: innerHatch, base: innerHatch.position.clone(), dir: new THREE.Vector3(0, -1, 0), dist: 0.75, open: () => hatchOpen, colliderLive: false, k: 0 });
   add({
     id: "inner-exit",
     pos: new THREE.Vector3(0, -138.8, 14.2),
@@ -1130,10 +1183,12 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   T.wallX(-16, 16, -46, 0, 9, 1, [[-1.8, 1.8, 0, 4.2]], INK.STONE);
   T.wallZ(-46, -26, -16, 0, 9, 1, [], INK.STONE);
   T.wallZ(-46, -26, 16, 0, 9, 1, [], INK.STONE);
-  T.glyphs(0, 1.2, -25.45, "x", 10, 3, 3);
+  T.glyphs(-5.5, 1.2, -25.45, "x", 5, 3, 3);
+  T.glyphs(5.5, 1.2, -25.45, "x", 5, 3, 3);
   T.glyphs(-15.45, 1.2, -36, "z", 12, 3, 3);
   T.glyphs(15.45, 1.2, -36, "z", 12, 3, 3);
-  T.glyphs(0, 1.2, -45.45, "x", 8, 3, 3);
+  T.glyphs(-5, 1.2, -45.45, "x", 4.5, 3, 3);
+  T.glyphs(5, 1.2, -45.45, "x", 4.5, 3, 3);
   for (const [x, zz] of [[-7, -42], [7, -42], [-7, -30], [7, -30]] as const) {
     T.cyl(x, 0, zz, 0.85, 8.6, INK.OCHRE, false, true, 10);
     T.ring(x, 5.6, zz, 0.9, 0.14, INK.GOLD);
@@ -1154,7 +1209,7 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   const secretWall = T.mesh(3.7, 4.3, 0.9, INK.STONE, 0, 0, -46);
   const secretWallCol: Collider = { minX: -1.85, maxX: 1.85, minY: -300, maxY: -295.7, minZ: -46.45, maxZ: -45.55 };
   T.colliders.push(secretWallCol);
-  sliders.push({ obj: secretWall, base: secretWall.position.clone(), dir: new THREE.Vector3(0, 1, 0), dist: 4.6, open: () => secretOpen, collider: secretWallCol, owner: T.colliders, colliderLive: true, k: 0 });
+  sliders.push({ obj: secretWall, base: secretWall.position.clone(), dir: new THREE.Vector3(0, -1, 0), dist: 4.4, open: () => secretOpen, collider: secretWallCol, owner: T.colliders, colliderLive: true, k: 0 });
 
   // secret vault
   T.wallZ(-58, -46, -10, 0, 8, 1, [], INK.STONE);
@@ -1163,6 +1218,10 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   T.glyphs(9.45, 1.2, -52, "z", 10, 2.8, 3);
   T.glyphs(0, 1.2, -57.45, "x", 8, 2.8, 3);
   addChest("chest-secret", T, 0, -54, true, new THREE.Vector3(0, -298.6, -54));
+  // a turquoise scarab on a plinth: the one thing in the vault that still glows
+  T.box(6, 0, -53.4, 1.3, 1.0, 1.3, INK.STONE);
+  T.sphere(6, 1.3, -53.4, 0.3, INK.TURQ, true, 1, 8);
+  T.ring(6, 1.32, -53.4, 0.46, 0.05, INK.GOLD, true);
   treasurePile(T, -5, -53);
   treasurePile(T, 5, -53);
   treasurePile(T, 0, -48);
@@ -1279,8 +1338,8 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
         s.k += (target - s.k) * Math.min(1, dt * 4);
         s.obj.position.copy(s.base).addScaledVector(s.dir, s.dist * s.k);
         // wait until the slab has actually cleared a standing body before the
-        // collider goes, or the player walks through the stone as it lifts
-        if (s.collider && s.colliderLive && s.k > 0.7) {
+        // collider goes, or the player walks through the stone as it moves
+        if (s.collider && s.colliderLive && s.k > 0.9) {
           const owner = s.owner;
           if (owner) {
             const idx = owner.indexOf(s.collider);
@@ -1349,6 +1408,8 @@ function ruin(z: Zone, x: number, zz: number) {
 function makeMarket(z: Zone, x: number, zz: number) {
   tent(z, x, zz, INK.RED);
   tent(z, x + 7, zz - 3, INK.OCHRE);
+  crate(z, x - 6.2, zz + 3.1);
+  crate(z, x - 5.1, zz + 4.2, 0.78);
   z.box(x + 3.5, 0, zz + 2.4, 3.4, 0.8, 1.2, INK.OCHRE);
   z.box(x + 3.5, 0.8, zz + 2.4, 1.2, 0.5, 1.1, INK.TURQ, true, false);
   z.box(x - 4.4, 0, zz + 1.2, 1.4, 1.4, 1.4, INK.ORANGE);
@@ -1357,6 +1418,8 @@ function makeMarket(z: Zone, x: number, zz: number) {
 }
 
 function makeCamp(z: Zone, x: number, zz: number) {
+  crate(z, x + 1.6, zz + 3.2, 0.95);
+  crate(z, x + 2.9, zz + 3.9, 0.7);
   z.box(x, 0, zz, 3.4, 0.18, 2.2, INK.OCHRE, false, false);
   for (let i = 0; i < 7; i++) {
     const a = (i / 7) * Math.PI * 2;
