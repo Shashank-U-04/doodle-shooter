@@ -120,6 +120,9 @@ export default function Setup() {
                 aria-pressed={m.id === map}
                 onClick={() => pickMap(m.id)}
               >
+                <span className="mapthumb">
+                  <img src={m.snapshot} alt={`${m.name} in-game snapshot`} loading="lazy" />
+                </span>
                 {m.name}
                 <i>{m.tagline}</i>
               </button>

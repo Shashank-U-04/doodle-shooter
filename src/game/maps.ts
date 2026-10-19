@@ -20,6 +20,8 @@ export type MapInfo = {
   tagline: string;
   /** two or three sentences for the selector */
   description: string;
+  /** a real in-game snapshot of this map, captured from the renderer */
+  snapshot: string;
   /** which Egypt zone the engine should load (absent for the district) */
   zone?: ZoneId;
 };
@@ -31,6 +33,7 @@ export const MAPS: MapInfo[] = [
     tagline: "street level · rooftops · waves incoming",
     description:
       "The original arena: tight alleys, climbable stairs and a skyline drawn in one continuous line. Waves pour in from every corner.",
+    snapshot: "/previews/district.png",
     zone: undefined,
   },
   {
@@ -39,6 +42,7 @@ export const MAPS: MapInfo[] = [
     tagline: "open desert · three pyramids · temple · sphinx",
     description:
       "The great pyramid and two smaller enterable tombs, a colonnaded temple with a hidden alcove, a sphinx, obelisks, ruins, dunes and a dry canyon. No coastline, no sea.",
+    snapshot: "/previews/valley.png",
     zone: "surface",
   },
   {
@@ -47,6 +51,7 @@ export const MAPS: MapInfo[] = [
     tagline: "pyramid interior · columns · hidden stair",
     description:
       "A low processional corridor into a carved sandstone chamber with hieroglyph walls, torchlight, an armed floor trap and the concealed dais hatch that leads down.",
+    snapshot: "/previews/sanctuary.png",
     zone: "interior",
   },
   {
@@ -55,6 +60,7 @@ export const MAPS: MapInfo[] = [
     tagline: "burial halls · sealed doors · mummies",
     description:
       "Burial chambers, a treasure vault and a pharaoh's room; sealed stone doors, sarcophagi, a pressure plate, spike pits, levers and a hidden wall.",
+    snapshot: "/previews/tomb.png",
     zone: "tomb",
   },
 ];

@@ -208,6 +208,9 @@ export default function Online() {
                     aria-pressed={m.id === match.map}
                     onClick={() => chooseMap(m.id)}
                   >
+                    <span className="mapthumb">
+                      <img src={m.snapshot} alt={`${m.name} in-game snapshot`} loading="lazy" />
+                    </span>
                     {m.name}
                     <i>{m.tagline}</i>
                   </button>
@@ -331,10 +334,13 @@ export default function Online() {
                       <button
                         key={m.id}
                         type="button"
-                        className={`mapbtn ${m.id === match.map ? "on" : ""}`}
+                        className={`mapbtn small ${m.id === match.map ? "on" : ""}`}
                         aria-pressed={m.id === match.map}
                         onClick={() => chooseMap(m.id)}
                       >
+                        <span className="mapthumb">
+                          <img src={m.snapshot} alt={`${m.name} in-game snapshot`} loading="lazy" />
+                        </span>
                         {m.name}
                       </button>
                     ))}
