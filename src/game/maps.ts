@@ -2,8 +2,7 @@
 //
 // One identifier is the single source of truth for "which battlefield". The
 // URL, the match configuration, the engine's `MapId` and the host's lobby
-// settings all speak these four strings, so a card can never advertise a map
-// the game cannot build.
+// settings all speak these four strings.
 //
 // Ancient Egypt is authored as three zones in one builder (see egypt.ts), but
 // each zone is independently playable: `zone` below is the area the engine
@@ -15,71 +14,48 @@ export type MapId = "district" | "valley" | "sanctuary" | "tomb";
 
 export type MapInfo = {
   id: MapId;
-  /** the map's in-world name, shown on cards and on the loading HUD */
+  /** the map's in-world name, shown on the selector and on the area HUD */
   name: string;
   /** one line under the name */
   tagline: string;
-  /** two or three sentences for the preview panel */
+  /** two or three sentences for the selector */
   description: string;
-  /** three short descriptors, e.g. OPEN ARENA */
-  tags: string[];
-  /** accent ink used by the card's selected state and preview wash */
-  accent: string;
-  /** real in-game screenshot, captured from the running renderer */
-  preview: string;
   /** which Egypt zone the engine should load (absent for the district) */
   zone?: ZoneId;
-  /** the mode is the same survival loop on every map; this is flavour */
-  hostility: string;
 };
 
 export const MAPS: MapInfo[] = [
   {
     id: "district",
     name: "DOODLE DISTRICT",
-    tagline: "Street level. Rooftops. Bad news.",
+    tagline: "street level · rooftops · waves incoming",
     description:
-      "The original arena: tight alleys, climbable stairs and a skyline drawn in one continuous line. Waves pour in from every corner, and the rooftops give you just enough height to regret taking.",
-    tags: ["URBAN", "ROOFTOPS", "CLOSE QUARTERS"],
-    accent: "#2F5FA8",
-    preview: "/previews/district.png",
-    hostility: "Ink grunts, rushers and the occasional wasp",
+      "The original arena: tight alleys, climbable stairs and a skyline drawn in one continuous line. Waves pour in from every corner.",
+    zone: undefined,
   },
   {
     id: "valley",
     name: "THE PHARAOH'S VALLEY",
-    tagline: "Open sand. Three pyramids. No cover for miles.",
+    tagline: "open desert · three pyramids · temple · sphinx",
     description:
-      "A sun-bleached desert basin ringed by sandstone cliffs. The great pyramid, a colonnaded temple, a sphinx and two smaller tombs are all enterable, and the dunes are as much a weapon as the rifle.",
-    tags: ["OPEN ARENA", "PYRAMIDS", "DESERT"],
-    accent: "#C9822E",
-    preview: "/previews/valley.png",
+      "The great pyramid and two smaller enterable tombs, a colonnaded temple with a hidden alcove, a sphinx, obelisks, ruins, dunes and a dry canyon. No coastline, no sea.",
     zone: "surface",
-    hostility: "Mummies and open-air snipers across the dunes",
   },
   {
     id: "sanctuary",
     name: "THE FORGOTTEN SANCTUARY",
-    tagline: "Inside the great pyramid. Mind the floor.",
+    tagline: "pyramid interior · columns · hidden stair",
     description:
-      "A torch-lit processional corridor opens into a carved sandstone chamber: hieroglyph walls, columns, a side chapel and an armed floor trap. The concealed dais hatch drops straight into the tomb below.",
-    tags: ["INTERIOR", "TRAPS", "TREASURE"],
-    accent: "#B5642C",
-    preview: "/previews/sanctuary.png",
+      "A low processional corridor into a carved sandstone chamber with hieroglyph walls, torchlight, an armed floor trap and the concealed dais hatch that leads down.",
     zone: "interior",
-    hostility: "A wrapped guardian, and a floor that bites",
   },
   {
     id: "tomb",
     name: "THE CURSED TOMB",
-    tagline: "Buried halls. Sealed gates. Things that get up.",
+    tagline: "burial halls · sealed doors · mummies",
     description:
-      "Burial chambers, a treasure vault and a pharaoh's room connected by sealed stone doors. Pressure plates, spike pits and a hidden wall guard the way to the deepest vault — and the mummies are already awake.",
-    tags: ["UNDERGROUND", "SECRETS", "HIGH RISK"],
-    accent: "#2E8C86",
-    preview: "/previews/tomb.png",
+      "Burial chambers, a treasure vault and a pharaoh's room; sealed stone doors, sarcophagi, a pressure plate, spike pits, levers and a hidden wall.",
     zone: "tomb",
-    hostility: "Awake mummies in every chamber, spikes underfoot",
   },
 ];
 

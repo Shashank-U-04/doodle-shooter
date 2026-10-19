@@ -1,27 +1,18 @@
-// PLAY WITH FRIENDS — the room, the rules, and the free-for-all.
+// PLAY WITH FRIENDS — the lobby and the free-for-all arena.
 //
-// The map and grapple rule are chosen on /setup and travel here in the URL and
-// the match store. The host owns both: changing them in the lobby broadcasts a
-// config packet, guests mirror it, and the start packet repeats it so a late
-// joiner still builds the same level. The engine is constructed with exactly
-// that config, which is what makes the toggle more than decoration.
+// The lobby is where the room code is made, shared and waited on; the match is
+// the ordinary engine with `setPvp(true)`, which turns the wave spawner off and
+// every other player on. Solo play is a different page and a different code
+// path, so nothing here can change how the survival run behaves.
+//
+// Match rules: the map and the grappling-hook rule are chosen on /setup and
+// carried in as the match configuration. The host owns them (config packets
+// broadcast any change), and the start packet repeats them so a late joiner
+// still builds the same level. The engine is constructed from that
+// configuration, which is what makes the toggle more than decoration.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import {
-  ArrowLeft,
-  Check,
-  Copy,
-  Crown,
-  Link2,
-  Loader2,
-  LogOut,
-  Radio,
-  ShieldCheck,
-  Sparkles,
-  UserPlus,
-} from "lucide-react";
 import { createGame } from "@/game/engine";
 import { EMPTY_HUD, type GameHandle, type HudState, type NetPlayerState } from "@/game/types";
 import { INK_HEX } from "@/game/world";
@@ -39,38 +30,31 @@ import { NetSession, makeRoomCode, type NetPlayer } from "@/game/net";
 
 const KILLS_TO_WIN = 15;
 const INK_LIST = Object.values(INK_HEX).filter((v): v is string => typeof v === "string");
-const MAX_NAME = 16;
-
-type Phase = "lobby" | "playing";
 
 export default function Online() {
   const navigate = useNavigate();
-  const reduce = useReducedMotion();
   const [params] = useSearchParams();
   const setup = useMemo(() => readSetup(), []);
-
   const [session, setSession] = useState<NetSession | null>(null);
-  const [config, setConfig] = useState<MatchConfig>(() =>
-    normalizeMatchConfig({
-      map: normalizeMapId(params.get("map") ?? setup.map),
-      grapple: params.get("grapple") === null ? setup.grapple : params.get("grapple") === "1",
-    }),
-  );
+  const [mode, setMode] = useState<"menu" | "host" | "join">("menu");
   const [name, setName] = useState(() => setup.name || localStorage.getItem("dd_name") || "");
   const [codeInput, setCodeInput] = useState("");
   const [players, setPlayers] = useState<NetPlayer[]>([]);
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [phase, setPhase] = useState<Phase>("lobby");
-  const [copied, setCopied] = useState<"code" | "link" | null>(null);
-  const [created, setCreated] = useState(false);
-  const [joinError, setJoinError] = useState<string | null>(null);
+  const [phase, setPhase] = useState<"lobby" | "playing">("lobby");
+  const [copied, setCopied] = useState(false);
+  const [match, setMatch] = useState<MatchConfig>(() =>
+    normalizeMatchConfig({
+      map: normalizeMapId(params.get("map") ?? setup.map),
+      grapple: params.get("grapple") === null ? setup.grapple : params.get("grapple") === "1",
+    }),
+  );
   const ref = useRef<NetSession | null>(null);
-  const copyTimer = useRef<number | null>(null);
 
   const remember = useCallback((v: string) => {
     setName(v);
-    writeSetup({ name: v });
+    localStorage.setItem("dd_name", v);
   }, []);
 
   const wire = useCallback((s: NetSession) => {
@@ -79,452 +63,357 @@ export default function Online() {
       onError: (t) => setError(t),
       onFeed: (t) => setStatus(t),
       onChange: () => setPlayers(s.getPlayers()),
-      onConfig: (cfg) => setConfig(cfg),
+      onConfig: (cfg) => setMatch(cfg),
     });
   }, []);
 
-  const openRoom = useCallback(
-    (nick: string, cfg: MatchConfig) => {
-      const s = new NetSession(makeRoomCode(), nick, true, cfg);
-      wire(s);
-      s.connect();
-      ref.current = s;
-      setSession(s);
-      setPlayers(s.getPlayers());
-      setConfig(cfg);
-      setError(null);
-      setStatus("Opening your room…");
-      setCreated(true);
-      window.setTimeout(() => setCreated(false), 2600);
-    },
-    [wire],
-  );
+  const create = useCallback(() => {
+    const who = name.trim().slice(0, 16);
+    if (!who) {
+      setError("type a name first — your friends have to know who to blame");
+      return;
+    }
+    localStorage.setItem("dd_name", who);
+    const s = new NetSession(makeRoomCode(), who, true, match);
+    wire(s);
+    s.connect();
+    ref.current = s;
+    setSession(s);
+    setMode("host");
+    setError(null);
+  }, [match, name, wire]);
 
-  const connectTo = useCallback(
-    (rawCode: string, nick: string, cfg: MatchConfig) => {
-      const code = rawCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const join = useCallback(
+    (codeArg?: string) => {
+      const code = (codeArg ?? codeInput).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
       if (code.length < 3) {
         setError("Enter the code your friend sent you.");
         return;
       }
-      if (!nick.trim()) {
-        setError("Pick a name before joining.");
+      const who = name.trim().slice(0, 16);
+      if (!who) {
+        setError("type a name before joining");
         return;
       }
-      const s = new NetSession(code, nick, false, cfg);
+      localStorage.setItem("dd_name", who);
+      const s = new NetSession(code, who, false, match);
       wire(s);
       s.connect();
       ref.current = s;
       setSession(s);
-      setPlayers(s.getPlayers());
+      setMode("join");
       setError(null);
-      setStatus("Finding the room…");
     },
-    [wire],
+    [codeInput, match, name, wire],
   );
 
-  // Arriving from /setup: create or join automatically, once per mount. The
-  // timer keeps React StrictMode's mount → cleanup → mount cycle from opening
-  // a room that the cleanup has already torn down.
+  const leave = useCallback(() => {
+    ref.current?.close();
+    ref.current = null;
+    setSession(null);
+    setPlayers([]);
+    setStatus("");
+    setError(null);
+    setCopied(false);
+    setPhase("lobby");
+    setMode("menu");
+  }, []);
+
+  // a session must never outlive the page that owns it
+  useEffect(() => () => ref.current?.close(), []);
+
+  // Arriving from /setup with ?create=1 or ?code=XXXX: open or join the room
+  // once. The timer keeps React StrictMode's mount → cleanup → mount cycle from
+  // opening a room that the cleanup has already torn down.
   useEffect(() => {
     const wantsCreate = params.get("create") === "1";
     const wantsCode = params.get("code");
     if (!wantsCreate && !wantsCode) return;
     const t = window.setTimeout(() => {
-      const nick = (name.trim() || localStorage.getItem("dd_name") || "").slice(0, MAX_NAME);
-      if (!nick) {
-        setError("Pick a name on the setup screen first.");
-        return;
-      }
-      if (wantsCreate) openRoom(nick, config);
-      else connectTo(wantsCode!, nick, config);
+      if (wantsCreate) create();
+      else if (wantsCode) join(wantsCode);
     }, 0);
     return () => window.clearTimeout(t);
-    // Intentionally mount-only: these are the initial URL choices.
+    // mount-only: these are the initial URL choices
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // A session must never outlive the page that owns it.
-  useEffect(() => () => ref.current?.close(), []);
-
-  // Lobby-level handlers. PvpMatch replaces onStart when it mounts, which is
-  // exactly when a rematch should restart the engine instead of the page.
+  // while the lobby is up: the host's GO drops us into the arena, and any
+  // config packet the host sends becomes this client's match rules
   useEffect(() => {
-    if (!session) return;
+    if (!session || phase !== "lobby") return;
     session.setHandlers({
-      onChange: () => setPlayers(session.getPlayers()),
-      onConfig: (cfg) => {
-        setConfig(cfg);
-        writeSetup(cfg);
-      },
       onStart: (cfg) => {
-        if (cfg) setConfig(cfg);
+        if (cfg) setMatch(cfg);
         setPhase("playing");
       },
+      onConfig: (cfg) => setMatch(cfg),
+      onChange: () => setPlayers(session.getPlayers()),
     });
-  }, [session]);
+  }, [session, phase]);
 
-  const leaveRoom = useCallback(
-    (toSetup = true) => {
-      ref.current?.close();
-      ref.current = null;
-      setSession(null);
-      setPlayers([]);
-      setStatus("");
-      setError(null);
-      setPhase("lobby");
-      if (toSetup) navigate(`/setup?mode=friends&map=${config.map}`);
-    },
-    [config.map, navigate],
-  );
-
-  const createFromGate = () => {
-    const nick = name.trim().slice(0, MAX_NAME);
-    if (!nick) {
-      setError("Pick a name first — your friends have to know who to blame.");
-      return;
-    }
-    localStorage.setItem("dd_name", nick);
-    openRoom(nick, config);
-  };
-
-  const joinFromGate = () => {
-    const nick = name.trim().slice(0, MAX_NAME);
-    if (!nick) {
-      setError("Pick a name before joining.");
-      return;
-    }
-    if (codeInput.trim().length < 3) {
-      setJoinError("Enter the room code your friend sent you.");
-      return;
-    }
-    localStorage.setItem("dd_name", nick);
-    connectTo(codeInput, nick, config);
-  };
-
+  /** Host only: change the map and tell the room. */
   const chooseMap = (id: MapId) => {
-    if (!session?.isHost) return;
-    const next = { ...config, map: id };
-    setConfig(next);
+    const next = { ...match, map: id };
+    setMatch(next);
     writeSetup(next);
-    session.setConfig(next);
+    session?.setConfig(next);
   };
 
+  /** Host only: change the grapple rule and tell the room. */
   const chooseGrapple = (on: boolean) => {
-    if (!session?.isHost) return;
-    const next = { ...config, grapple: on };
-    setConfig(next);
+    const next = { ...match, grapple: on };
+    setMatch(next);
     writeSetup(next);
-    session.setConfig(next);
+    session?.setConfig(next);
   };
-
-  const copy = (what: "code" | "link") => {
-    const text = what === "code" ? session?.code ?? "" : `${window.location.origin}/online?code=${session?.code ?? ""}`;
-    navigator.clipboard?.writeText(text).catch(() => {});
-    setCopied(what);
-    if (copyTimer.current) window.clearTimeout(copyTimer.current);
-    copyTimer.current = window.setTimeout(() => setCopied(null), 1700);
-  };
-
-  const me = players.find((p) => p.isMe);
-  const guests = players.filter((p) => !p.isHost);
-  const allReady = guests.every((p) => p.ready);
-  const info = mapInfo(config.map);
 
   if (phase === "playing" && session) {
-    return <PvpMatch session={session} onLeave={() => leaveRoom(true)} />;
+    return <PvpMatch session={session} onLeave={leave} />;
   }
 
+  const guests = players.filter((p) => !p.isHost);
+  const readyGuests = guests.filter((p) => p.ready).length;
+  const allReady = guests.every((p) => p.ready);
+  const me = players.find((p) => p.isMe);
+  const info = mapInfo(match.map);
+
   return (
-    <div className="dd-home dd-lobby">
-      <div className="dd-home-grain" aria-hidden="true" />
+    <div className="dd-landing">
+      <div className="dd-screen">
+        <div className="panel">
+          {mode === "menu" && (
+            <>
+              <h1>PLAY WITH FRIENDS</h1>
+              <h2>free for all · shoot the other doodles</h2>
 
-      <header className="dd-setup-nav">
-        <button type="button" className="dd-back" onClick={() => leaveRoom(true)}>
-          <ArrowLeft className="size-4" /> SETUP
-        </button>
-        <ol className="dd-steps" aria-label="Setup progress">
-          <li className="done">
-            <b>01</b> MODE
-          </li>
-          <li className="done">
-            <b>02</b> BATTLEFIELD
-          </li>
-          <li className="active">
-            <b>03</b> LOBBY
-          </li>
-        </ol>
-        <div className="dd-lobby-state">
-          <span className={`dd-live-dot ${session ? "on" : ""}`} />
-          {session ? (session.isHost ? "HOSTING" : "CONNECTED") : "NOT IN A ROOM"}
-        </div>
-      </header>
+              <div className="dd-netform">
+                <label>
+                  your name
+                  <input
+                    value={name}
+                    maxLength={16}
+                    placeholder="doodler"
+                    onChange={(e) => remember(e.target.value)}
+                  />
+                </label>
+              </div>
 
-      <main className="dd-lobby-main">
-        {!session && (
-          <motion.section
-            className="dd-gate"
-            initial={reduce ? false : { opacity: 0, y: 16 }}
-            animate={reduce ? undefined : { opacity: 1, y: 0 }}
-          >
-            <div className="dd-gate-art">
-              <img src={info.preview} alt={`${info.name} preview`} />
-              <div className="dd-gate-wash" />
-              <span className="dd-preview-index">YOUR ROOM'S MAP</span>
-              <div className="dd-gate-mapname">
-                <span className="dd-kicker">{info.zone ? "ANCIENT EGYPT" : "DOODLE DISTRICT"}</span>
-                <h2>{info.name}</h2>
-                <i>{grappleLabel(config.grapple)}</i>
+              <div className="mapgrid">
+                {MAPS.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={`mapbtn ${m.id === match.map ? "on" : ""}`}
+                    aria-pressed={m.id === match.map}
+                    onClick={() => chooseMap(m.id)}
+                  >
+                    {m.name}
+                    <i>{m.tagline}</i>
+                  </button>
+                ))}
               </div>
-            </div>
-            <div className="dd-gate-form">
-              <span className="dd-kicker dd-kicker--ink">OPEN A ROOM</span>
-              <h1>Who's holding the marker?</h1>
-              <p>Pick a name, then open a room or type the code your friend gave you. Up to four players.</p>
-              <label className="dd-name-field">
-                <span>YOUR DOODLE NAME</span>
-                <input
-                  value={name}
-                  maxLength={MAX_NAME}
-                  placeholder="doodler"
-                  onChange={(e) => {
-                    remember(e.target.value);
-                    setError(null);
-                  }}
-                  onKeyDown={(e) => e.key === "Enter" && createFromGate()}
-                />
-              </label>
-              <button type="button" className="dd-primary" onClick={createFromGate}>
-                <Radio className="size-5" /> CREATE ROOM
-              </button>
-              <div className="dd-or">
-                <span /> OR JOIN A ROOM <span />
+              <div className="settings">
+                <label>
+                  <input type="checkbox" checked={match.grapple} onChange={(e) => chooseGrapple(e.target.checked)} />
+                  grappling hook enabled <span className="k">(this match only · Q / E)</span>
+                </label>
+                <div className="controls-note">
+                  {match.grapple ? "the hook is part of this match" : "off for this match — nobody can equip or fire it"}
+                </div>
               </div>
-              <div className="dd-join-row">
-                <input
-                  className="dd-code-input"
-                  value={codeInput}
-                  maxLength={6}
-                  placeholder="CODE"
-                  aria-label="Room code"
-                  onChange={(e) => {
-                    setCodeInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""));
-                    setJoinError(null);
-                  }}
-                  onKeyDown={(e) => e.key === "Enter" && joinFromGate()}
-                />
-                <button type="button" className="dd-secondary" onClick={joinFromGate}>
-                  JOIN
+
+              <div className="mainbtns">
+                <button type="button" className="start" onClick={create}>
+                  CREATE MATCH<i>you get a code to share · {info.name.toLowerCase()}</i>
+                </button>
+                <button type="button" onClick={() => setMode("join")}>
+                  JOIN A MATCH<i>enter a friend's code</i>
                 </button>
               </div>
-              {joinError && <p className="dd-form-error">{joinError}</p>}
-              {error && <p className="dd-form-error">{error}</p>}
-              <p className="dd-cta-foot">
-                Rooms are peer-to-peer. Both players need a modern browser and a network that lets WebRTC through —
-                a TURN relay may be needed across two mobile networks.
-              </p>
-            </div>
-          </motion.section>
-        )}
 
-        {session && (
-          <div className="dd-lobby-grid">
-            <section className="dd-lobby-left">
-              <AnimatePresence>
-                {created && (
-                  <motion.div
-                    className="dd-celebrate"
-                    initial={reduce ? false : { opacity: 0, scale: 0.7, rotate: -8 }}
-                    animate={reduce ? undefined : { opacity: 1, scale: 1, rotate: -2 }}
-                    exit={reduce ? undefined : { opacity: 0, scale: 0.9 }}
-                  >
-                    <Sparkles className="size-5" /> ROOM OPEN
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              <div className="dd-roomcode-card">
-                <span className="dd-kicker">ROOM CODE</span>
-                <div className="dd-netcode" aria-label={`Room code ${session.code}`}>
-                  {session.code}
-                </div>
-                <div className="dd-room-actions">
-                  <button type="button" className="dd-secondary" onClick={() => copy("code")}>
-                    {copied === "code" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-                    {copied === "code" ? "COPIED" : "COPY CODE"}
-                  </button>
-                  <button type="button" className="dd-secondary" onClick={() => copy("link")}>
-                    {copied === "link" ? <Check className="size-3.5" /> : <Link2 className="size-3.5" />}
-                    {copied === "link" ? "COPIED" : "COPY INVITE"}
-                  </button>
-                </div>
-                <p className="dd-room-hint">
-                  {session.isHost ? "Send this to your friends. They join from the title screen or with the invite link." : "You're in. Wait for the host to start, or toggle ready."}
-                </p>
-              </div>
-
-              <div className="dd-roommap">
-                <div className="dd-roommap-frame">
-                  <img src={info.preview} alt={`${info.name} preview`} />
-                  <div className="dd-roommap-wash" />
-                  <div className="dd-roommap-name">
-                    <span className="dd-kicker">{session.isHost ? "HOST'S PICK" : "HOST'S MAP"}</span>
-                    <b>{info.name}</b>
-                    <i>{config.grapple ? "GRAPPLING HOOK ENABLED" : "GRAPPLING HOOK DISABLED"}</i>
-                  </div>
-                </div>
-
-                <div className="dd-roommap-picks" role="group" aria-label="Choose a map">
-                  {MAPS.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      className={`dd-minimap ${m.id === config.map ? "on" : ""}`}
-                      aria-pressed={m.id === config.map}
-                      disabled={!session.isHost}
-                      onClick={() => chooseMap(m.id)}
-                      title={m.name}
-                    >
-                      <img src={m.preview} alt="" />
-                      <span>{m.name.replace("THE ", "")}</span>
-                    </button>
-                  ))}
-                </div>
-                {!session.isHost && <p className="dd-locknote">Only the host can change the battlefield.</p>}
-
-                <div className="dd-roomrule">
-                  <div>
-                    <b>
-                      <Link2 className="size-4" /> GRAPPLING HOOK
-                    </b>
-                    <span>
-                      {session.isHost
-                        ? "Applies to every player the moment you save it."
-                        : "The host controls this rule for the whole room."}
-                    </span>
-                  </div>
-                  <div className="dd-segment" role="group" aria-label="Grappling hook">
-                    <button type="button" aria-pressed={config.grapple} disabled={!session.isHost} onClick={() => chooseGrapple(true)}>
-                      ENABLED
-                    </button>
-                    <button type="button" aria-pressed={!config.grapple} disabled={!session.isHost} onClick={() => chooseGrapple(false)}>
-                      DISABLED
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className="dd-lobby-right">
-              <div className="dd-roster-head">
+              <div className="cols">
                 <div>
-                  <span className="dd-kicker dd-kicker--ink">IN THE ROOM</span>
-                  <h2>
-                    {players.length} / 4 <span>players</span>
-                  </h2>
+                  <div className="colhead">HOW IT WORKS</div>
+                  <div>
+                    <b>1</b> one of you creates a match and sends the 4-letter code
+                  </div>
+                  <div>
+                    <b>2</b> the other types it in and joins the room
+                  </div>
+                  <div>
+                    <b>3</b> everyone readies up, the host starts it — free for all, first to{" "}
+                    <b>{KILLS_TO_WIN}</b> kills
+                  </div>
+                  <div>
+                    <b>note</b> play is peer-to-peer, straight between your browsers
+                  </div>
                 </div>
-                <span className={`dd-ready-chip ${allReady ? "on" : ""}`}>
-                  {allReady ? "ALL READY" : `${guests.filter((g) => g.ready).length}/${guests.length} READY`}
-                </span>
               </div>
+
+              {error && <div className="dd-neterr">{error}</div>}
+
+              <div className="mainbtns">
+                <button type="button" className="alt" onClick={() => navigate("/")}>
+                  BACK TO TITLE
+                </button>
+              </div>
+            </>
+          )}
+
+          {mode === "join" && !session && (
+            <>
+              <h1>JOIN A MATCH</h1>
+              <h2>type the code your friend sent you</h2>
+              <div className="dd-netform">
+                <label>
+                  match code
+                  <input
+                    className="code"
+                    value={codeInput}
+                    maxLength={4}
+                    autoFocus
+                    placeholder="ABCD"
+                    onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
+                    onKeyDown={(e) => e.key === "Enter" && join()}
+                  />
+                </label>
+                <label>
+                  your name
+                  <input value={name} maxLength={16} onChange={(e) => remember(e.target.value)} />
+                </label>
+              </div>
+              <div className="mainbtns">
+                <button type="button" className="start" onClick={() => join()}>
+                  CONNECT
+                </button>
+              </div>
+              {error && <div className="dd-neterr">{error}</div>}
+              <div className="mainbtns">
+                <button type="button" className="alt" onClick={leave}>
+                  BACK
+                </button>
+              </div>
+            </>
+          )}
+
+          {session && (mode === "host" || mode === "join") && (
+            <>
+              <h1>{mode === "host" ? "MATCH CODE" : `CODE ${session.code}`}</h1>
+              <h2>
+                {info.name.toLowerCase()} · grappling hook {match.grapple ? "on" : "off"}
+              </h2>
+              {mode === "host" && (
+                <>
+                  <div className="dd-netcode">{session.code}</div>
+                  <div className="mainbtns">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(session.code).catch(() => {});
+                        setCopied(true);
+                        window.setTimeout(() => setCopied(false), 1600);
+                      }}
+                    >
+                      {copied ? "COPIED!" : "COPY CODE"}
+                    </button>
+                  </div>
+                  <h2>send it to your friend, then start</h2>
+                </>
+              )}
+              {mode === "join" && <h2>connecting to the host…</h2>}
+
+              {/* the host sets the battlefield and the rule; guests read them */}
+              {mode === "host" ? (
+                <>
+                  <div className="mapgrid">
+                    {MAPS.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        className={`mapbtn ${m.id === match.map ? "on" : ""}`}
+                        aria-pressed={m.id === match.map}
+                        onClick={() => chooseMap(m.id)}
+                      >
+                        {m.name}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="settings">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={match.grapple}
+                        onChange={(e) => chooseGrapple(e.target.checked)}
+                      />
+                      grappling hook enabled <span className="k">(everyone plays by this)</span>
+                    </label>
+                  </div>
+                </>
+              ) : (
+                <div className="controls-note">the host controls the map and the rules</div>
+              )}
 
               <div className="dd-roster">
-                {players.length === 0 && (
-                  <div className="dd-roster-empty">
-                    <Loader2 className="size-5 animate-spin" />
-                    {status || "Waiting for the broker…"}
-                  </div>
-                )}
+                <div className="row head">
+                  <span className="dot" style={{ color: "#2e3342" }} />
+                  <span>IN THE ROOM ({players.length})</span>
+                </div>
+                {players.length === 0 && <div className="row">nobody yet…</div>}
                 {players.map((p) => (
-                  <div className={`dd-roster-row ${p.ready || p.isHost ? "ready" : ""}`} key={p.id}>
+                  <div className="row" key={p.id}>
                     <span className="dot" style={{ color: INK_LIST[p.ink % INK_LIST.length] }} />
                     <span className="nm">
                       {p.name}
                       {p.isMe ? " (you)" : ""}
-                    </span>
-                    {p.isHost && (
-                      <span className="dd-host-tag">
-                        <Crown className="size-3.5" /> HOST
-                      </span>
-                    )}
-                    <span className={`dd-ready-badge ${p.ready || p.isHost ? "on" : ""}`}>
-                      {p.ready || p.isHost ? <Check className="size-3.5" /> : null}
-                      {p.ready || p.isHost ? "READY" : "WAITING"}
+                      {p.isHost ? " · host" : ""}
+                      {p.isHost || p.ready ? " · ready" : " · waiting"}
                     </span>
                   </div>
                 ))}
               </div>
 
-              <div className="dd-lobby-status" aria-live="polite">
-                <span className={`dd-live-dot ${session.phase === "lobby" ? "on" : ""}`} />
-                {status || (session.isHost ? "Share the code and wait for your friends." : "Connected — waiting for the host.")}
-              </div>
-              {error && (
-                <div className="dd-neterr">
-                  {error}
-                  <button type="button" className="dd-neterr-retry" onClick={() => leaveRoom(true)}>
-                    BACK TO SETUP
-                  </button>
-                </div>
-              )}
+              <div className="dd-netstatus">{status}</div>
+              {error && <div className="dd-neterr">{error}</div>}
 
-              <div className="dd-lobby-actions">
-                {session.isHost ? (
-                  <button type="button" className="dd-primary" disabled={!allReady} onClick={() => session.beginMatch()}>
-                    <ShieldCheck className="size-5" />
-                    {allReady ? `START MATCH${guests.length ? ` · ${guests.length} FRIEND${guests.length === 1 ? "" : "S"}` : ""}` : "WAITING FOR READY"}
-                  </button>
-                ) : (
+              <div className="mainbtns">
+                {mode === "host" ? (
                   <button
                     type="button"
-                    className={`dd-ready-toggle ${me?.ready ? "on" : ""}`}
-                    onClick={() => session.setReady(!me?.ready)}
+                    className="start"
+                    disabled={!allReady}
+                    onClick={() => session.beginMatch()}
                   >
-                    <Check className="size-5" /> {me?.ready ? "READY — TAP TO UNREADY" : "I'M READY"}
+                    ENTER ARENA
+                    <i>
+                      {!allReady
+                        ? `${readyGuests}/${guests.length} friends ready — waiting on the rest`
+                        : guests.length > 0
+                          ? `${guests.length} friend${guests.length === 1 ? "" : "s"} ready · ${info.name.toLowerCase()}`
+                          : "waiting for a friend… you can still scope the map"}
+                    </i>
                   </button>
+                ) : (
+                  <>
+                    <button type="button" className="start" onClick={() => session.setReady(!me?.ready)}>
+                      {me?.ready ? "READY — TAP TO UNREADY" : "I'M READY"}
+                      <i>the host starts when everyone is ready</i>
+                    </button>
+                    <button type="button" className="start" disabled>
+                      WAITING FOR HOST<i>the room starts when they do</i>
+                    </button>
+                  </>
                 )}
-                <button type="button" className="dd-secondary dd-leave" onClick={() => leaveRoom(true)}>
-                  <LogOut className="size-3.5" /> LEAVE ROOM
+                <button type="button" className="alt" onClick={leave}>
+                  LEAVE ROOM
                 </button>
               </div>
-
-              <div className="dd-lobby-facts">
-                <div>
-                  <b>MAP</b>
-                  <span>{info.name}</span>
-                </div>
-                <div>
-                  <b>RULES</b>
-                  <span>Free-for-all · first to {KILLS_TO_WIN} kills</span>
-                </div>
-                <div>
-                  <b>HOOK</b>
-                  <span>{config.grapple ? "Enabled" : "Disabled"}</span>
-                </div>
-                <div>
-                  <b>CONNECTION</b>
-                  <span>{session.isHost ? "Host · relays the room" : "Guest · direct to host"}</span>
-                </div>
-              </div>
-
-              <div className="dd-lobby-note">
-                <UserPlus className="size-4" />
-                <span>
-                  {session.isHost
-                    ? "Friends can join with the code at any time before the start. Late joiners receive these exact rules."
-                    : "You can join mid-match — the host's current rules come with the start packet."}
-                </span>
-              </div>
-            </section>
-          </div>
-        )}
-      </main>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
-}
-
-function grappleLabel(on: boolean) {
-  return on ? "Grappling hook enabled · peer-to-peer" : "Grappling hook disabled · peer-to-peer";
 }
 
 /* ======================================================================== *
@@ -549,8 +438,9 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
   const [ads, setAds] = useState(false);
   const [paused, setPaused] = useState(false);
   const [down, setDown] = useState(false);
+  // The host's rules, straight off the session: the map is fixed for the whole
+  // match and the grapple rule is the one every client received.
   const config = session.getConfig();
-  const info = mapInfo(config.map);
 
   const pushFeed = useCallback((text: string, hot: boolean) => {
     const id = ++feedId.current;
@@ -558,6 +448,15 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
     window.setTimeout(() => setFeed((f) => f.filter((x) => x.id !== id)), 3800);
   }, []);
 
+  /**
+   * Start a round: the first one, or a rematch.
+   *
+   * Everything that survives a round lives in React state or a ref, so every
+   * one of them has to be put back here — the overlay flag, the pause, the
+   * cached remote transforms, the pending respawn timer. A rematch that only
+   * restarted the engine left the victory overlay derived from a scoreboard
+   * nobody had cleared, which is why the button looked dead.
+   */
   const resetRound = useCallback(() => {
     if (respawnTimer.current) {
       window.clearTimeout(respawnTimer.current);
@@ -572,6 +471,8 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
     handle.setRemotePlayers([]);
     handle.start();
     handle.netRespawn(session.getPlayers().find((p) => p.isMe)?.ink ?? 0);
+    // Tell the room about the teleport. The epoch is what lets every peer snap
+    // to the fresh pad instead of easing a body across the district.
     session.reportRespawn(handle.netState().epoch);
   }, [session]);
 
@@ -579,8 +480,6 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
     const host = stageRef.current;
     if (!host) return;
 
-    // The match is built with the host's rules, not with whatever this browser
-    // last had selected: `config` came from the config/start packet.
     const handle = createGame(
       host,
       {
@@ -602,20 +501,25 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
         onPause: () => setPaused(true),
         onResume: () => setPaused(false),
         onAim: setAds,
+        // our rounds landed on someone: they are the authority on their own body
         onNetHit: (hit) => session.reportHit(hit.victim, hit.dmg, hit.epoch, hit.origin),
         onNetDeath: (killerId) => {
           session.reportDeath(killerId ?? session.me);
+          // A client never applies its own death envelope, so the victim's page
+          // has to record its own obituary here or its kill feed stays silent.
           {
             const roster = session.getPlayers();
-            const whoMe = roster.find((p) => p.isMe);
+            const me = roster.find((p) => p.isMe);
             const killer = killerId && killerId !== session.me ? roster.find((p) => p.id === killerId) : null;
-            const who = whoMe?.name ?? "YOU";
+            const who = me?.name ?? "YOU";
             pushFeed(killer ? `${killer.name} ERASED ${who}` : `${who} ERASED THEMSELVES`, true);
           }
           setDown(true);
           if (respawnTimer.current) window.clearTimeout(respawnTimer.current);
           respawnTimer.current = window.setTimeout(() => {
             respawnTimer.current = null;
+            // A rematch that started while we were down owns the respawn now;
+            // this timer must not teleport a body into a round that has moved on.
             if (winnerRef.current) return;
             const h = gameRef.current;
             if (!h) return;
@@ -625,10 +529,13 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
           }, 3200);
         },
       },
+      // The match is built from the host's rules, not from whatever this
+      // browser last had selected.
       { map: config.map, grapple: config.grapple },
     );
     gameRef.current = handle;
 
+    /** rebuild the avatar list from the roster + the newest packets */
     const pushRemotes = () => {
       const roster = session.getPlayers();
       const list = [];
@@ -646,6 +553,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
     handle.setInvert(localStorage.getItem("dd_invert") === "1");
     handle.setMusic(localStorage.getItem("dd_music") !== "0");
     handle.start();
+    // our ink doubles as our spawn pad, so nobody starts on top of anyone
     handle.netRespawn(session.getPlayers().find((p) => p.isMe)?.ink ?? 0);
     session.reportRespawn(handle.netState().epoch);
 
@@ -655,6 +563,8 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
       onRemoteState: (id, s) => {
         remotes.current.set(id, s);
       },
+      // They left, or went silent. Forget their transform now, so a respawn or
+      // a rematch cannot rebuild a body out of a position nobody is holding.
       onPeerGone: (id) => {
         remotes.current.delete(id);
       },
@@ -663,12 +573,17 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
         pushRemotes();
       },
       onFeed: pushFeed,
+      // A hit from the net layer, validated here: the epoch says whether it
+      // belongs to the body we are in now (a shot that arrived after our
+      // respawn is not ours to take), and we hand back our own half round trip
+      // so the engine can rewind to where we were when it was fired.
       onHitMe: (dmg, killer, epoch, origin) => {
         const me = handle.netState();
         if (epoch !== me.epoch) return;
         handle.takeNetHit(dmg, killer, session.rewindMs, origin);
       },
       onLatency: (ms) => handle.setNetLatency(ms),
+      // a rematch (or the very first start) rebuilds the arena from scratch
       onStart: () => resetRound(),
       onRematch: () => resetRound(),
       onError: (t) => pushFeed(t.toUpperCase(), true),
@@ -691,6 +606,9 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, pushFeed, resetRound]);
 
+  // First to fifteen takes it. Every client builds the same scoreboard from the
+  // same death messages, so nobody has to be told who won — the result is read
+  // straight off the roster. The effect only freezes our own view behind it.
   const winner = players.find((p) => p.kills >= KILLS_TO_WIN) ?? null;
   useEffect(() => {
     winnerRef.current = Boolean(winner);
@@ -708,7 +626,10 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
       <div ref={stageRef} className="dd-stage absolute inset-0" />
 
       <div className="dd-hud">
-        <div className={`dd-crosshair ${hud.weapon === "KATANA" ? "katana" : ""} ${ads ? "ads" : ""}`} style={{ display: live ? undefined : "none" }}>
+        <div
+          className={`dd-crosshair ${hud.weapon === "KATANA" ? "katana" : ""} ${ads ? "ads" : ""}`}
+          style={{ display: live ? undefined : "none" }}
+        >
           <i className="ch-t" />
           <i className="ch-b" />
           <i className="ch-l" />
@@ -735,7 +656,6 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
         </div>
 
         <div className="dd-hud-tl">
-          <div className="dd-area">{info.name}</div>
           <div className="score">
             KILLS <b>{me?.kills ?? 0}</b> / {KILLS_TO_WIN}
           </div>
@@ -792,7 +712,10 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
           <div className="health">
             <span>HP</span>
             <div className="bar">
-              <div className="fill" style={{ width: `${hpFrac * 100}%`, background: hpFrac < 0.3 ? "#b32b3a" : "#3947b8" }} />
+              <div
+                className="fill"
+                style={{ width: `${hpFrac * 100}%`, background: hpFrac < 0.3 ? "#b32b3a" : "#3947b8" }}
+              />
             </div>
             <span className="hpnum">{hud.hp}</span>
           </div>
@@ -819,7 +742,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
       </div>
 
       <button type="button" className="dd-exit" onClick={onLeave}>
-        <LogOut className="size-3.5" /> LEAVE MATCH (room {session.code}) · {info.name}
+        ← LEAVE MATCH (room {session.code})
       </button>
 
       {down && !winner && (
@@ -839,9 +762,6 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
           <div className="panel">
             <h1>PAUSED</h1>
             <h2>the match keeps running — get back in</h2>
-            <div className="dd-screen-map">
-              {info.name} · grappling hook {config.grapple ? "enabled" : "disabled"}
-            </div>
             <div className="mainbtns">
               <button type="button" className="start" onClick={resume}>
                 RESUME<i>back into the fight</i>
@@ -861,9 +781,6 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
             <h2>
               {winner.name} took it · {winner.kills} kills
             </h2>
-            <div className="dd-screen-map">
-              {info.name} · grappling hook {config.grapple ? "enabled" : "disabled"}
-            </div>
             <div className="dd-score" style={{ textAlign: "center", margin: "0 auto" }}>
               {players.map((p) => (
                 <div className={`row ${p.isMe ? "me" : ""}`} key={p.id} style={{ justifyContent: "center" }}>

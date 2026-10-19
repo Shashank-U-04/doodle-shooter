@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { createGame } from "@/game/engine";
-import { grappleFromQuery, mapFromQuery, mapInfo } from "@/game/maps";
+import { grappleFromQuery, mapFromQuery } from "@/game/maps";
 import type { GameHandle } from "@/game/types";
 import type { GameOverStats, HudState } from "@/game/types";
 
@@ -298,18 +298,12 @@ export default function Game() {
           <div className="panel">
             <h1>PAUSED</h1>
             <h2>wave {overlay.wave} · score {overlay.score}</h2>
-            <div className="dd-screen-map">
-              {mapInfo(match.map).name} · grappling hook {match.grapple ? "enabled" : "disabled"}
-            </div>
             <div className="mainbtns">
               <button type="button" className="start" onClick={resume}>
                 RESUME<i>back into the wave</i>
               </button>
               <button type="button" onClick={restart}>
                 RESTART RUN
-              </button>
-              <button type="button" className="alt" onClick={() => navigate(`/setup?mode=solo&map=${match.map}`)}>
-                CHANGE MAP
               </button>
               <button type="button" className="alt" onClick={toMenu}>
                 MAIN MENU
