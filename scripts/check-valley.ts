@@ -113,6 +113,21 @@ const back = map.nearest(new THREE.Vector3(0, -298.4, 40.5));
 check("tomb return prompt reachable", back?.id === "tomb-exit", back?.label ?? "none");
 check("tomb → sanctuary transition intact", map.activate("tomb-exit")?.travel?.zone === "interior");
 
+// the surviving small doors, chests and the temple lever still advertise
+// themselves from the real approach points
+const prompts: [string, THREE.Vector3][] = [
+  ["west-pyramid-door", new THREE.Vector3(-36, 1.2, 36.3)],
+  ["east-pyramid-door", new THREE.Vector3(36, 1.2, -13.7)],
+  ["chest-temple", new THREE.Vector3(-25.6, 1.4, -31)],
+  ["chest-temple-2", new THREE.Vector3(-42.4, 1.4, -31)],
+  ["temple-lever", new THREE.Vector3(-24.6, 1.4, -39.5)],
+  ["chest-rim", new THREE.Vector3(-50, 1.4, 30)],
+];
+for (const [id, p] of prompts) {
+  const near = map.nearest(p);
+  check(`prompt ${id} reachable`, near?.id === id, near?.id ?? "none");
+}
+
 // the temple's hidden alcove still opens and gives up its collider
 map.activate("temple-lever");
 for (let i = 0; i < 100; i++) map.update(i * 0.05, 0.05, player);

@@ -1219,7 +1219,7 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   boulder(22, 10, 0.55, 0.45, INK.STONE);
   boulder(11, 24, 0.5, 0.4, INK.OCHRE);
   boulder(-14, 34, 0.6, 0.5, INK.STONE);
-  boulder(44, -16, 0.8, 0.6, INK.OCHRE);
+  boulder(48, -8, 0.8, 0.6, INK.OCHRE);
   boulder(-44, 14, 0.7, 0.6, INK.STONE);
   boulder(-38, 52, 0.9, 0.7, INK.OCHRE);
   boulder(20, 53, 0.6, 0.5, INK.STONE);
