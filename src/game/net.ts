@@ -20,6 +20,7 @@ import Peer, { type DataConnection } from "peerjs";
 // The transform gate lives beside the state it guards, in types.ts, so the
 // transport and any test ask the same question about a stale packet.
 import { shouldApplyState, type NetPlayerState, type NetShotOrigin } from "./types";
+import { normalizeMatchConfig, type MatchConfig } from "./maps";
 
 /** One player as the lobby and the scoreboard see them. */
 export type NetPlayer = {
@@ -34,9 +35,11 @@ export type NetPlayer = {
   state: NetPlayerState;
   /** false once their state stops arriving (closed tab, lost connection, …) */
   online: boolean;
+  /** lobby ready state; the host is always ready */
+  ready: boolean;
 };
 
-type RosterEntry = { id: string; name: string; ink: number };
+type RosterEntry = { id: string; name: string; ink: number; ready: boolean };
 
 type NetMsg =
   | { t: "hello"; name: string }
@@ -49,7 +52,12 @@ type NetMsg =
   | { t: "hit"; victim: string; dmg: number; epoch: number; origin: NetShotOrigin }
   | { t: "death"; killer: string }
   | { t: "respawn"; epoch: number }
-  | { t: "start" }
+  /** host → room: the authoritative map + grapple rule */
+  | { t: "config"; config: MatchConfig }
+  /** guest → host: lobby ready flag */
+  | { t: "ready"; ready: boolean }
+  /** host → room: begin, carrying the rules the match is actually built with */
+  | { t: "start"; config?: MatchConfig }
   | { t: "rematch" }
   | { t: "ping"; t0: number }
   | { t: "pong"; t0: number }
@@ -72,8 +80,10 @@ export type NetHandlers = {
   onRematch?: () => void;
   /** our measured half round trip changed — feed it to the engine's aim model */
   onLatency?: (ms: number) => void;
-  /** the host said go */
-  onStart?: () => void;
+  /** the host said go; adopt `config` if it is present (it is authoritative) */
+  onStart?: (config?: MatchConfig) => void;
+  /** the host's match rules changed, or arrived for the first time */
+  onConfig?: (config: MatchConfig) => void;
   onFeed?: (text: string, hot: boolean) => void;
   onStatus?: (text: string) => void;
   onError?: (text: string) => void;
@@ -224,6 +234,10 @@ export class NetSession {
   /** our own measured round trip, ms */
   private rtt = 0;
   private pingTimer = 0;
+  /** the match rules; guests adopt the host's copy */
+  private config: MatchConfig;
+  /** lobby ready flags, host-authoritative */
+  private ready = new Map<string, boolean>();
 
   /**
    * Half the measured round trip, capped at a quarter second.
@@ -236,10 +250,11 @@ export class NetSession {
     return Math.min(250, Math.round(this.rtt / 2));
   }
 
-  constructor(code: string, name: string, isHost: boolean) {
+  constructor(code: string, name: string, isHost: boolean, config: MatchConfig = { map: "district", grapple: true }) {
     this.code = code.toUpperCase();
     this.name = name.trim().slice(0, 16) || (isHost ? "HOST" : "GUEST");
     this.isHost = isHost;
+    this.config = normalizeMatchConfig(config);
   }
 
   /** The host answers to a predictable id, so a code is all a guest needs. */
@@ -275,6 +290,7 @@ export class NetSession {
     peer.on("open", (id) => {
       this.me = id;
       this.roster.set(id, { name: this.name, ink: 0 });
+      this.ready.set(id, true);
       this.phase = "lobby";
       this.handlers.onStatus?.("WAITING FOR YOUR FRIEND…");
       this.publish();
@@ -308,6 +324,7 @@ export class NetSession {
         this.conns.set(this.hostId, conn);
         this.roster.set(this.hostId, { name: "HOST", ink: 0 });
         this.roster.set(this.me, { name: this.name, ink: 1 });
+        this.ready.set(this.me, false);
         this.phase = "lobby";
         this.send({ t: "hello", name: this.name });
         this.handlers.onStatus?.("CONNECTED — WAITING FOR THE HOST TO START…");
@@ -506,8 +523,19 @@ export class NetSession {
   }
 
   private sendRoster() {
-    const list: RosterEntry[] = [...this.roster.entries()].map(([id, v]) => ({ id, name: v.name, ink: v.ink }));
+    const list: RosterEntry[] = [...this.roster.entries()].map(([id, v]) => ({
+      id,
+      name: v.name,
+      ink: v.ink,
+      ready: id === this.me ? this.isHost : (this.ready.get(id) ?? false),
+    }));
     this.forward({ t: "roster", list, from: this.me });
+  }
+
+  /** Host: tell one peer (or the whole room) what this match is configured as. */
+  private sendConfig(conn?: DataConnection) {
+    if (conn) this.forward({ t: "config", config: this.config, from: this.me }, conn);
+    else this.forward({ t: "config", config: this.config, from: this.me });
   }
 
   /** Host: everybody but the sender. Guest: the host. */
@@ -536,7 +564,11 @@ export class NetSession {
         // left does not linger on the scoreboard
         const list = Array.isArray(env.list) ? env.list : [];
         this.roster.clear();
-        for (const r of list) this.roster.set(r.id, { name: r.name, ink: r.ink });
+        this.ready.clear();
+        for (const r of list) {
+          this.roster.set(r.id, { name: r.name, ink: r.ink });
+          this.ready.set(r.id, r.ready === true);
+        }
         if (!this.roster.has(this.me)) this.roster.set(this.me, { name: this.name, ink: 1 });
         this.publish();
         return;
@@ -562,6 +594,11 @@ export class NetSession {
         this.close();
         return;
       }
+      if (env.t === "config") {
+        this.config = normalizeMatchConfig(env.config);
+        this.handlers.onConfig?.(this.config);
+        return;
+      }
       if (env.t === "pong") {
         this.noteRtt(env.t0);
         return;
@@ -581,11 +618,20 @@ export class NetSession {
       }
       this.roster.set(from, { name: String(env.name ?? "PLAYER").slice(0, 16), ink: this.freeInk(from) });
       this.lastState[from] = this.lastState[from] ?? { ...IDLE };
+      this.ready.set(from, false);
       this.handlers.onFeed?.(`${this.roster.get(from)?.name ?? "A PLAYER"} JOINED`, false);
       this.sendRoster();
+      // A newcomer needs the rules even if the host never touches them again.
+      this.sendConfig(this.conns.get(from));
       // A friend who turns up mid-match drops straight into the arena with
       // everyone else instead of waiting for a start that already happened.
-      if (this.phase === "playing") this.send({ t: "start" }, this.conns.get(from));
+      if (this.phase === "playing") this.send({ t: "start", config: this.config }, this.conns.get(from));
+      this.publish();
+      return;
+    }
+    if (env.t === "ready") {
+      this.ready.set(from, env.ready === true);
+      this.sendRoster();
       this.publish();
       return;
     }
@@ -651,8 +697,15 @@ export class NetSession {
         this.publish();
         break;
       case "start":
+        // The start packet is the last word on the rules: a guest who joined
+        // late, or missed an earlier config packet, builds the same match as
+        // the host. This is what makes the host's choice authoritative.
+        if (env.config) {
+          this.config = normalizeMatchConfig(env.config);
+          this.handlers.onConfig?.(this.config);
+        }
         this.phase = "playing";
-        this.handlers.onStart?.();
+        this.handlers.onStart?.(this.config);
         break;
       case "rematch":
         this.beginRematch();
@@ -719,13 +772,39 @@ export class NetSession {
     this.send({ t: "respawn", epoch });
   }
 
-  /** Host only: everyone drops into the arena together. */
+  /** Host only: everyone drops into the arena together, under these rules. */
   beginMatch() {
     this.scores.clear();
     this.phase = "playing";
-    this.send({ t: "start" });
-    this.handlers.onStart?.();
+    this.send({ t: "start", config: this.config });
+    this.handlers.onStart?.(this.config);
     this.publish();
+  }
+
+  /** The match rules this client will build. Guests mirror the host's copy. */
+  getConfig(): MatchConfig {
+    return this.config;
+  }
+
+  /** Host only: change the map or grapple rule and broadcast it to the room. */
+  setConfig(patch: Partial<MatchConfig>) {
+    if (!this.isHost) return;
+    this.config = normalizeMatchConfig({ ...this.config, ...patch });
+    this.sendConfig();
+    this.handlers.onConfig?.(this.config);
+    this.publish();
+  }
+
+  /** Mark ourselves ready / not ready. The host is always ready. */
+  setReady(ready: boolean) {
+    if (this.isHost) return;
+    this.ready.set(this.me, ready);
+    this.send({ t: "ready", ready });
+    this.publish();
+  }
+
+  get isReady(): boolean {
+    return this.isHost || (this.ready.get(this.me) ?? false);
   }
 
   /**
@@ -826,6 +905,7 @@ export class NetSession {
       deaths: score.deaths,
       state: this.lastState[id] ?? { ...IDLE },
       online: id === this.me || performance.now() - (this.lastSeen.get(id) ?? 0) < 4000,
+      ready: id === this.me ? this.isReady : (this.ready.get(id) ?? false),
     };
   }
 }

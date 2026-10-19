@@ -15,6 +15,7 @@ const AuthPage = lazy(() => import("./pages/Auth.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 const Game = lazy(() => import("./pages/Game.tsx"));
+const Setup = lazy(() => import("./pages/Setup.tsx"));
 const Online = lazy(() => import("./pages/Online.tsx"));
 
 // Simple loading fallback for route transitions
@@ -134,6 +135,7 @@ createRoot(document.getElementById("root")!).render(
                   </RequireAuth>
                 }
               />
+              <Route path="/setup" element={<Setup />} />
               <Route path="/game" element={<Game />} />
               <Route path="/online" element={<Online />} />
               <Route path="*" element={<NotFound />} />

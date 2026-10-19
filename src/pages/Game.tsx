@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { createGame } from "@/game/engine";
+import { grappleFromQuery, mapFromQuery, mapInfo } from "@/game/maps";
 import type { GameHandle } from "@/game/types";
 import type { GameOverStats, HudState } from "@/game/types";
 
@@ -51,6 +52,12 @@ export default function Game() {
   const invert = useRef(localStorage.getItem("dd_invert") === "1");
   const sound = useRef(localStorage.getItem("dd_music") !== "0");
   const [best, setBest] = useState(() => Number(localStorage.getItem("dd_best") || 0));
+  // The map and the match's grapple rule arrive in the URL from the setup
+  // screen, so a reload of /game?map=tomb lands in the same match.
+  const [match] = useState(() => ({
+    map: mapFromQuery(window.location.search),
+    grapple: grappleFromQuery(window.location.search),
+  }));
   // live play only: the OS arrow is hidden while a run is on (the game draws its
   // own crosshair) and comes straight back for any menu / pause / game-over panel
   const playing = hud.wave > 0 && overlay.kind === "menu";
@@ -64,10 +71,6 @@ export default function Game() {
     const host = stageRef.current;
     let disposed = false;
     let lastFeed = 0;
-
-    // The valley is a second map on the same engine: the title screen picks it
-    // with ?map=egypt, and everything else — HUD, waves, weapons — is unchanged.
-    const map = new URLSearchParams(window.location.search).get("map") === "egypt" ? "egypt" : "district";
 
     const handle = createGame(host, {
       onHud: (h) => setHud(h),
@@ -101,7 +104,7 @@ export default function Game() {
       onPause: (s) => setOverlay({ kind: "paused", wave: s.wave, score: s.score }),
       onResume: () => setOverlay({ kind: "menu" }),
       onAim: (a) => setAds(a),
-    }, { map });
+    }, { map: match.map, grapple: match.grapple });
 
     if (disposed) {
       handle.dispose();
@@ -121,7 +124,7 @@ export default function Game() {
       if (msgTimer.current) window.clearTimeout(msgTimer.current);
       if (tipTimer.current) window.clearTimeout(tipTimer.current);
     };
-  }, []);
+  }, [match]);
 
   // pause on tab-away handled by engine; Escape opens pause overlay through onPause
   // resume() hands control back immediately (and asks for the mouse; if the
@@ -295,12 +298,18 @@ export default function Game() {
           <div className="panel">
             <h1>PAUSED</h1>
             <h2>wave {overlay.wave} · score {overlay.score}</h2>
+            <div className="dd-screen-map">
+              {mapInfo(match.map).name} · grappling hook {match.grapple ? "enabled" : "disabled"}
+            </div>
             <div className="mainbtns">
               <button type="button" className="start" onClick={resume}>
                 RESUME<i>back into the wave</i>
               </button>
               <button type="button" onClick={restart}>
                 RESTART RUN
+              </button>
+              <button type="button" className="alt" onClick={() => navigate(`/setup?mode=solo&map=${match.map}`)}>
+                CHANGE MAP
               </button>
               <button type="button" className="alt" onClick={toMenu}>
                 MAIN MENU

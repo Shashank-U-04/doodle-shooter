@@ -24,6 +24,7 @@
 // decoration and stay out of the physics loop.
 
 import * as THREE from "three";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { INK, makeInkMaterial, type Collider, type InkId } from "./world";
 
@@ -127,16 +128,70 @@ class Zone {
     const geo = new THREE.BoxGeometry(ww, hh, dd);
     geo.translate(cx, this.baseY + y + hh / 2, cz);
     this.addGeo(geo, ink, fill);
-    if (collide) {
-      this.colliders.push({
-        minX: cx - ww / 2,
-        maxX: cx + ww / 2,
-        minY: this.baseY + y,
-        maxY: this.baseY + y + hh,
-        minZ: cz - dd / 2,
-        maxZ: cz + dd / 2,
-      });
-    }
+    if (collide) this.collider(cx, y, cz, ww, hh, dd);
+  }
+
+  /**
+   * A carved block: the same footprint and collider as `box`, with broken
+   * edges. Hero architecture uses this so a pyramid tier reads as cut stone
+   * rather than a stack of cubes; the collider stays a clean box so movement
+   * and reachability do not change.
+   */
+  bevelBox(
+    cx: number,
+    y: number,
+    cz: number,
+    w: number,
+    h: number,
+    d: number,
+    ink: InkId,
+    radius = 0.16,
+    fill = false,
+    collide = true,
+  ) {
+    const ww = Math.max(0.02, w);
+    const hh = Math.max(0.02, h);
+    const dd = Math.max(0.02, d);
+    const r = Math.min(radius, ww * 0.24, hh * 0.24, dd * 0.42);
+    const geo = new RoundedBoxGeometry(ww, hh, dd, 2, Math.max(0.02, r));
+    geo.translate(cx, this.baseY + y + hh / 2, cz);
+    this.addGeo(geo, ink, fill);
+    if (collide) this.collider(cx, y, cz, ww, hh, dd);
+  }
+
+  private collider(cx: number, y: number, cz: number, w: number, h: number, d: number) {
+    this.colliders.push({
+      minX: cx - w / 2,
+      maxX: cx + w / 2,
+      minY: this.baseY + y,
+      maxY: this.baseY + y + h,
+      minZ: cz - d / 2,
+      maxZ: cz + d / 2,
+    });
+  }
+
+  /**
+   * An irregular boulder: a leaning, seven-sided column with a rounded crown.
+   * Used along the valley rim and in the rock fields so the horizon is a drawn
+   * silhouette instead of a row of rectangles.
+   */
+  rock(x: number, zz: number, r: number, h: number, ink: InkId, seed = 0, collide = true) {
+    const lean = Math.sin(seed * 2.1) * 0.14;
+    const body = new THREE.CylinderGeometry(r * 0.58, r, Math.max(0.4, h), 7, 1);
+    body.rotateY(seed * 1.37);
+    body.rotateZ(lean);
+    body.translate(x, this.baseY + h / 2, zz);
+    this.addGeo(body, ink);
+    const shoulder = new THREE.CylinderGeometry(r * 0.28, r * 0.62, h * 0.62, 6, 1);
+    shoulder.rotateY(seed * 2.7);
+    shoulder.rotateZ(-lean * 1.5);
+    shoulder.translate(x + r * 0.62, this.baseY + h * 0.3, zz + r * 0.34);
+    this.addGeo(shoulder, ink);
+    const crown = new THREE.SphereGeometry(r * 0.56, 8, 5);
+    crown.scale(1, 0.55, 0.9);
+    crown.translate(x, this.baseY + h * 0.99, zz);
+    this.addGeo(crown, ink);
+    if (collide) this.collider(x + r * 0.2, 0, zz + r * 0.1, r * 1.7, h, r * 1.7);
   }
 
   /** a floor/roof plate between two corners with its top at `yTop` */
@@ -321,19 +376,16 @@ class Zone {
 
   /** one manual collider, for statues and other composite props */
   collide(cx: number, y: number, cz: number, w: number, h: number, d: number) {
-    this.colliders.push({
-      minX: cx - w / 2,
-      maxX: cx + w / 2,
-      minY: this.baseY + y,
-      maxY: this.baseY + y + h,
-      minZ: cz - d / 2,
-      maxZ: cz + d / 2,
-    });
+    this.collider(cx, y, cz, w, h, d);
   }
 
   /** free-standing mesh (doors, lids, levers) that has to move on its own */
   mesh(w: number, h: number, d: number, ink: InkId, x: number, y: number, z: number, fill = false) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), makeInkMaterial(ink, fill));
+    // Doors and sliding slabs get a soft edge too: a perfectly sharp slab is
+    // the one prop the player stands nose-to-nose with.
+    const r = Math.min(0.09, w * 0.2, h * 0.2, d * 0.3);
+    const geo = new RoundedBoxGeometry(w, h, d, 2, Math.max(0.02, r));
+    const m = new THREE.Mesh(geo, makeInkMaterial(ink, fill));
     m.position.set(x, this.baseY + y + h / 2, z);
     this.group.add(m);
     return m;
@@ -532,19 +584,19 @@ function pyramid(
     if (i === 0 && doorWidth > 0) {
       // south face split around the entrance, with a lintel over the gap
       const side = (half * 2 - doorWidth) / 2;
-      z.box(cx - half + side / 2, y, zS, side, tierH, thick, INK.SAND);
-      z.box(cx + half - side / 2, y, zS, side, tierH, thick, INK.SAND);
-      if (doorH < tierH) z.box(cx, y + doorH, zS, doorWidth, tierH - doorH, thick, INK.SAND);
+      z.bevelBox(cx - half + side / 2, y, zS, side, tierH, thick, INK.SAND, 0.22);
+      z.bevelBox(cx + half - side / 2, y, zS, side, tierH, thick, INK.SAND, 0.22);
+      if (doorH < tierH) z.bevelBox(cx, y + doorH, zS, doorWidth, tierH - doorH, thick, INK.SAND, 0.12);
     } else {
-      z.box(cx, y, zS, half * 2, tierH, thick, INK.SAND);
+      z.bevelBox(cx, y, zS, half * 2, tierH, thick, INK.SAND, 0.26);
     }
-    z.box(cx, y, zN, half * 2, tierH, thick, INK.SAND);
-    z.box(xE, y, cz, thick, tierH, half * 2, INK.SAND);
-    z.box(xW, y, cz, thick, tierH, half * 2, INK.SAND);
+    z.bevelBox(cx, y, zN, half * 2, tierH, thick, INK.SAND, 0.26);
+    z.bevelBox(xE, y, cz, thick, tierH, half * 2, INK.SAND, 0.26);
+    z.bevelBox(xW, y, cz, thick, tierH, half * 2, INK.SAND, 0.26);
     z.box(cx, y, zS + thick / 2 - 0.01, half * 2, 0.07, 0.03, INK.OCHRE, false, false);
   }
   const capHalf = Math.max(thick, topHalf);
-  z.box(cx, tiers * tierH, cz, capHalf * 2, 0.7, capHalf * 2, INK.GOLD);
+  z.bevelBox(cx, tiers * tierH, cz, capHalf * 2, 0.7, capHalf * 2, INK.GOLD, 0.3);
   if (doorWidth > 0) {
     doorZ = cz + baseHalf - thick / 2;
     door = z.mesh(doorWidth, doorH, thick * 0.82, INK.STONE, cx, 0, doorZ);
@@ -726,16 +778,37 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   S.box(-57, -1.3, -8, 1.4, 1.5, 1.4, INK.GOLD);
   addChest("chest-rim", S, -50, 30, true, new THREE.Vector3(-50, 1.4, 30));
 
-  // --- boundary cliffs: chunky, irregular and impassable ---
+  // --- boundary cliffs: overlapping boulders, so the rim is a drawn skyline ---
+  // The silhouettes are irregular on purpose; the blocking volume stays a
+  // simple wall behind them, which is what keeps a player from squeezing
+  // between two rocks and out of the valley.
   for (let i = 0; i < 9; i++) {
     const t = -58 + i * 14.5;
-    S.box(-60.5, 0, t, 5 + (i % 3) * 2, 9 + (i % 4) * 2.2, 15, INK.OCHRE);
-    S.box(60.5, 0, t, 5 + ((i + 1) % 3) * 2, 8 + ((i + 2) % 4) * 2.4, 15, INK.SAND);
-    S.box(t, 0, -60.5, 15, 8.5 + (i % 3) * 2.6, 5, INK.SAND);
-    S.box(t, 0, 60.5, 15, 10 + ((i + 2) % 3) * 2.1, 5, INK.OCHRE);
+    const hx = 8 + (i % 4) * 2.0;
+    const hz = 7.5 + ((i + 2) % 3) * 2.2;
+    S.rock(-62, t, 6.4 + (i % 3), hx, i % 2 ? INK.OCHRE : INK.SAND, i, false);
+    S.rock(-57.5, t + 4.5, 4.6, hx * 0.66, INK.SAND, i + 3, true);
+    S.rock(62, t, 6.8 + ((i + 1) % 3), hz, i % 2 ? INK.SAND : INK.OCHRE, i + 7, false);
+    S.rock(57.5, t - 4, 4.2, hz * 0.7, INK.OCHRE, i + 11, true);
+    S.rock(t, -62, 6.2 + (i % 3) * 0.9, 9 + (i % 3) * 2.6, INK.SAND, i + 13, false);
+    S.rock(t + 4.5, -57.5, 4.4, 6.4 + (i % 2) * 1.6, INK.OCHRE, i + 17, true);
+    S.rock(t, 62, 6.6 + ((i + 2) % 3), 10 + ((i + 2) % 3) * 2.1, INK.OCHRE, i + 19, false);
+    S.rock(t - 4.5, 57.5, 4.8, 6.8, INK.SAND, i + 23, true);
+    S.collide(-59.5, 0, t, 8, 14, 16);
+    S.collide(59.5, 0, t, 8, 14, 16);
+    S.collide(t, 0, -59.5, 16, 14, 8);
+    S.collide(t, 0, 59.5, 16, 14, 8);
   }
-  for (const [x, zz, r, h] of [[-48, 52, 3.2, 5], [48, 50, 4, 6.5], [52, -48, 3.6, 5.5], [-48, -50, 4.5, 7], [14, 52, 2.6, 3.6]] as const) {
-    S.taper(x, 0, zz, r, r * 0.55, h, INK.OCHRE, 6, false, true);
+  // scattered outcrops that break up the open sand
+  for (const [x, zz, r, h, ink] of [
+    [-48, 52, 3.2, 5, INK.OCHRE],
+    [48, 50, 4, 6.5, INK.SAND],
+    [52, -48, 3.6, 5.5, INK.OCHRE],
+    [-48, -50, 4.5, 7, INK.SAND],
+    [14, 52, 2.6, 3.6, INK.OCHRE],
+    [-14, 46, 2.2, 3.0, INK.SAND],
+  ] as const) {
+    S.rock(x, zz, r, h, ink, x + zz, true);
   }
 
   // --- dunes, rocks, cracked ground ---
@@ -753,10 +826,10 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
     const rad = 0.5 + (i % 3) * 0.35;
     const sx = Math.cos(a) * r;
     const sz = Math.sin(a) * r;
-    S.sphere(sx, 0, sz, rad, i % 2 ? INK.STONE : INK.OCHRE, false, 0.7, 6);
-    // a low block tucked inside the stone's silhouette: you clamber over a
-    // boulder instead of walking through it
-    S.collide(sx, 0, sz, rad * 1.5, Math.min(0.5, rad * 0.5), rad * 1.5);
+    // rounded, leaning stone instead of a sphere: the same low obstacle to
+    // clamber over, drawn like weathered rock
+    S.rock(sx, sz, rad * 1.5, rad * 2.1, i % 2 ? INK.STONE : INK.OCHRE, i * 1.7, false);
+    S.collide(sx, 0, sz, rad * 1.6, Math.min(0.5, rad * 0.5), rad * 1.6);
   }
   for (let i = 0; i < 12; i++) {
     const a = i * 1.7;
@@ -767,7 +840,8 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   const main = pyramid(S, 0, 0, 18, 9, 3, 2.6, 3.4, 2.9);
   S.slab(-15.4, -15.4, 15.4, 15.4, 0.04, 0.1, INK.OCHRE, false);
   for (const [x, zz] of [[-6.4, -6.4], [6.4, -6.4], [-6.4, 6.4], [6.4, 6.4], [-9.4, 0], [9.4, 0], [0, -9.4], [0, 9.4]] as const) {
-    S.cyl(x, 0, zz, 0.85, 7.4, INK.SAND, false, true, 10);
+    S.cyl(x, 0, zz, 1.06, 0.24, INK.OCHRE, false, false, 16);
+    S.cyl(x, 0.24, zz, 0.85, 7.16, INK.SAND, false, true, 16);
     S.ring(x, 5.4, zz, 0.9, 0.13, INK.GOLD);
     S.box(x, 7.2, zz, 2.3, 0.4, 2.3, INK.OCHRE);
   }
@@ -829,7 +903,8 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   }
   S.box(TX, 10.3, TZ + 7.8, 15, 1.1, 4.2, INK.OCHRE);
   for (const x of [TX - 7, TX - 3.5, TX, TX + 3.5, TX + 7]) {
-    S.cyl(x, 0.9, TZ + 5, 0.82, 8.2, INK.SAND, false, true, 10);
+    S.cyl(x, 0.9, TZ + 5, 1.02, 0.26, INK.OCHRE, false, false, 16);
+    S.cyl(x, 1.16, TZ + 5, 0.82, 7.94, INK.SAND, false, true, 16);
     S.ring(x, 7.4, TZ + 5, 0.86, 0.13, INK.TURQ);
     S.box(x, 8.4, TZ + 5, 2.1, 0.5, 2.1, INK.OCHRE);
   }
@@ -966,7 +1041,8 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   F.glyphs(-15.45, 1.0, 0, "z", 9, 2.6, 3);
   F.glyphs(15.45, 1.0, 0, "z", 9, 2.6, 3);
   for (const [x, zz] of [[-8.4, -8.4], [8.4, -8.4], [-8.4, 8.4], [8.4, 8.4], [-11, 0], [11, 0]] as const) {
-    F.cyl(x, 0, zz, 0.9, 8.8, INK.SAND, false, true, 10);
+    F.cyl(x, 0, zz, 1.12, 0.26, INK.OCHRE, false, false, 16);
+    F.cyl(x, 0.26, zz, 0.9, 8.54, INK.SAND, false, true, 16);
     F.ring(x, 6.6, zz, 0.95, 0.14, INK.GOLD);
     F.box(x, 8.8, zz, 2.4, 0.5, 2.4, INK.OCHRE);
     torch(F, x, 2.0, zz + (zz < 0 ? 1.05 : -1.05), flames);
@@ -1098,7 +1174,8 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   T.wallZ(-10, 12, -14, 0, 9, 1, [[-2.2, 2.2, 0, 4.4]], INK.STONE);
   T.wallZ(-10, 12, 14, 0, 9, 1, [[-2.2, 2.2, 0, 4.4]], INK.STONE);
   for (const [x, zz] of [[-7, -6], [7, -6], [-7, 0], [7, 0], [-7, 6], [7, 6]] as const) {
-    T.cyl(x, 0, zz, 0.9, 8.6, INK.OCHRE, false, true, 10);
+    T.cyl(x, 0, zz, 1.12, 0.28, INK.STONE, false, false, 16);
+    T.cyl(x, 0.28, zz, 0.9, 8.32, INK.OCHRE, false, true, 16);
     T.ring(x, 5.6, zz, 0.95, 0.14, INK.GOLD);
     T.box(x, 8.6, zz, 2.4, 0.4, 2.4, INK.STONE, false, false);
   }
@@ -1193,7 +1270,8 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   T.glyphs(-5, 1.2, -45.45, "x", 4.5, 3, 3);
   T.glyphs(5, 1.2, -45.45, "x", 4.5, 3, 3);
   for (const [x, zz] of [[-7, -42], [7, -42], [-7, -30], [7, -30]] as const) {
-    T.cyl(x, 0, zz, 0.85, 8.6, INK.OCHRE, false, true, 10);
+    T.cyl(x, 0, zz, 1.06, 0.28, INK.STONE, false, false, 16);
+    T.cyl(x, 0.28, zz, 0.85, 8.32, INK.OCHRE, false, true, 16);
     T.ring(x, 5.6, zz, 0.9, 0.14, INK.GOLD);
     T.box(x, 8.6, zz, 2.3, 0.4, 2.3, INK.STONE, false, false);
   }

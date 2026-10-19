@@ -28,6 +28,7 @@ import {
 } from "./world";
 import { buildDistrict, SAFE_SPAWNS, type District } from "./district";
 import { buildEgypt, type EgyptMap, type Mood, type Outcome as EgyptOutcome, type ZoneId as EgyptZoneId } from "./egypt";
+import type { MapId } from "./maps";
 import { makeBlobRig, makeMummyRig, makeRig, makeWaspRig, type Rig } from "./rig";
 import { KATANA_MELEE } from "./weapons";
 import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
@@ -188,9 +189,19 @@ type Pickup = { kind: "ammo" | "health"; pos: THREE.Vector3; mesh: THREE.Group }
 
 /* ============================== engine ============================== */
 
-export type MapId = "district" | "egypt";
+// `MapId` lives in maps.ts, next to the roster the menu reads. Re-exported so
+// existing imports from the engine keep working.
+export type { MapId } from "./maps";
 
-export function createGame(container: HTMLElement, cb: EngineCallbacks, opts: { map?: MapId } = {}): GameHandle {
+export function createGame(
+  container: HTMLElement,
+  cb: EngineCallbacks,
+  opts: { map?: MapId; grapple?: boolean } = {},
+): GameHandle {
+  // One flag, checked by every input path that can fire the hook. A match that
+  // disables the grapple must not be able to activate it with a key, a mouse
+  // button or a held bind, so the toggle itself is the gate.
+  const grappleEnabled = opts.grapple !== false;
   /* ---------- renderer / scene / paper post ---------- */
   const canvas = document.createElement("canvas");
   canvas.className = "dd-canvas";
@@ -259,7 +270,12 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks, opts: { 
   const districtGroup = new THREE.Group();
   scene.add(districtGroup);
   const district: District = buildDistrict(districtGroup);
-  let egypt: EgyptMap | null = opts.map === "egypt" ? buildEgypt(scene) : null;
+  // The three Egyptian areas share one builder but are independently playable.
+  // The map id picks the starting zone; the others stay built and connected for
+  // anyone who walks through a door or a hatch.
+  const startZone: EgyptZoneId =
+    opts.map === "sanctuary" ? "interior" : opts.map === "tomb" ? "tomb" : "surface";
+  let egypt: EgyptMap | null = opts.map && opts.map !== "district" ? buildEgypt(scene) : null;
   // The two maps sit at the same coordinates; only one may draw at a time.
   districtGroup.visible = !egypt;
 
@@ -302,7 +318,11 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks, opts: { 
       mood: z.mood,
     };
   };
-  let active: ActiveZone = egypt ? zoneFor("surface") : districtZone;
+  let active: ActiveZone = egypt ? zoneFor(startZone) : districtZone;
+  // The builder shows the surface by default; a direct load into the sanctuary
+  // or the tomb has to swap the visible group and its palette before the first
+  // frame or the player wakes up 140 m underground in a sunlit desert.
+  egypt?.setZone(startZone);
   const world = { colliders: active.colliders, bounds: active.bounds, floorY: active.floorY };
   const fx = new AudioFX();
 
@@ -2946,6 +2966,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks, opts: { 
 
   /* ---------- grapple ---------- */
   function grappleToggle() {
+    if (!grappleEnabled) return;
     if (player.grap.active) {
       player.grap.active = false;
       return;
@@ -3471,7 +3492,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks, opts: { 
 
     // A buried room introduces its standing guardians once; kill them and they
     // stay gone, which is what makes clearing the tomb feel permanent.
-    if (!visitedZones.has(dest.zone)) {
+    if (!visitedZones.has(dest.zone) && !pvp.active) {
       visitedZones.add(dest.zone);
       for (const d of egypt.zones[dest.zone].dormant) spawnEnemy("mummy", d.pos.clone(), true, d.yaw);
     }
@@ -3527,8 +3548,8 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks, opts: { 
         districtGroup.visible = false;
       }
       egyptBuiltThisRun = true;
-      active = zoneFor("surface");
-      egypt.setZone("surface");
+      active = zoneFor(startZone);
+      egypt.setZone(startZone);
       world.colliders = active.colliders;
       world.bounds = active.bounds;
       world.floorY = active.floorY;
@@ -3552,6 +3573,14 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks, opts: { 
     splats.length = 0;
     for (const p of pickups) scene.remove(p.mesh);
     pickups.length = 0;
+    // A run that starts inside the pyramid still meets its standing guardians:
+    // they are part of the room, not a reward for walking in from the desert.
+    if (egypt && startZone !== "surface") {
+      // A deathmatch is players only: the room's guardians stay in their
+      // sarcophagi so nobody gets a free kill stolen by a mummy.
+      if (!pvp.active) for (const d of egypt.zones[startZone].dormant) spawnEnemy("mummy", d.pos.clone(), true, d.yaw);
+      visitedZones.add(startZone);
+    }
     for (const s of slots) {
       s.mag = s.def.magSize;
       s.reserve = s.def.reserve;
@@ -3832,6 +3861,7 @@ export function createGame(container: HTMLElement, cb: EngineCallbacks, opts: { 
         break;
       case "KeyQ":
       case "KeyE":
+        if (!grappleEnabled) break;
         grappleToggle();
         break;
       case "KeyF":
