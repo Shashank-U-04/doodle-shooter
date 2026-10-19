@@ -6,7 +6,7 @@
 // three zone transitions still firing after the surface was re-dressed.
 
 import * as THREE from "three";
-import { buildEgypt } from "../src/game/egypt";
+import { buildEgypt, valleyGroundY } from "../src/game/egypt";
 import { isStandable, resolveMove } from "../src/game/world";
 
 const scene = new THREE.Scene();
@@ -55,6 +55,32 @@ check(
 );
 check("surface draw calls stay modest", perZone.surface.meshes < 80, `${perZone.surface.meshes} meshes`);
 check("surface triangle count stays modest", perZone.surface.tris < 100000, `${Math.round(perZone.surface.tris)} triangles`);
+
+// The sand field is visual only, but it has to be a continuous, gently varied
+// surface: low under every hollow and water disc, and with no step between
+// adjacent metre samples (which would draw a hard ridge across the desert).
+let gMin = Infinity;
+let gMax = -Infinity;
+let gStep = 0;
+for (let x = -58; x <= 58; x += 2) {
+  for (let z = -58; z <= 58; z += 2) {
+    const h = valleyGroundY(x, z);
+    gMin = Math.min(gMin, h);
+    gMax = Math.max(gMax, h);
+    gStep = Math.max(gStep, Math.abs(valleyGroundY(x + 1, z) - h), Math.abs(valleyGroundY(x, z + 1) - h));
+  }
+}
+check("sand field is continuous and gently undulating", gStep < 0.16, `range ${gMin.toFixed(3)}..${gMax.toFixed(3)}, max 1m step ${gStep.toFixed(3)}`);
+check("sand field stays below the pyramid floor slabs", valleyGroundY(0, 0) < 0.02 && valleyGroundY(-36, 26) < 0.02 && valleyGroundY(36, -24) < 0.02);
+check("oasis water stays exposed", valleyGroundY(-28, 46) < 0.02, valleyGroundY(-28, 46).toFixed(3));
+
+let doubleSided = 0;
+surface.group.traverse((o) => {
+  if (!(o instanceof THREE.Mesh)) return;
+  const m = o.material;
+  if (m instanceof THREE.ShaderMaterial && m.side === THREE.DoubleSide) doubleSided++;
+});
+check("palm trunks and blades are drawn as rounded double-sided surfaces", doubleSided >= 2, `${doubleSided} meshes`);
 
 const stand = (x: number, y: number, z: number) => isStandable(x, y, z, 0.42, 1.7, surface.colliders, 1.2);
 const start = surface.start;
