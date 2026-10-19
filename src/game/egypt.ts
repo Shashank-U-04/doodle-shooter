@@ -391,52 +391,127 @@ function anubis(z: Zone, x: number, zz: number, s = 1, y = 0) {
 }
 
 function sphinx(z: Zone, x: number, zz: number) {
-  z.box(x, 0, zz, 13, 0.7, 8, INK.STONE);
-  z.box(x, 0.7, zz - 0.4, 9.4, 3.2, 4.2, INK.SAND, false, false);
-  z.box(x, 0.7, zz - 2.2, 5.2, 2.5, 3.2, INK.OCHRE, false, false);
-  // forelegs stretched toward the player, paws apart
-  z.box(x - 1.9, 0.7, zz + 2.6, 1.5, 1.25, 5.4, INK.SAND, false, false);
-  z.box(x + 1.9, 0.7, zz + 2.6, 1.5, 1.25, 5.4, INK.SAND, false, false);
-  z.box(x - 1.9, 0.7, zz + 5.5, 1.8, 0.85, 1.8, INK.OCHRE, false, false);
-  z.box(x + 1.9, 0.7, zz + 5.5, 1.8, 0.85, 1.8, INK.OCHRE, false, false);
-  z.box(x + 4.4, 1.4, zz - 1.6, 0.7, 0.7, 3.2, INK.OCHRE, false, false);
-  // head, nemes headdress with gold stripes and a turquoise beard
-  z.box(x, 3.55, zz + 1.5, 2.5, 2.5, 2.3, INK.OCHRE, false, false);
-  z.box(x, 3.5, zz + 2.5, 1.9, 2.3, 0.5, INK.SAND, false, false);
-  z.box(x - 1.45, 3.5, zz + 1.4, 0.65, 2.7, 2.5, INK.SAND, false, false);
-  z.box(x + 1.45, 3.5, zz + 1.4, 0.65, 2.7, 2.5, INK.SAND, false, false);
-  for (let i = 0; i < 4; i++) {
-    z.box(x - 1.45, 3.8 + i * 0.62, zz + 2.62, 0.66, 0.16, 0.1, INK.GOLD, true, false);
-    z.box(x + 1.45, 3.8 + i * 0.62, zz + 2.62, 0.66, 0.16, 0.1, INK.GOLD, true, false);
+  // a stepped plinth gives the guardian weight and a clean contact shadow
+  z.box(x, 0, zz, 15.5, 0.5, 12.6, INK.STONE);
+  z.box(x, 0.5, zz, 14.2, 0.34, 11.4, INK.OCHRE, false, false);
+  z.box(x, 0.84, zz - 0.2, 12.6, 0.2, 10.2, INK.SAND, false, false);
+
+  // lion body: a long rear mass, a lifted chest and a stepped spine
+  z.box(x, 1.04, zz - 1.5, 8.8, 2.15, 3.9, INK.SAND, false, false);
+  z.box(x, 1.04, zz - 2.9, 6.2, 1.55, 2.2, INK.OCHRE, false, false);
+  z.box(x, 3.19, zz - 1.8, 7.1, 0.5, 2.9, INK.SAND, false, false);
+  z.box(x, 1.04, zz + 1.25, 5.6, 3.3, 3.4, INK.OCHRE, false, false);
+  z.box(x, 4.34, zz + 1.05, 5.2, 0.45, 3.0, INK.SAND, false, false);
+  // haunches and ribcage read as volume rather than a stack of slabs
+  z.sphere(x - 3.0, 1.75, zz - 1.9, 1.75, INK.SAND, false, 0.85, 10);
+  z.sphere(x + 3.0, 1.75, zz - 1.9, 1.75, INK.SAND, false, 0.85, 10);
+
+  // forelegs stretched toward the approach, paws apart
+  for (const side of [-1, 1] as const) {
+    z.box(x + side * 1.9, 1.04, zz + 2.4, 1.45, 1.25, 4.9, INK.SAND, false, false);
+    z.box(x + side * 1.9, 1.04, zz + 4.5, 1.7, 0.72, 1.9, INK.OCHRE, false, false);
+    for (let t = 0; t < 3; t++) z.box(x + side * (1.45 + t * 0.45), 1.04, zz + 5.36, 0.34, 0.42, 0.42, INK.BONE, false, false);
   }
-  z.box(x, 4.0, zz + 2.78, 1.6, 0.32, 0.18, INK.TURQ, true, false);
-  z.box(x - 0.48, 4.55, zz + 2.8, 0.3, 0.11, 0.05, INK.GOLD, true, false);
-  z.box(x + 0.48, 4.55, zz + 2.8, 0.3, 0.11, 0.05, INK.GOLD, true, false);
-  z.box(x, 3.7, zz + 2.9, 0.3, 0.28, 0.1, INK.STONE, false, false);
-  z.box(x, 3.15, zz + 2.9, 0.4, 0.35, 0.08, INK.STONE, false, false);
-  z.box(x, 3.0, zz + 2.86, 0.3, 0.75, 0.15, INK.TURQ, true, false);
-  z.collide(x, 0, zz, 13, 5.4, 8);
+  // tail curled along the right flank
+  z.box(x + 4.1, 1.6, zz - 1.8, 0.55, 0.55, 3.2, INK.OCHRE, false, false);
+  z.box(x + 3.6, 1.3, zz - 3.3, 1.5, 0.55, 0.55, INK.OCHRE, false, false);
+
+  // head and nemes headdress with gold stripes
+  z.box(x, 4.35, zz + 2.0, 2.6, 2.55, 2.4, INK.OCHRE, false, false);
+  z.box(x, 4.3, zz + 3.05, 1.95, 2.35, 0.55, INK.SAND, false, false);
+  z.box(x - 1.5, 4.2, zz + 1.9, 0.62, 2.8, 2.6, INK.SAND, false, false);
+  z.box(x + 1.5, 4.2, zz + 1.9, 0.62, 2.8, 2.6, INK.SAND, false, false);
+  for (let i = 0; i < 4; i++) {
+    z.box(x - 1.5, 4.55 + i * 0.62, zz + 3.12, 0.64, 0.16, 0.1, INK.GOLD, true, false);
+    z.box(x + 1.5, 4.55 + i * 0.62, zz + 3.12, 0.64, 0.16, 0.1, INK.GOLD, true, false);
+  }
+  z.box(x, 4.75, zz + 3.28, 1.55, 0.3, 0.18, INK.TURQ, true, false);
+  z.box(x - 0.45, 5.35, zz + 3.3, 0.3, 0.1, 0.05, INK.GOLD, true, false);
+  z.box(x + 0.45, 5.35, zz + 3.3, 0.3, 0.1, 0.05, INK.GOLD, true, false);
+  z.box(x, 4.9, zz + 3.4, 0.75, 0.3, 0.12, INK.BONE, false, false);
+  z.box(x, 4.45, zz + 3.4, 0.35, 0.3, 0.1, INK.STONE, false, false);
+  z.box(x, 4.15, zz + 3.36, 0.4, 0.3, 0.08, INK.STONE, false, false);
+  z.box(x, 3.95, zz + 3.32, 0.3, 0.7, 0.14, INK.TURQ, true, false);
+  // a collar of gold and turquoise across the chest
+  z.box(x, 3.55, zz + 2.9, 4.8, 0.24, 0.4, INK.GOLD, false, false);
+  z.box(x, 3.3, zz + 2.92, 4.0, 0.18, 0.34, INK.TURQ, false, false);
+  z.collide(x, 0, zz, 15.2, 5.6, 12.4);
 }
 
 function obelisk(z: Zone, x: number, zz: number) {
-  z.box(x, 0, zz, 2.2, 0.6, 2.2, INK.STONE);
-  z.taper(x, 0.6, zz, 0.9, 0.5, 10.4, INK.SAND, 4, false, true);
-  z.taper(x, 11.0, zz, 0.5, 0.06, 1.2, INK.GOLD, 4, true, false);
-  for (let i = 0; i < 6; i++) z.box(x, 1.4 + i * 1.4, zz + 0.47, 0.5, 0.7, 0.05, INK.STONE, false, false);
+  z.box(x, 0, zz, 2.7, 0.55, 2.7, INK.STONE);
+  z.box(x, 0.55, zz, 2.15, 0.32, 2.15, INK.OCHRE, false, false);
+  const half0 = 0.86, half1 = 0.52, shaft = 9.4;
+  const shaftGeo = new THREE.CylinderGeometry(half1 * Math.SQRT2, half0 * Math.SQRT2, shaft, 4);
+  shaftGeo.rotateY(Math.PI / 4);
+  shaftGeo.translate(x, z.baseY + 0.87 + shaft / 2, zz);
+  z.addGeo(shaftGeo, INK.SAND);
+  // gold bands follow the taper, standing just proud of the carved faces
+  for (const [by, f] of [[2.5, 0.79], [4.9, 0.72], [7.2, 0.65]] as const) {
+    const band = new THREE.CylinderGeometry((f + 0.02) * Math.SQRT2, (f + 0.045) * Math.SQRT2, 0.17, 4);
+    band.rotateY(Math.PI / 4);
+    band.translate(x, z.baseY + by, zz);
+    z.addGeo(band, INK.GOLD);
+  }
+  const cap = new THREE.CylinderGeometry(0, half1 * Math.SQRT2, 1.15, 4);
+  cap.rotateY(Math.PI / 4);
+  cap.translate(x, z.baseY + 0.87 + shaft + 0.56, zz);
+  z.addGeo(cap, INK.GOLD);
+  // shallow carved panels follow the taper instead of floating off it
+  for (let i = 0; i < 5; i++) {
+    const py = 1.4 + i * 1.25;
+    const f = half0 + (half1 - half0) * ((py - 0.87) / shaft);
+    z.box(x, py, zz + f + 0.015, 0.46, 0.7, 0.05, INK.STONE, false, false);
+    z.box(x + f + 0.015, py + 0.2, zz, 0.05, 0.5, 0.4, INK.OCHRE, false, false);
+  }
+  z.collide(x, 0, zz, 1.9, 10.8, 1.9);
 }
 
 function palm(z: Zone, x: number, zz: number, h = 5.4) {
-  z.taper(x, 0, zz, 0.3, 0.18, h, INK.OCHRE, 6, false, true);
-  for (let i = 0; i < 7; i++) {
-    const a = (i / 7) * Math.PI * 2 + x * 0.13;
-    const len = 2.6 + (i % 3) * 0.35;
-    const g = new THREE.BoxGeometry(len, 0.09, 0.5);
-    g.rotateZ(-0.55);
-    g.rotateY(a);
-    g.translate(x + Math.cos(a) * len * 0.42, z.baseY + h + 0.15 - (i % 2) * 0.1, zz + Math.sin(a) * len * 0.42);
-    z.addGeo(g, i % 2 ? INK.GREEN : INK.OCHRE);
+  // a slightly leaning, ringed trunk — six stacked drums instead of one cone
+  const segs = 6;
+  const leanX = 0.1 + hash01(x, zz) * 0.16;
+  const leanZ = (hash01(zz, x) - 0.5) * 0.22;
+  let px = x, pz = zz;
+  for (let i = 0; i < segs; i++) {
+    const r0 = 0.33 - (i / segs) * 0.15;
+    const r1 = 0.33 - ((i + 1) / segs) * 0.15;
+    const y = (h / segs) * i;
+    const g = new THREE.CylinderGeometry(r1, r0, h / segs, 7);
+    g.translate(px, z.baseY + y + h / segs / 2, pz);
+    z.addGeo(g, INK.OCHRE);
+    if (i > 0) {
+      const ring = new THREE.TorusGeometry(r0 + 0.015, 0.035, 3, 8);
+      ring.rotateX(Math.PI / 2);
+      ring.translate(px, z.baseY + y, pz);
+      z.addGeo(ring, INK.STONE);
+    }
+    px += leanX * (0.5 + i / segs);
+    pz += leanZ * (0.5 + i / segs);
   }
-  z.sphere(x, h + 0.05, zz, 0.3, INK.OCHRE, false, 0.7, 6);
+  const cy = z.baseY + h + 0.08;
+  z.sphere(px, h + 0.05, pz, 0.34, INK.OCHRE, false, 0.7, 7);
+  // nine drooping fronds, each a long blade plus a folded tip
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 9) * Math.PI * 2 + x * 0.13;
+    const len = 2.5 + (i % 3) * 0.42;
+    const droop = 0.5 + (i % 4) * 0.13;
+    const g = new THREE.BoxGeometry(len, 0.075, 0.44);
+    g.rotateZ(-droop);
+    g.rotateY(a);
+    g.translate(px + Math.cos(a) * len * 0.44, cy - 0.12 - (i % 2) * 0.08, pz + Math.sin(a) * len * 0.44);
+    z.addGeo(g, i % 3 === 0 ? INK.OCHRE : INK.GREEN);
+    const tip = new THREE.BoxGeometry(len * 0.45, 0.06, 0.3);
+    tip.rotateZ(-droop - 0.55);
+    tip.rotateY(a);
+    tip.translate(px + Math.cos(a) * len * 0.92, cy - 0.55 - (i % 3) * 0.1, pz + Math.sin(a) * len * 0.92);
+    z.addGeo(tip, INK.GREEN);
+  }
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    z.sphere(px + Math.cos(a) * 0.3, h - 0.25 - (i % 2) * 0.12, pz + Math.sin(a) * 0.3, 0.13, INK.GOLD, false, 0.9, 6);
+  }
+  z.collide(x, 0, zz, 0.62, h, 0.62);
 }
 
 function cactus(z: Zone, x: number, zz: number) {
@@ -505,6 +580,182 @@ function treasurePile(z: Zone, x: number, zz: number, n = 5) {
   z.sphere(x, 0.16, zz, 0.42, INK.GOLD, true, 0.4, 7);
 }
 
+/**
+ * A cheap deterministic hash in [0,1). Masonry must look weathered rather than
+ * random per frame, and it must come out identical on every load so a captured
+ * screenshot still matches the map a moment later.
+ */
+function hash01(a: number, b = 0, c = 0): number {
+  const s = Math.sin(a * 41.913 + b * 78.233 + c * 12.9898) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+type MasonryFace = {
+  /** the face runs along X (constant z) or along Z (constant x) */
+  axis: "x" | "z";
+  /** +1 means the face looks toward +axis */
+  sign: 1 | -1;
+  /** world coordinate of the structural face */
+  plane: number;
+  /** world coordinate of the face's middle along its run */
+  center: number;
+  /** half the width of the face along its run */
+  half: number;
+};
+
+/**
+ * Lay a course of sandstone blocks over a structural face.
+ *
+ * The stepped rings already have volume; what they lack is *masonry*. Each
+ * course is drawn as a recessed ochre bed joint with separate pale blocks
+ * standing a few centimetres proud of it, so the ink pass finds real seams and
+ * real edges instead of a single flat outline. Blocks are deterministic: some
+ * are missing, some are worn short, their colour and relief vary, and corners
+ * are left as plain quoin piers so two adjacent faces can never z-fight. All of
+ * it merges into the zone's usual handful of meshes — no per-block draw calls.
+ *
+ * `blocked` lets the caller keep a doorway clear (the great pyramid's south
+ * face is split around its entrance). It is decoration only: collision stays
+ * with the structural ring underneath.
+ */
+function dressMasonry(
+  z: Zone,
+  face: MasonryFace,
+  y: number,
+  h: number,
+  seed: number,
+  blockW: number,
+  blocked?: (a0: number, a1: number, y0: number, y1: number) => boolean,
+) {
+  const rows = Math.max(2, Math.min(4, Math.round(h / 0.95)));
+  const ch = h / rows;
+  const a0 = face.center - face.half + 0.58;
+  const a1 = face.center + face.half - 0.58;
+  if (a1 - a0 < 1.2) return;
+
+  const put = (a: number, b: number, by: number, bh: number, depth: number, ink: InkId) => {
+    const mid = (a + b) / 2;
+    const at = face.plane + face.sign * (0.02 + depth / 2);
+    if (face.axis === "x") z.box(mid, by, at, Math.max(0.05, b - a), Math.max(0.04, bh), depth, ink, false, false);
+    else z.box(at, by, mid, depth, Math.max(0.04, bh), Math.max(0.05, b - a), ink, false, false);
+  };
+
+  for (let r = 0; r < rows; r++) {
+    const by = y + r * ch + 0.055;
+    const bh = ch - 0.11;
+    const stagger = (r % 2) * blockW * 0.5;
+
+    // first pass: where the course is solid, lay the recessed bed joint
+    let runStart: number | null = null;
+    const runs: [number, number][] = [];
+    const cursor = a0;
+    let a = cursor - stagger;
+    const blocks: [number, number][] = [];
+    while (a < a1) {
+      const jitter = hash01(seed, r, a);
+      let w = blockW * (0.82 + jitter * 0.38);
+      if (a + w > a1) w = a1 - a;
+      if (w < 0.75) break;
+      const bb = Math.min(a1, a + w);
+      const solid = !blocked || !blocked(a, bb, by, by + bh);
+      if (solid) blocks.push([Math.max(a0, a), bb]);
+      a = bb + 0.065;
+    }
+    for (const [ba, bb] of blocks) {
+      if (runStart === null) runStart = ba;
+      const next = blocks.find((p) => p[0] > bb);
+      if (!next || next[0] - bb > 0.2) {
+        runs.push([runStart, bb]);
+        runStart = null;
+      }
+    }
+    for (const [ra, rb] of runs) put(ra, rb, by, bh, 0.045, INK.OCHRE);
+
+    // second pass: the blocks themselves, with wear and colour variation
+    blocks.forEach(([ba, bb], i) => {
+      const f = hash01(seed + 3.1, r * 7 + i, ba * 0.7);
+      const g = hash01(seed + 9.7, r * 13 + i, bb * 0.3);
+      if (f < 0.045) return; // a stone prised out long ago
+      const worn = g < 0.17 ? 0.1 + f * 0.32 : 0;
+      const depth = 0.11 + g * 0.09;
+      const ink: InkId = f < 0.7 ? INK.SAND : f < 0.84 ? INK.BONE : INK.OCHRE;
+      put(ba + 0.055, bb - 0.055, by + (g < 0.1 ? 0.02 : 0), bh - 0.02 - worn, depth, ink);
+    });
+  }
+}
+
+/** the masonry face descriptors for a square tier at `half` */
+function tierFaces(cx: number, cz: number, half: number): MasonryFace[] {
+  const faces: MasonryFace[] = [
+    { axis: "x", sign: 1, plane: cz + half, center: cx, half },
+    { axis: "x", sign: -1, plane: cz - half, center: cx, half },
+    { axis: "z", sign: 1, plane: cx + half, center: cz, half },
+    { axis: "z", sign: -1, plane: cx - half, center: cz, half },
+  ];
+  return faces;
+}
+
+/** a stepped sandstone plinth around a monument, with walkable steps */
+function pyramidPlinth(z: Zone, cx: number, cz: number, half: number) {
+  const inner = half;
+  const mid = half + 0.9;
+  const outer = half + 1.8;
+  const put = (x: number, zz: number, w: number, d: number, h: number) => z.box(x, 0, zz, w, h, d, INK.OCHRE);
+  // lower step (outer ring), split so the corners never share a top plane
+  put(cx, cz + (mid + outer) / 2, outer * 2, outer - mid, 0.17);
+  put(cx, cz - (mid + outer) / 2, outer * 2, outer - mid, 0.17);
+  put(cx + (mid + outer) / 2, cz, outer - mid, mid * 2, 0.17);
+  put(cx - (mid + outer) / 2, cz, outer - mid, mid * 2, 0.17);
+  // upper step
+  put(cx, cz + (inner + mid) / 2, mid * 2, mid - inner, 0.34);
+  put(cx, cz - (inner + mid) / 2, mid * 2, mid - inner, 0.34);
+  put(cx + (inner + mid) / 2, cz, mid - inner, inner * 2, 0.34);
+  put(cx - (inner + mid) / 2, cz, mid - inner, inner * 2, 0.34);
+  // a dark contact line where the masonry meets the step: the ink pass has no
+  // shadow map, so the base of a monument needs a drawn occlusion edge.
+  const c = 0.28;
+  z.box(cx, 0.34, cz + inner + c, inner * 2, 0.025, c * 2, INK.STONE, false, false);
+  z.box(cx, 0.34, cz - inner - c, inner * 2, 0.025, c * 2, INK.STONE, false, false);
+  z.box(cx + inner + c, 0.34, cz, c * 2, 0.025, inner * 2, INK.STONE, false, false);
+  z.box(cx - inner - c, 0.34, cz, c * 2, 0.025, inner * 2, INK.STONE, false, false);
+}
+
+/**
+ * The great doorway's carved frame: jambs, lintel, a cavetto cornice and a
+ * winged sun disc. Drawn on top of the plinth and the facing blocks, so the
+ * entrance reads as a designed portal rather than a hole cut in a wall.
+ */
+function pyramidDoorFrame(z: Zone, cx: number, plane: number, upperPlane: number, doorWidth: number, doorH: number, scale = 1) {
+  const s = scale;
+  const jw = 0.55 * s;
+  const px = cx;
+  for (const side of [-1, 1] as const) {
+    z.box(px + side * (doorWidth / 2 + jw / 2 - 0.02), 0, plane + 0.22, jw, doorH, 0.6 * s, INK.STONE, false, false);
+    z.box(px + side * (doorWidth / 2 + 0.22), 0.1, plane + 0.34, 0.5 * s, doorH - 0.2, 0.14, INK.OCHRE, false, false);
+  }
+  z.box(px, doorH + 0.02, plane + 0.24, doorWidth + jw * 2, 0.3 * s, 0.62 * s, INK.STONE, false, false);
+  z.box(px, doorH + 0.32 * s, plane + 0.24, doorWidth + jw * 2.2, 0.1 * s, 0.6 * s, INK.OCHRE, false, false);
+  // The carved panel sits on the recessed second tier, in the step above the
+  // door: it cannot float over the terrace, and it reads from the approach.
+  const panelBottom = doorH + 0.55 * s;
+  const panelH = 1.05 * s;
+  z.box(px, panelBottom, upperPlane + 0.32, doorWidth + 1.5 * s, panelH, 0.09, INK.STONE, false, false);
+  z.box(px, panelBottom + 0.09, upperPlane + 0.39, doorWidth + 1.1 * s, panelH - 0.22, 0.07, INK.BONE, false, false);
+  z.box(px, panelBottom + panelH - 0.12, upperPlane + 0.43, doorWidth + 1.2 * s, 0.09, 0.05, INK.TURQ, false, false);
+  const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.4 * s, 0.4 * s, 0.09, 16), makeInkMaterial(INK.GOLD, true));
+  disc.rotation.x = Math.PI / 2;
+  disc.position.set(px, z.baseY + panelBottom + panelH * 0.55, upperPlane + 0.48);
+  z.group.add(disc);
+  for (const side of [-1, 1] as const) {
+    const wing = new THREE.BoxGeometry(1.3 * s, 0.15 * s, 0.08);
+    wing.rotateZ(side * 0.2);
+    wing.translate(px + side * 1.25 * s, z.baseY + panelBottom + panelH * 0.55, upperPlane + 0.46);
+    z.addGeo(wing, INK.TURQ);
+  }
+  // a low threshold stone keeps the step into the doorway readable
+  z.box(px, 0, plane - 0.56, doorWidth + 0.7 * s, 0.16, 0.86, INK.BONE, false, false);
+}
+
 /** a stepped pyramid whose walls are rings, so the middle stays hollow */
 function pyramid(
   z: Zone,
@@ -522,6 +773,7 @@ function pyramid(
   let door: THREE.Mesh | null = null;
   let doorCol: Collider | null = null;
   let doorZ = 0;
+  const blockW = Math.max(1.2, Math.min(2.9, baseHalf * 0.17));
   for (let i = 0; i < tiers; i++) {
     const half = baseHalf - i * step;
     const y = i * tierH;
@@ -542,9 +794,28 @@ function pyramid(
     z.box(xE, y, cz, thick, tierH, half * 2, INK.SAND);
     z.box(xW, y, cz, thick, tierH, half * 2, INK.SAND);
     z.box(cx, y, zS + thick / 2 - 0.01, half * 2, 0.07, 0.03, INK.OCHRE, false, false);
+
+    // dressed faces: recessed joints and individual pale blocks over the ring
+    const faces = tierFaces(cx, cz, half);
+    for (const face of faces) {
+      const isDoorFace = i === 0 && doorWidth > 0 && face.axis === "x" && face.sign === 1;
+      dressMasonry(z, face, y, tierH, i * 3.7 + face.plane * 0.11 + face.sign, blockW, isDoorFace
+        ? (a0, a1, _y0, y1) => y1 < doorH + 0.35 && a1 > cx - doorWidth / 2 - 0.6 && a0 < cx + doorWidth / 2 + 0.6
+        : undefined);
+    }
   }
+  pyramidPlinth(z, cx, cz, baseHalf);
   const capHalf = Math.max(thick, topHalf);
-  z.box(cx, tiers * tierH, cz, capHalf * 2, 0.7, capHalf * 2, INK.GOLD);
+  const capY = tiers * tierH;
+  z.box(cx, capY, cz, capHalf * 2, 0.4, capHalf * 2, INK.OCHRE);
+  z.box(cx, capY + 0.4, cz, capHalf * 2 + 0.12, 0.16, capHalf * 2 + 0.12, INK.TURQ, false, false);
+  // a real four-sided pyramidion instead of a flat gold lid
+  const pyH = Math.max(1.5, capHalf * 0.9);
+  const py = new THREE.CylinderGeometry(0, capHalf * 0.707 * 1.02, pyH, 4);
+  py.rotateY(Math.PI / 4);
+  py.translate(cx, z.baseY + capY + 0.56 + pyH / 2, cz);
+  z.addGeo(py, INK.GOLD);
+  z.ring(cx, capY + 0.5, cz, capHalf * 1.04, 0.1, INK.GOLD, false);
   if (doorWidth > 0) {
     doorZ = cz + baseHalf - thick / 2;
     door = z.mesh(doorWidth, doorH, thick * 0.82, INK.STONE, cx, 0, doorZ);
@@ -561,8 +832,177 @@ function pyramid(
       maxZ: doorZ + thick * 0.41,
     };
     z.colliders.push(doorCol);
+    pyramidDoorFrame(z, cx, cz + baseHalf, cz + baseHalf - step, doorWidth, doorH, Math.max(0.7, doorWidth / 3.4));
   }
   return { door: door as THREE.Mesh, doorCol: doorCol as Collider, doorZ };
+}
+
+/* ---------------------------- surface props ---------------------------- */
+
+/** a flat, wind-blown sand apron: overlapping ellipses, no collision */
+function sandApron(z: Zone, x: number, zz: number, rx: number, rz: number) {
+  for (let i = 0; i < 4; i++) {
+    const f = hash01(x + i * 3.1, zz - i * 1.7, 7 + i);
+    const g = new THREE.CircleGeometry(1, 16);
+    g.rotateX(-Math.PI / 2);
+    g.scale(rx * (0.52 + i * 0.19) * (0.9 + f * 0.2), 1, rz * (0.5 + i * 0.2) * (0.9 + f * 0.2));
+    g.rotateY(f * Math.PI);
+    g.translate(x + (f - 0.5) * rx * 0.45, z.baseY + 0.018 + i * 0.0025, zz + (hash01(i, x, zz) - 0.5) * rz * 0.4);
+    z.addGeo(g, i === 1 ? INK.BONE : INK.SAND);
+  }
+}
+
+/** a scatter of broken masonry. Deliberately modest: rubble reads as history,
+ * a carpet of rocks reads as noise. */
+function rubble(z: Zone, x: number, zz: number, n: number, spread: number) {
+  for (let i = 0; i < n; i++) {
+    const f = hash01(x + i * 1.9, zz + i * 4.3, i);
+    const a = f * Math.PI * 2;
+    const r = (0.2 + hash01(i, x, zz) * 0.8) * spread;
+    const w = 0.22 + f * 0.7;
+    const h = 0.12 + f * 0.32;
+    const d = 0.26 + hash01(i * 2, zz, x) * 0.7;
+    const g = new THREE.BoxGeometry(w, h, d);
+    g.rotateY(f * 1.6);
+    g.translate(x + Math.cos(a) * r, z.baseY + h / 2 + 0.01, zz + Math.sin(a) * r);
+    z.addGeo(g, i % 3 === 0 ? INK.STONE : i % 3 === 1 ? INK.OCHRE : INK.SAND);
+  }
+}
+
+/** a fallen column drum, half sunk in the sand */
+function columnDrum(z: Zone, x: number, zz: number, r = 0.55, len = 1.6) {
+  const g = new THREE.CylinderGeometry(r, r, len, 12);
+  g.rotateZ(Math.PI / 2);
+  g.rotateY(hash01(x, zz) * 1.2);
+  g.translate(x, z.baseY + r * 0.82, zz);
+  z.addGeo(g, INK.OCHRE);
+  const cap = new THREE.TorusGeometry(r * 0.92, r * 0.12, 4, 12);
+  cap.rotateY(Math.PI / 2);
+  cap.translate(x + len / 2 - 0.05, z.baseY + r * 0.82, zz);
+  z.addGeo(cap, INK.SAND);
+  z.collide(x, 0, zz, len * 0.9, r * 1.65, r * 1.65);
+}
+
+/** a stone slab processional way, laid in worn courses. Decoration only. */
+function pavedWay(z: Zone, x: number, z0: number, z1: number, width: number) {
+  const cols = Math.max(2, Math.round(width / 2.5));
+  const cw = width / cols;
+  let zz = z0;
+  let row = 0;
+  while (zz < z1) {
+    const len = 1.5 + hash01(row, x, 3) * 0.75;
+    for (let c = 0; c < cols; c++) {
+      const f = hash01(row * 5.3, c * 7.1, x);
+      const inset = 0.09 + f * 0.08;
+      const cx = x - width / 2 + cw * (c + 0.5);
+      z.box(cx, 0.01, zz + len / 2, cw - inset, 0.055, len - inset, f < 0.55 ? INK.SAND : f < 0.82 ? INK.BONE : INK.OCHRE, false, false);
+    }
+    zz += len + 0.07;
+    row++;
+  }
+}
+
+/** a low ram-headed guardian, one of the avenue that frames the approach */
+function ramStatue(z: Zone, x: number, zz: number) {
+  z.box(x, 0, zz, 2.5, 0.42, 1.6, INK.STONE);
+  z.box(x, 0.42, zz - 0.1, 2.1, 0.85, 1.0, INK.SAND, false, false);
+  for (const [dx, dz] of [[-0.75, -0.64], [0.75, -0.64], [-0.75, 0.58], [0.75, 0.58]] as const) {
+    z.box(x + dx, 0.42, zz + dz, 0.22, 0.4, 0.22, INK.OCHRE, false, false);
+  }
+  z.box(x, 0.8, zz + 0.5, 0.95, 1.15, 0.8, INK.OCHRE, false, false);
+  z.box(x, 0.9, zz + 0.72, 1.15, 0.2, 0.66, INK.GOLD, false, false);
+  z.box(x, 1.62, zz + 0.52, 0.7, 0.62, 0.72, INK.SAND, false, false);
+  z.box(x, 1.5, zz + 0.95, 0.42, 0.34, 0.5, INK.OCHRE, false, false);
+  // curled horns: three short blocks each, swept back around the skull
+  for (const side of [-1, 1] as const) {
+    const g1 = new THREE.BoxGeometry(0.16, 0.46, 0.2);
+    g1.rotateZ(side * 0.55);
+    g1.translate(x + side * 0.35, 2.0, zz + 0.3);
+    z.addGeo(g1, INK.GOLD);
+    const g2 = new THREE.BoxGeometry(0.16, 0.34, 0.24);
+    g2.rotateZ(-side * 0.4);
+    g2.translate(x + side * 0.54, 2.24, zz + 0.18);
+    z.addGeo(g2, INK.GOLD);
+    const g3 = new THREE.BoxGeometry(0.14, 0.26, 0.3);
+    g3.rotateX(0.5);
+    g3.translate(x + side * 0.62, 2.2, zz - 0.02);
+    z.addGeo(g3, INK.GOLD);
+  }
+  z.box(x, 1.78, zz + 0.88, 0.1, 0.1, 0.1, INK.BLACK, false, false);
+  z.collide(x, 0, zz, 2.4, 2.35, 1.75);
+}
+
+/** a distant pyramid: silhouette only, and far outside the playable bounds */
+function farPyramid(z: Zone, cx: number, cz: number, baseHalf: number, tiers: number, tierH: number) {
+  const step = baseHalf / Math.max(1, tiers);
+  for (let i = 0; i < tiers; i++) {
+    const half = baseHalf - i * step;
+    z.box(cx, i * tierH, cz, half * 2, tierH, half * 2, i % 2 === 0 ? INK.SAND : INK.OCHRE, false, false);
+  }
+  const cap = new THREE.CylinderGeometry(0, step * 0.75, tierH * 0.85, 4);
+  cap.rotateY(Math.PI / 4);
+  cap.translate(cx, z.baseY + tiers * tierH + tierH * 0.4, cz);
+  z.addGeo(cap, INK.GOLD);
+  // a pale sand skirt hides the join with the horizon
+  const skirt = new THREE.CircleGeometry(baseHalf * 1.9, 12);
+  skirt.rotateX(-Math.PI / 2);
+  skirt.scale(1, 1, 0.7);
+  skirt.translate(cx, z.baseY + 0.02, cz);
+  z.addGeo(skirt, INK.BONE);
+}
+
+/** a far cliff block, layered so the skyline is not a row of identical boxes */
+function farRidge(z: Zone, x: number, zz: number, w: number, h: number, d: number) {
+  z.box(x, 0, zz, w, h * 0.55, d, INK.OCHRE, false, false);
+  z.box(x + w * 0.08, h * 0.4, zz - d * 0.04, w * 0.72, h * 0.42, d * 0.8, INK.SAND, false, false);
+  const crown = new THREE.CylinderGeometry(w * 0.18, w * 0.42, h * 0.35, 5);
+  crown.translate(x - w * 0.05, z.baseY + h * 0.86, zz);
+  z.addGeo(crown, INK.BONE);
+}
+
+/** a small mud-brick outpost house with a roof, doorway and window */
+function mudHouse(z: Zone, x: number, zz: number) {
+  const w = 8, d = 6.4, h = 3.3;
+  z.slab(x - w / 2, zz - d / 2, x + w / 2, zz + d / 2, 0.08, 0.08, INK.OCHRE, false);
+  // the doorway faces north, toward the valley and the market
+  z.wallX(x - w / 2, x + w / 2, zz - d / 2, 0, h, 0.55, [[x - 1.4, x + 1.3, 0, 2.5]], INK.OCHRE);
+  z.wallX(x - w / 2, x + w / 2, zz + d / 2, 0, h, 0.55, [[x + 1.6, x + 2.6, 1.2, 2.3]], INK.SAND);
+  z.wallZ(zz - d / 2, zz + d / 2, x - w / 2, 0, h, 0.55, [], INK.SAND);
+  z.wallZ(zz - d / 2, zz + d / 2, x + w / 2, 0, h, 0.55, [[zz - 1.2, zz + 0.4, 1.15, 2.3]], INK.OCHRE);
+  z.slab(x - w / 2 - 0.3, zz - d / 2 - 0.3, x + w / 2 + 0.3, zz + d / 2 + 0.3, h + 0.36, 0.36, INK.SAND);
+  // a framed doorway, so the opening reads from the approach
+  z.box(x - 1.6, 0, zz - d / 2 - 0.08, 0.32, 2.72, 0.34, INK.STONE, false, false);
+  z.box(x + 1.5, 0, zz - d / 2 - 0.08, 0.32, 2.72, 0.34, INK.STONE, false, false);
+  z.box(x, 2.52, zz - d / 2 - 0.08, 3.4, 0.34, 0.36, INK.OCHRE, false, false);
+  // roof beams, parapet and a shade awning over the door
+  for (let i = 0; i < 5; i++) z.box(x - w / 2 + 0.8 + i * 1.6, h, zz - d / 2 - 0.45, 0.18, 0.2, 0.6, INK.STONE, false, false);
+  z.box(x, h + 0.36, zz - d / 2 - 0.22, w + 0.7, 0.32, 0.12, INK.OCHRE, false, false);
+  for (const side of [-1, 1] as const) z.box(x + side * (w / 2 + 0.3), h + 0.36, zz, 0.12, 0.32, d + 0.6, INK.OCHRE, false, false);
+  z.box(x - 1.9, 2.75, zz - d / 2 - 0.62, 4.6, 0.1, 1.8, INK.RED, false, false);
+  for (const px of [x - 3.9, x + 0.8]) z.box(px, 0, zz - d / 2 - 1.35, 0.11, 2.7, 0.11, INK.OCHRE, false, false);
+  // a bench and a couple of storage jars beside the door
+  z.box(x + 3.1, 0, zz - d / 2 - 0.55, 1.3, 0.42, 0.5, INK.STONE, false, false);
+  for (const [jx, jz] of [[x - 3.4, zz - d / 2 - 0.65], [x - 2.7, zz - d / 2 - 0.5]] as const) {
+    z.cyl(jx, 0, jz, 0.3, 0.62, INK.OCHRE, false, false, 8);
+    z.sphere(jx, 0.68, jz, 0.28, INK.OCHRE, false, 1.5, 8);
+    z.box(jx, 0.9, jz, 0.22, 0.16, 0.22, INK.STONE, false, false);
+  }
+  z.collide(x + 3.1, 0, zz - d / 2 - 0.55, 1.4, 0.42, 0.55);
+  rubble(z, x - 4.2, zz - d / 2 - 1.6, 4, 1.1);
+  sandApron(z, x, zz - d / 2 - 0.4, w * 0.75, d * 0.5);
+}
+
+/** a capped well: a coffer of stones, two posts and a bucket */
+function well(z: Zone, x: number, zz: number) {
+  z.cyl(x, 0, zz, 1.05, 0.72, INK.STONE, false, true, 12);
+  z.ring(x, 0.74, zz, 0.9, 0.11, INK.OCHRE, false);
+  z.disc(x, 0.75, zz, 0.72, INK.BLACK, true, 14);
+  for (const side of [-1, 1] as const) z.box(x + side * 0.85, 0, zz, 0.14, 2.3, 0.14, INK.OCHRE, false, true);
+  z.box(x, 2.25, zz, 2.1, 0.14, 0.16, INK.STONE, false, false);
+  z.cyl(x, 2.05, zz, 0.05, 0.3, INK.GOLD, false, false, 6);
+  z.cyl(x, 1.86, zz, 0.02, 0.26, INK.STONE, false, false, 4);
+  z.box(x, 1.55, zz, 0.38, 0.34, 0.38, INK.OCHRE, false, false);
+  z.collide(x, 0, zz, 2.2, 0.75, 2.2);
 }
 
 /* ============================== the map ============================== */
@@ -700,7 +1140,9 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
     spawnPoints: S.spawns,
     start: new THREE.Vector3(0, 0.2, 44),
     startYaw: 0,
-    mood: { paper: [0.95, 0.89, 0.74], chalk: 0.06, lines: 0, background: 0xe6c987 },
+    // Sun-bleached parchment rather than an orange wash: the hatching still
+    // supplies the warmth, so the paper can stay pale and readable.
+    mood: { paper: [0.96, 0.925, 0.815], chalk: 0.04, lines: 0, background: 0xead7a8 },
     dormant: [],
   };
 
@@ -738,6 +1180,18 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
     S.taper(x, 0, zz, r, r * 0.55, h, INK.OCHRE, 6, false, true);
   }
 
+  // --- the horizon: sister pyramids and layered cliffs beyond the playfield ---
+  // These are silhouette and scale only. They sit outside the bounds and carry
+  // no colliders, so they cost a handful of merged triangles and nothing else.
+  farPyramid(S, -92, -118, 30, 8, 5.4);
+  farPyramid(S, 86, -96, 21, 6, 4.8);
+  farPyramid(S, -14, -164, 44, 9, 5.8);
+  farRidge(S, 88, -18, 42, 17, 26);
+  farRidge(S, -92, 34, 38, 14, 30);
+  farRidge(S, -38, -104, 52, 20, 20);
+  farRidge(S, 44, -116, 46, 15, 22);
+  farRidge(S, 96, 52, 34, 19, 24);
+
   // --- dunes, rocks, cracked ground ---
   // Drifts pile up against the southern cliffs, clear of the temple: a mound
   // swelling over the colonnade would read as a modelling slip, not weather.
@@ -747,24 +1201,69 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   S.dune(38, -44, 10, 2.6);
   S.dune(-12, -50, 8, 1.8);
   S.dune(20, 48, 9, 2.4);
-  for (let i = 0; i < 16; i++) {
-    const a = i * 2.399 + 0.6;
-    const r = 8 + (i % 5) * 6;
-    const rad = 0.5 + (i % 3) * 0.35;
-    const sx = Math.cos(a) * r;
-    const sz = Math.sin(a) * r;
-    S.sphere(sx, 0, sz, rad, i % 2 ? INK.STONE : INK.OCHRE, false, 0.7, 6);
-    // a low block tucked inside the stone's silhouette: you clamber over a
-    // boulder instead of walking through it
-    S.collide(sx, 0, sz, rad * 1.5, Math.min(0.5, rad * 0.5), rad * 1.5);
+  // one gentle swell in the open south-east, clear of every structure and pad
+  S.dune(46, -38, 7, 1.2);
+  // Boulders are placed deliberately around the margins of the arena. The old
+  // arithmetic ring put half of them inside the great pyramid's footprint; a
+  // rock growing out of a wall is worse than one fewer rock.
+  const boulder = (x: number, zz: number, r: number, h: number, ink: InkId) => {
+    // a dome sitting on the sand, not a ball sunk to its equator
+    S.sphere(x, h * 0.5, zz, r, ink, false, h / (2 * r), 7);
+    S.sphere(x + r * 0.55, h * 0.33, zz - r * 0.35, r * 0.46, ink === INK.STONE ? INK.OCHRE : INK.STONE, false, 0.66, 6);
+    S.sphere(x - r * 0.5, h * 0.28, zz + r * 0.4, r * 0.28, INK.SAND, false, 0.55, 5);
+    S.collide(x, 0, zz, r * 1.45, h * 0.92, r * 1.45);
+  };
+  boulder(-23, 10, 1.0, 0.75, INK.OCHRE);
+  boulder(23, -3, 0.9, 0.8, INK.STONE);
+  boulder(-22, -9, 0.7, 0.55, INK.OCHRE);
+  boulder(22, 10, 0.55, 0.45, INK.STONE);
+  boulder(11, 24, 0.5, 0.4, INK.OCHRE);
+  boulder(-14, 34, 0.6, 0.5, INK.STONE);
+  boulder(44, -16, 0.8, 0.6, INK.OCHRE);
+  boulder(-44, 14, 0.7, 0.6, INK.STONE);
+  boulder(-38, 52, 0.9, 0.7, INK.OCHRE);
+  boulder(20, 53, 0.6, 0.5, INK.STONE);
+  boulder(2, -34, 0.7, 0.55, INK.OCHRE);
+  boulder(-33, 2, 0.65, 0.5, INK.STONE);
+  // wind ripples: shallow, flat, and only in the open sand
+  for (let i = 0; i < 26; i++) {
+    const a = hash01(i, 2.4, 8.1) * Math.PI * 2;
+    const rad = 10 + hash01(i, 5.2, 3.3) * 36;
+    const x = Math.cos(a) * rad;
+    const zz = 6 + Math.sin(a) * rad * 0.72;
+    const len = 2.0 + hash01(i, 1.1, 9.4) * 4.2;
+    S.box(x, 0.012, zz, len, 0.016, 0.16, i % 4 === 0 ? INK.BONE : INK.SAND, false, false);
   }
   for (let i = 0; i < 12; i++) {
     const a = i * 1.7;
-    S.box(Math.cos(a) * 24, 0.01, 28 + Math.sin(a) * 6, 1.2 + (i % 3), 0.03, 0.16, INK.OCHRE, false, false);
+    S.box(Math.cos(a) * 24, 0.015, 28 + Math.sin(a) * 6, 1.2 + (i % 3), 0.026, 0.16, INK.OCHRE, false, false);
   }
 
   // --- the great pyramid, hollow and enterable ---
   const main = pyramid(S, 0, 0, 18, 9, 3, 2.6, 3.4, 2.9);
+  // wind-blown skirts and rubble where the plinth meets the open sand
+  for (const [ax, az] of [[17, 17], [-17, 17], [17, -17], [-17, -17], [0, 20.5], [0, -20.5]] as const) {
+    sandApron(S, ax, az, 7.4, 5.6);
+  }
+  rubble(S, 13.5, 19.2, 7, 2.2);
+  rubble(S, -14.8, 20.4, 5, 1.9);
+  rubble(S, -20.2, -3.5, 6, 2.0);
+  rubble(S, 20.6, 2.4, 5, 1.8);
+  // the processional way, its steps and the avenue of ram guardians
+  pavedWay(S, 0, 21.6, 41.2, 8);
+  S.box(0, 0, 20.7, 9.2, 0.17, 1.1, INK.OCHRE);
+  ramStatue(S, -6.6, 22);
+  ramStatue(S, 6.6, 22);
+  ramStatue(S, -6.6, 30);
+  ramStatue(S, 6.6, 30);
+  torch(S, -4.7, 0, 34.2, flames);
+  torch(S, 4.7, 0, 34.2, flames);
+  // long cracks open in the compacted sand either side of the causeway
+  for (let i = 0; i < 12; i++) {
+    const a = hash01(i, 4.2, 1.7) * Math.PI * 2;
+    const r = 10 + (i % 4) * 4.6;
+    S.box(Math.cos(a) * r, 0.014, 30 + Math.sin(a) * r * 0.5, 1.1 + (i % 3) * 0.7, 0.028, 0.1, INK.OCHRE, false, false);
+  }
   S.slab(-15.4, -15.4, 15.4, 15.4, 0.04, 0.1, INK.OCHRE, false);
   for (const [x, zz] of [[-6.4, -6.4], [6.4, -6.4], [-6.4, 6.4], [6.4, 6.4], [-9.4, 0], [9.4, 0], [0, -9.4], [0, 9.4]] as const) {
     S.cyl(x, 0, zz, 0.85, 7.4, INK.SAND, false, true, 10);
@@ -821,19 +1320,50 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   const TX = -34;
   const TZ = -34;
   S.slab(TX - 12, TZ - 9, TX + 12, TZ + 9, 0.9, 0.9, INK.OCHRE);
+  // a fascia course and a sand apron soften the platform edge
+  S.box(TX, 0.62, TZ + 9, 24.4, 0.3, 0.35, INK.SAND, false, false);
+  S.box(TX, 0.62, TZ - 9, 24.4, 0.3, 0.35, INK.SAND, false, false);
+  sandApron(S, TX, TZ + 9.2, 14, 5.4);
   S.stairs(TX, 0, TZ + 10.4, "-z", 3, 8, 0.3, 0.55, INK.SAND);
   for (const x of [TX - 10, TX + 10]) {
     S.box(x, 0.9, TZ + 7.8, 5.2, 9.4, 5.2, INK.SAND);
     S.box(x, 10.3, TZ + 7.8, 5.7, 0.7, 5.7, INK.OCHRE);
+    // a cavetto cornice steps out above each pylon instead of ending flat
+    S.box(x, 10.65, TZ + 7.8, 6.0, 0.34, 6.0, INK.SAND, false, false);
+    S.box(x, 10.99, TZ + 7.8, 5.2, 0.34, 5.2, INK.OCHRE, false, false);
+    S.box(x, 9.7, TZ + 7.8, 5.5, 0.16, 5.5, INK.TURQ, false, false);
     S.glyphs(x, 3.2, TZ + 10.42, "x", 3.6, 4.4, 3);
   }
   S.box(TX, 10.3, TZ + 7.8, 15, 1.1, 4.2, INK.OCHRE);
   for (const x of [TX - 7, TX - 3.5, TX, TX + 3.5, TX + 7]) {
     S.cyl(x, 0.9, TZ + 5, 0.82, 8.2, INK.SAND, false, true, 10);
+    S.cyl(x, 0.9, TZ + 5, 1.06, 0.34, INK.OCHRE, false, true, 12);
+    S.ring(x, 1.26, TZ + 5, 1.11, 0.09, INK.STONE, false);
+    S.ring(x, 3.0, TZ + 5, 0.85, 0.09, INK.TURQ);
+    S.ring(x, 5.6, TZ + 5, 0.82, 0.08, INK.GOLD);
     S.ring(x, 7.4, TZ + 5, 0.86, 0.13, INK.TURQ);
     S.box(x, 8.4, TZ + 5, 2.1, 0.5, 2.1, INK.OCHRE);
   }
   S.box(TX, 8.9, TZ + 5, 16, 0.6, 2.6, INK.OCHRE);
+  // roof the hall: a shaded interior, a believable silhouette from outside
+  S.slab(TX - 11.4, TZ - 8.4, TX + 11.4, TZ + 7.6, 9.5, 0.55, INK.SAND);
+  for (let i = 0; i < 8; i++) {
+    S.box(TX, 8.9, TZ - 7.0 + i * 1.85, 22.2, 0.2, 0.3, INK.OCHRE, false, false);
+  }
+  for (const side of [-1, 1] as const) {
+    S.box(TX + side * 11.4, 9.5, TZ - 0.4, 0.4, 0.45, 17.6, INK.OCHRE, false, false);
+  }
+  S.box(TX, 9.5, TZ - 8.4, 22.8, 0.45, 0.4, INK.OCHRE, false, false);
+  // a gold-and-turquoise frieze runs below the cornice along the facade
+  S.box(TX, 8.95, TZ + 8.52, 23.6, 0.22, 0.16, INK.TURQ, false, false);
+  for (let i = 0; i < 11; i++) S.box(TX - 10 + i * 2, 8.95, TZ + 8.62, 0.3, 0.22, 0.08, INK.GOLD, false, false);
+  // the doorway gets a frame and a pair of standing torches
+  S.box(TX - 4.55, 0.9, TZ + 8.42, 0.9, 7.0, 0.55, INK.STONE, false, false);
+  S.box(TX + 4.55, 0.9, TZ + 8.42, 0.9, 7.0, 0.55, INK.STONE, false, false);
+  S.box(TX, 7.9, TZ + 8.42, 10.0, 0.75, 0.6, INK.OCHRE, false, false);
+  S.box(TX, 8.45, TZ + 8.42, 10.4, 0.2, 0.66, INK.TURQ, false, false);
+  torch(S, TX - 5.9, 0, TZ + 12.1, flames);
+  torch(S, TX + 5.9, 0, TZ + 12.1, flames);
   // facade, side walls, back wall and the sanctum partition
   S.wallX(TX - 11.5, TX + 11.5, TZ + 8, 0.9, 8.4, 1, [[TX - 4, TX + 4, 0, 6.4]], INK.SAND);
   S.wallZ(TZ - 8.5, TZ + 8, TX - 11.5, 0.9, 8.4, 1, [], INK.SAND);
@@ -888,6 +1418,14 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   obelisk(S, -10, 28);
   obelisk(S, 20, -34);
   obelisk(S, TX + 15, TZ + 13);
+  obelisk(S, TX + 15, TZ + 5);
+  // fallen masonry around the temple platform: the ruins start at its foot
+  columnDrum(S, TX - 13.2, TZ + 10.4, 0.55, 1.7);
+  columnDrum(S, TX - 12.2, TZ + 11.4, 0.48, 1.3);
+  columnDrum(S, TX + 13.4, TZ + 9.0, 0.52, 1.5);
+  rubble(S, TX - 12.4, TZ + 7.0, 7, 2.6);
+  rubble(S, TX + 12.6, TZ - 2.0, 6, 2.4);
+  rubble(S, TX, TZ + 11.6, 4, 2.0);
   ruin(S, 20, 12);
   ruin(S, -24, -10);
   ruin(S, 12, -38);
@@ -895,6 +1433,11 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   makeMarket(S, 12, 34);
   makeMarket(S, 24, 22);
   makeCamp(S, -18, 42);
+  // a small mud-brick outpost behind the market, with a working well
+  mudHouse(S, 22, 47);
+  well(S, 32, 48);
+  rubble(S, 26.5, 42.5, 5, 1.6);
+  rubble(S, 15.8, 43.5, 4, 1.5);
   S.disc(-28, 0.03, 46, 4.6, INK.TURQ, false, 22);
   S.ring(-28, 0.06, 46, 4.6, 0.32, INK.SAND, false);
   for (const [x, zz] of [[-33.5, 43], [-28, 50.5], [-22.5, 43.5], [-32, 50], [-24, 51]] as const) palm(S, x, zz, 4.6 + (x % 3) * 0.3);
@@ -1394,21 +1937,45 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
  * ------------------------------------------------------------------ */
 
 function ruin(z: Zone, x: number, zz: number) {
-  z.box(x, 0, zz, 5, 0.4, 5, INK.STONE);
-  for (let i = 0; i < 4; i++) {
-    const a = (i / 4) * Math.PI * 2 + 0.4;
-    const px = x + Math.cos(a) * 1.8;
-    const pz = zz + Math.sin(a) * 1.8;
-    const h = i % 2 === 0 ? 2.4 : 1.4;
-    z.cyl(px, 0.4, pz, 0.4, h, INK.SAND, false, true, 7);
-    z.box(px, 0.4 + h, pz, 1.1, 0.28, 1.1, INK.OCHRE, false, false);
+  // a low podium, a broken perimeter wall and two surviving columns
+  z.box(x, 0, zz, 6.2, 0.32, 6.2, INK.STONE);
+  z.box(x, 0.32, zz, 5.6, 0.16, 5.6, INK.OCHRE, false, false);
+  z.wallX(x - 2.6, x + 2.6, zz - 2.6, 0.32, 2.4, 0.5, [[x - 0.9, x + 1.4, 0, 1.8]], INK.SAND);
+  z.wallZ(zz - 2.6, zz + 1.1, x - 2.6, 0.32, 1.6, 0.5, [], INK.SAND);
+  for (const [px, pz, ph] of [[x + 1.9, zz + 1.9, 2.6], [x - 1.8, zz + 1.7, 1.5]] as const) {
+    z.cyl(px, 0.32, pz, 0.42, ph, INK.SAND, false, true, 9);
+    z.box(px, 0.32 + ph, pz, 1.0, 0.24, 1.0, INK.OCHRE, false, false);
+    z.box(px, 0.32, pz, 1.1, 0.22, 1.1, INK.OCHRE, false, false);
   }
-  z.box(x + 2.2, 0, zz + 1.2, 1.2, 1.8, 3.4, INK.SAND);
-  z.box(x - 1.6, 0, zz - 2.2, 2.6, 0.9, 1.1, INK.OCHRE);
-  z.glyphs(x, 0.8, zz, "x", 3, 1.2, 2);
+  // a fallen lintel and a scatter of its blocks
+  z.box(x + 2.4, 0.32, zz + 0.2, 0.9, 1.7, 2.2, INK.SAND);
+  z.box(x - 1.7, 0.32, zz - 2.1, 2.4, 0.8, 1.0, INK.OCHRE);
+  z.glyphs(x, 0.75, zz - 2.23, "x", 2.6, 1.1, 2);
+  rubble(z, x + 0.4, zz + 0.4, 6, 2.9);
+  sandApron(z, x, zz, 4.6, 4.2);
+}
+
+/** the small goods that turn two tents into a market: rugs, jars and baskets */
+function marketGoods(z: Zone, x: number, zz: number) {
+  z.box(x + 1.1, 0.02, zz + 0.2, 3.4, 0.035, 2.3, INK.TURQ, false, false);
+  for (let i = 0; i < 4; i++) z.box(x + 1.1, 0.025, zz - 0.7 + i * 0.6, 3.2, 0.045, 0.14, i % 2 ? INK.GOLD : INK.RED, false, false);
+  for (const [jx, jz, s] of [[x - 2.4, zz + 1.9, 1], [x - 1.8, zz + 2.5, 0.8], [x - 3.0, zz + 2.3, 0.85]] as const) {
+    z.cyl(jx, 0, jz, 0.3 * s, 0.6 * s, INK.OCHRE, false, false, 8);
+    z.sphere(jx, 0.64 * s, jz, 0.29 * s, INK.OCHRE, false, 1.4, 8);
+    z.box(jx, 0.86 * s, jz, 0.2 * s, 0.14 * s, 0.2 * s, INK.STONE, false, false);
+  }
+  for (const [bx, bz] of [[x + 4.6, zz + 0.4], [x + 5.1, zz - 0.1]] as const) {
+    z.cyl(bx, 0, bz, 0.4, 0.28, INK.SAND, false, false, 9);
+    z.cyl(bx, 0.28, bz, 0.28, 0.18, INK.TURQ, false, false, 8);
+  }
+  // hanging fabric gives the awnings an edge and a little colour
+  for (let i = 0; i < 5; i++) {
+    z.box(x - 1.6 + i * 0.8, 1.28, zz + 1.9, 0.7, 0.55 + (i % 2) * 0.2, 0.045, i % 2 ? INK.RED : INK.SAND, false, false);
+  }
 }
 
 function makeMarket(z: Zone, x: number, zz: number) {
+  sandApron(z, x + 1, zz + 0.5, 7.6, 6.2);
   tent(z, x, zz, INK.RED);
   tent(z, x + 7, zz - 3, INK.OCHRE);
   crate(z, x - 6.2, zz + 3.1);
@@ -1417,18 +1984,34 @@ function makeMarket(z: Zone, x: number, zz: number) {
   z.box(x + 3.5, 0.8, zz + 2.4, 1.2, 0.5, 1.1, INK.TURQ, true, false);
   z.box(x - 4.4, 0, zz + 1.2, 1.4, 1.4, 1.4, INK.ORANGE);
   z.box(x - 3.1, 0, zz + 1.6, 1.0, 1.0, 1.0, INK.SAND);
+  marketGoods(z, x, zz);
   cactus(z, x + 9, zz + 4);
+  rubble(z, x - 1.6, zz + 4.2, 4, 1.4);
 }
 
 function makeCamp(z: Zone, x: number, zz: number) {
+  sandApron(z, x + 0.5, zz + 0.6, 6.4, 5.2);
   crate(z, x + 1.6, zz + 3.2, 0.95);
   crate(z, x + 2.9, zz + 3.9, 0.7);
-  z.box(x, 0, zz, 3.4, 0.18, 2.2, INK.OCHRE, false, false);
+  // bedroll and groundsheet
+  z.box(x, 0.01, zz, 3.4, 0.05, 2.2, INK.RED, false, false);
+  z.box(x - 1.4, 0.06, zz - 0.3, 0.6, 0.16, 1.5, INK.BONE, false, false);
+  // fire ring
   for (let i = 0; i < 7; i++) {
     const a = (i / 7) * Math.PI * 2;
     z.box(x + 3.2 + Math.cos(a) * 0.7, 0, zz + Math.cos(a * 2) * 0.7, 0.24, 0.24, 0.24, INK.STONE, false, false);
   }
-  z.sphere(x + 3.2, 0.2, zz, 0.5, INK.ORANGE, true, 0.7, 7);
-  z.box(x - 2.6, 0, zz - 1.4, 1.6, 1.1, 1.6, INK.OCHRE);
-  z.box(x - 2.6, 1.1, zz - 1.4, 1.2, 0.5, 1.2, INK.SAND);
+  z.sphere(x + 3.2, 0.12, zz, 0.5, INK.ORANGE, true, 0.7, 7);
+  // survey table with a rolled map, and two stools
+  z.box(x - 2.2, 0, zz + 1.2, 2.2, 0.72, 1.1, INK.OCHRE);
+  z.box(x - 2.2, 0.72, zz + 1.2, 2.4, 0.08, 1.25, INK.SAND, false, false);
+  z.cyl(x - 2.6, 0.8, zz + 1.2, 0.16, 0.5, INK.BONE, false, false, 7);
+  z.box(x - 2.5, 0, zz + 2.4, 0.6, 0.42, 0.6, INK.OCHRE, false, false);
+  z.box(x - 0.5, 0, zz + 2.3, 0.56, 0.4, 0.56, INK.SAND, false, false);
+  // a lean-to canopy over the crates
+  z.box(x + 2.5, 1.4, zz + 4.9, 3.4, 0.12, 2.0, INK.RED, false, false);
+  for (const [px, pz] of [[x + 1.0, zz + 5.9], [x + 4.0, zz + 5.9]] as const) z.box(px, 0, pz, 0.12, 1.5, 0.12, INK.OCHRE, false, true);
+  z.box(x + 2.5, 1.46, zz + 5.9, 3.1, 0.1, 0.1, INK.OCHRE, false, false);
+  z.box(x + 2.5, 1.46, zz + 4.0, 3.1, 0.1, 0.1, INK.OCHRE, false, false);
+  rubble(z, x + 0.6, zz - 2.2, 5, 1.8);
 }

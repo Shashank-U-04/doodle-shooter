@@ -1,0 +1,156 @@
+// Headless checks for the Pharaoh's Valley surface.
+//
+// Run with `bun scripts/check-valley.ts`. This does not draw anything: it builds
+// the real map, then asserts the things a visual pass cannot be trusted to
+// notice on its own — finite geometry, walkable pads, aligned colliders, and the
+// three zone transitions still firing after the surface was re-dressed.
+
+import * as THREE from "three";
+import { buildEgypt } from "../src/game/egypt";
+import { isStandable, resolveMove } from "../src/game/world";
+
+const scene = new THREE.Scene();
+const map = buildEgypt(scene);
+const surface = map.zones.surface;
+
+let failures = 0;
+const check = (label: string, ok: boolean, detail = "") => {
+  if (!ok) failures++;
+  console.log(`${ok ? "ok  " : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
+};
+
+let meshes = 0;
+let triangles = 0;
+let nonFinite = 0;
+let degenerate = 0;
+const perZone: Record<string, { meshes: number; tris: number }> = {};
+for (const zone of Object.values(map.zones)) {
+  const zs = (perZone[zone.id] = { meshes: 0, tris: 0 });
+  zone.group.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    meshes++;
+    zs.meshes++;
+    const g = o.geometry;
+    const pos = g.getAttribute("position");
+    if (!pos) return;
+    const tri = (g.index ? g.index.count : pos.count) / 3;
+    triangles += tri;
+    zs.tris += tri;
+    for (let i = 0; i < pos.count; i++) {
+      if (!Number.isFinite(pos.getX(i)) || !Number.isFinite(pos.getY(i)) || !Number.isFinite(pos.getZ(i))) nonFinite++;
+    }
+    g.computeBoundingBox();
+    const b = g.boundingBox!;
+    if (zone.id === "surface" && (b.min.y < -4.2 || b.max.y > 80)) degenerate++;
+  });
+}
+
+console.log(`\nmeshes ${meshes}, triangles ${Math.round(triangles)}, colliders ${surface.colliders.length}`);
+console.log(`per zone: ${Object.entries(perZone).map(([k, v]) => `${k} ${v.meshes}m/${Math.round(v.tris)}t`).join(", ")}`);
+check("all vertex positions finite", nonFinite === 0, `${nonFinite} bad`);
+check("surface geometry stays in a sane height band", degenerate === 0, `${degenerate} meshes`);
+check(
+  "colliders are finite and non-inverted",
+  surface.colliders.every((c) => Object.values(c).every(Number.isFinite) && c.minX < c.maxX && c.minY < c.maxY && c.minZ < c.maxZ),
+);
+check("surface draw calls stay modest", perZone.surface.meshes < 80, `${perZone.surface.meshes} meshes`);
+check("surface triangle count stays modest", perZone.surface.tris < 100000, `${Math.round(perZone.surface.tris)} triangles`);
+
+const stand = (x: number, y: number, z: number) => isStandable(x, y, z, 0.42, 1.7, surface.colliders, 1.2);
+const start = surface.start;
+check("spawn is clear and supported", stand(start.x, start.y, start.z), start.toArray().map((n) => n.toFixed(1)).join(", "));
+
+for (const p of surface.spawnPoints) {
+  check(`wave pad (${p.x.toFixed(0)}, ${p.z.toFixed(0)}) walkable`, stand(p.x, p.y, p.z));
+}
+
+// the doorway is the one collider that must disappear: simulate the open
+const door = map.nearest(new THREE.Vector3(0, 1.2, 20.4));
+check("great door prompt reachable", door?.id === "main-door", door?.label ?? "none");
+map.activate("main-door");
+const player = new THREE.Vector3(0, 0.2, 30);
+for (let i = 0; i < 80; i++) map.update(i * 0.05, 0.05, player);
+check("door collider clears after opening", stand(0, 0.2, 16.7));
+const approach: [number, number][] = [[20.5, 0.2], [19.4, 0.2], [18.5, 0.36], [17.3, 0.2], [16.5, 0.2], [15.5, 0.2], [14.5, 0.2]];
+check(
+  "threshold corridor is walkable",
+  approach.every(([z, y]) => stand(0, y, z)),
+  approach.filter(([z, y]) => !stand(0, y, z)).map(([z]) => z).join(", "),
+);
+const travel = map.travelAt(new THREE.Vector3(0, 0.2, 12.5));
+check("surface → sanctuary transition intact", travel?.zone === "interior", JSON.stringify(travel));
+
+// walk the approach for real: gravity, step-up and the plinth included
+{
+  const p = new THREE.Vector3(0, 0.2, 42);
+  const vel = new THREE.Vector3();
+  const dt = 1 / 60;
+  let frames = 0;
+  for (; frames < 600 && p.z > 13; frames++) {
+    vel.z = -5.5;
+    vel.x = 0;
+    vel.y -= 18 * dt;
+    const r = resolveMove(p, vel, 0.42, 1.7, surface.colliders, dt);
+    if (r.onGround) vel.y = 0;
+  }
+  check("walk from spawn through the great door", p.z <= 13.1, `stopped at z ${p.z.toFixed(2)} (y ${p.y.toFixed(2)}) after ${frames} frames`);
+}
+map.setZone("interior");
+
+// inner door + hatch chains
+const inner = map.nearest(new THREE.Vector3(0, -138.8, 14.2));
+check("sanctuary exit prompt reachable", inner?.id === "inner-exit", inner?.label ?? "none");
+map.activate("inner-exit");
+const out = map.travelAt(new THREE.Vector3(0, -139.8, 15.4));
+check("sanctuary → surface transition intact", out?.zone === "surface", JSON.stringify(out));
+map.setZone("interior");
+const hatch = map.nearest(new THREE.Vector3(0, -139.2, 0));
+check("hatch prompt reachable", hatch?.id === "hatch", hatch?.label ?? "none");
+map.activate("hatch");
+const down = map.activate("hatch");
+check("hatch → tomb transition intact", down?.travel?.zone === "tomb", JSON.stringify(down?.travel));
+const back = map.nearest(new THREE.Vector3(0, -298.4, 40.5));
+check("tomb return prompt reachable", back?.id === "tomb-exit", back?.label ?? "none");
+check("tomb → sanctuary transition intact", map.activate("tomb-exit")?.travel?.zone === "interior");
+
+// the temple's hidden alcove still opens and gives up its collider
+map.activate("temple-lever");
+for (let i = 0; i < 100; i++) map.update(i * 0.05, 0.05, player);
+check("temple secret wall clears", stand(-22.5, 0.9, -39.5));
+
+// the two smaller tombs still open onto a walkable chamber
+for (const [id, x, z] of [["west-pyramid-door", -36, 34.1], ["east-pyramid-door", 36, -15.9]] as const) {
+  map.activate(id);
+  for (let i = 0; i < 100; i++) map.update(i * 0.05, 0.05, player);
+  check(`${id} clears`, stand(x, 0.2, z));
+}
+
+// things that must still exist and answer their prompt
+for (const id of ["chest-temple", "chest-temple-2", "chest-temple-secret", "chest-rim"]) {
+  check(`interaction ${id} present`, map.activate(id) !== null);
+}
+
+// the two underground zones must not have gained surface decorations
+const interiorTris = (() => {
+  let n = 0;
+  map.zones.interior.group.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      const g = o.geometry;
+      n += (g.index ? g.index.count : g.getAttribute("position").count) / 3;
+    }
+  });
+  return Math.round(n);
+})();
+const tombTris = (() => {
+  let n = 0;
+  map.zones.tomb.group.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      const g = o.geometry;
+      n += (g.index ? g.index.count : g.getAttribute("position").count) / 3;
+    }
+  });
+  return Math.round(n);
+})();
+console.log(`\ninterior triangles ${interiorTris}, tomb triangles ${tombTris}`);
+console.log(`\n${failures === 0 ? "PASS" : `${failures} FAILURE(S)`}`);
+if (failures > 0) process.exitCode = 1;
