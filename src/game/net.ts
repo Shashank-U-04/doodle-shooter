@@ -21,6 +21,30 @@ import Peer, { type DataConnection } from "peerjs";
 // transport and any test ask the same question about a stale packet.
 import { shouldApplyState, type NetPlayerState, type NetShotOrigin } from "./types";
 import { normalizeMatchConfig, type MatchConfig } from "./maps";
+import { drawRoomCode } from "./room";
+import {
+  brokerConfigProblem,
+  classifySignalError,
+  describeBroker,
+  exhaustedSignalText,
+  MAX_SIGNAL_ATTEMPTS,
+  nextSignalBackoff,
+  readBrokerConfig,
+  SIGNAL_OPEN_TIMEOUT_MS,
+  type BrokerConfig,
+  type SignalFailure,
+} from "./signaling";
+
+/**
+ * The signaling socket, as the lobby should describe it.
+ *
+ *   connecting — first attempt, no answer yet
+ *   open       — the broker accepted this peer id
+ *   retrying   — the socket dropped; a bounded retry is scheduled
+ *   lost       — every bounded retry failed; the room is no longer discoverable
+ *   closed     — the page left deliberately
+ */
+export type SignalState = "idle" | "connecting" | "open" | "retrying" | "lost" | "closed";
 
 /** One player as the lobby and the scoreboard see them. */
 export type NetPlayer = {
@@ -86,6 +110,8 @@ export type NetHandlers = {
   onConfig?: (config: MatchConfig) => void;
   onFeed?: (text: string, hot: boolean) => void;
   onStatus?: (text: string) => void;
+  /** signaling broker state changed — separate from ICE/TURN and from errors */
+  onSignal?: (state: SignalState, detail?: string) => void;
   onError?: (text: string) => void;
   /** the roster or a score changed — re-render */
   onChange?: () => void;
@@ -94,6 +120,9 @@ export type NetHandlers = {
 };
 
 const PREFIX = "ds-pvp-";
+
+/** The signaling broker, read once at module load (never a secret). */
+const BROKER: BrokerConfig = readBrokerConfig(import.meta.env as Record<string, unknown>);
 
 /**
  * How long a peer may go quiet before we treat it as gone (ms).
@@ -120,6 +149,16 @@ const DIAL_TIMEOUT_MS = 8000;
 const MAX_DIALS = 2;
 /** Beat between the two attempts, so the broker has dropped the dead channel. */
 const RETRY_DELAY_MS = 700;
+/**
+ * Bounded re-dials after an established data channel closes in the lobby.
+ * A host that merely restarted should be back within a few seconds; a host
+ * that left must not be dialled forever.
+ */
+const MAX_REJOINS = 2;
+/** How long a relay-credential fetch may take before it is skipped. */
+const TURN_FETCH_TIMEOUT_MS = 4000;
+/** Refresh a credential this long before it actually expires. */
+const TURN_REFRESH_SKEW_MS = 120_000;
 
 /**
  * The ICE server list, resolved once per page.
@@ -154,12 +193,28 @@ function netLog(...args: unknown[]) {
   if (NET_DEBUG) console.info(...args);
 }
 
+/** Why a plan has no relay (or why its credentials may be stale). */
+export type IcePlanIssue =
+  | "none"
+  | "unconfigured"
+  | "no-endpoint"
+  | "endpoint-unreachable"
+  | "endpoint-rejected"
+  | "endpoint-empty"
+  | "static-invalid";
+
 export type IcePlan = {
   servers: RTCIceServer[];
   /** where the relay (if any) came from */
   relay: "none" | "static" | "endpoint" | "deployment";
   /** log-safe explanation when there is no relay, or the endpoint failed */
   note?: string;
+  /** machine-readable reason, so the lobby can stop blaming TURN_URLS for a CORS failure */
+  issue?: IcePlanIssue;
+  /** ms epoch at which minted credentials expire (server endpoint only) */
+  expiresAt?: number;
+  /** which variable/endpoint supplied the relay — log-safe */
+  source?: string;
 };
 
 /** What kind of ICE candidate a connection actually managed to gather. */
@@ -213,74 +268,138 @@ export function sanitizeIceServers(input: unknown): { servers: RTCIceServer[]; r
 }
 
 let icePlan: Promise<IcePlan> | null = null;
+let icePlanExpiresAt = 0;
+/** Non-expiring STUN-only plans are still re-checked this often. */
+const ICE_PLAN_IDLE_TTL_MS = 5 * 60 * 1000;
+
+/** Drop the cached plan so the next resolve asks the credential endpoint again. */
+export function clearIcePlanCache(): void {
+  icePlan = null;
+  icePlanExpiresAt = 0;
+}
 
 /**
- * Resolve the complete ICE list once per page.
+ * Resolve the complete ICE list, with a lifetime.
  *
  * Order matters: the deployment's own credential endpoint first (nothing
  * secret ships in the bundle and the relay can rotate without a redeploy),
  * then an explicitly configured third-party endpoint, then a static relay.
  * Whatever the outcome, the reason is recorded rather than swallowed.
+ *
+ * The plan is cached until its credentials are about to expire, not forever.
+ * A tab that sits in a lobby for more than an hour used to keep minted TURN
+ * credentials that had already timed out, so the first guest to need a relay
+ * gathered none and the lobby blamed the player's network.
  */
-export function resolveIcePlan(): Promise<IcePlan> {
-  if (icePlan) return icePlan;
-  icePlan = (async (): Promise<IcePlan> => {
-    const explicit = import.meta.env.VITE_TURN_CREDENTIALS_URL as string | undefined;
-    const convexUrl = import.meta.env.VITE_CONVEX_URL as string | undefined;
-    const site =
-      (import.meta.env.VITE_CONVEX_SITE_URL as string | undefined)?.replace(/\/+$/, "") ??
-      convexUrl?.replace(/\.convex\.cloud\/?$/, ".convex.site");
+export function resolveIcePlan(force = false): Promise<IcePlan> {
+  const now = Date.now();
+  if (!force && icePlan && now < icePlanExpiresAt) return icePlan;
+  clearIcePlanCache();
+  const pending = buildIcePlan(now);
+  icePlan = pending;
+  void pending.then((plan) => {
+    if (icePlan !== pending) return; // a forced refresh superseded this one
+    const until = plan.expiresAt ? plan.expiresAt - TURN_REFRESH_SKEW_MS : now + ICE_PLAN_IDLE_TTL_MS;
+    icePlanExpiresAt = Math.max(now + 5_000, until);
+  });
+  return pending;
+}
 
-    const endpoints: { url: string; relay: IcePlan["relay"] }[] = [];
-    if (explicit) endpoints.push({ url: explicit, relay: "endpoint" });
-    if (site) endpoints.push({ url: `${site}/turn`, relay: "deployment" });
+/** fetch() with a deadline: a hanging credential endpoint must not stall signaling. */
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { cache: "no-store", signal: ctl.signal, mode: "cors" });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-    let note = "";
-    for (const endpoint of endpoints) {
-      try {
-        const res = await fetch(endpoint.url, { cache: "no-store" });
-        if (!res.ok) {
-          note = `the relay credential service answered HTTP ${res.status}`;
-          continue;
-        }
-        const body = (await res.json()) as
-          | RTCIceServer[]
-          | { iceServers?: RTCIceServer[]; configured?: boolean; reason?: string };
-        const raw = Array.isArray(body) ? body : (body.iceServers ?? []);
-        const clean = sanitizeIceServers(raw);
-        if (clean.relay > 0) {
-          return { servers: [...STUN_ONLY, ...clean.servers], relay: endpoint.relay };
-        }
-        note =
-          (!Array.isArray(body) && typeof body.reason === "string" && body.reason) ||
-          "the relay credential service returned no usable TURN server";
-        if (clean.dropped > 0) note += ` (${clean.dropped} rejected) `;
-      } catch (err) {
-        note = `the relay credential service could not be reached (${(err as Error)?.message ?? String(err)})`;
+/** Resolve the `.convex.site` origin, validating rather than trusting a typo. */
+function convexSiteUrl(env: Record<string, unknown>): string | null {
+  const explicit = String(env.VITE_CONVEX_SITE_URL ?? "").trim();
+  if (explicit) return /^https?:\/\//i.test(explicit) ? explicit.replace(/\/+$/, "") : null;
+  const convexUrl = String(env.VITE_CONVEX_URL ?? "").trim();
+  if (!convexUrl) return null;
+  // Both the production (`https://name.convex.cloud`) and preview shapes.
+  const derived = convexUrl.replace(/\/+$/, "").replace(/\.convex\.cloud$/, ".convex.site");
+  return /^https?:\/\//i.test(derived) && /\.convex\.site$/.test(derived) ? derived : null;
+}
+
+async function buildIcePlan(now: number): Promise<IcePlan> {
+  const env = import.meta.env as Record<string, unknown>;
+  const explicit = String(env.VITE_TURN_CREDENTIALS_URL ?? "").trim();
+  const site = convexSiteUrl(env);
+
+  const endpoints: { url: string; relay: IcePlan["relay"]; source: string }[] = [];
+  if (explicit) endpoints.push({ url: explicit, relay: "endpoint", source: "VITE_TURN_CREDENTIALS_URL" });
+  if (site) endpoints.push({ url: `${site}/turn`, relay: "deployment", source: "<deployment>.convex.site/turn" });
+
+  let note = "";
+  let issue: IcePlanIssue = "unconfigured";
+  if (endpoints.length === 0) {
+    note = "VITE_CONVEX_SITE_URL / VITE_CONVEX_URL is not set, so the deployment's /turn endpoint was never asked";
+    issue = "no-endpoint";
+  }
+  for (const endpoint of endpoints) {
+    try {
+      const res = await fetchWithTimeout(endpoint.url, TURN_FETCH_TIMEOUT_MS);
+      if (!res.ok) {
+        note = `the relay credential service answered HTTP ${res.status}`;
+        issue = "endpoint-rejected";
+        continue;
       }
+      const body = (await res.json()) as
+        | RTCIceServer[]
+        | { iceServers?: RTCIceServer[]; configured?: boolean; reason?: string; expiresAt?: number; ttl?: number };
+      const raw = Array.isArray(body) ? body : (body.iceServers ?? []);
+      const clean = sanitizeIceServers(raw);
+      if (clean.relay > 0) {
+        const expiresAt = !Array.isArray(body) && Number.isFinite(body.expiresAt) ? Number(body.expiresAt) * 1000 : undefined;
+        const ttl = !Array.isArray(body) && Number.isFinite(body.ttl) ? Number(body.ttl) : 0;
+        return {
+          servers: [...STUN_ONLY, ...clean.servers],
+          relay: endpoint.relay,
+          source: endpoint.source,
+          expiresAt: expiresAt && expiresAt > now ? expiresAt : ttl > 0 ? now + ttl * 1000 : undefined,
+        };
+      }
+      const reason = !Array.isArray(body) && typeof body.reason === "string" ? body.reason : "";
+      note = reason || "the relay credential service returned no usable TURN server";
+      // "configured:false" is the deployment saying TURN_URLS/SECRET are absent;
+      // an otherwise-empty 200 means the config is broken in another way.
+      issue = !Array.isArray(body) && body.configured === false ? "unconfigured" : "endpoint-empty";
+      if (clean.dropped > 0) note += ` (${clean.dropped} rejected)`;
+    } catch (err) {
+      const e = err as Error;
+      const timedOut = e?.name === "AbortError";
+      note = timedOut
+        ? `the relay credential service did not answer within ${Math.round(TURN_FETCH_TIMEOUT_MS / 1000)}s`
+        : `the relay credential service could not be reached (${e?.message ?? String(err)})`;
+      // A CORS rejection and an offline endpoint both surface as a TypeError;
+      // either way this is a deployment/reachability problem, not "TURN is off".
+      issue = "endpoint-unreachable";
     }
+  }
 
-    const urls = String(import.meta.env.VITE_TURN_URLS ?? "")
-      .split(",")
-      .map((u) => u.trim())
-      .filter(Boolean);
-    const username = import.meta.env.VITE_TURN_USERNAME as string | undefined;
-    const credential = import.meta.env.VITE_TURN_CREDENTIAL as string | undefined;
-    if (urls.length > 0) {
-      const clean = sanitizeIceServers([{ urls, username, credential }]);
-      if (clean.relay > 0) return { servers: [...STUN_ONLY, ...clean.servers], relay: "static" };
-      note = "VITE_TURN_URLS is not a turn:/turns: URL, or VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL is missing";
-    }
+  const urls = String(env.VITE_TURN_URLS ?? "")
+    .split(",")
+    .map((u) => u.trim())
+    .filter(Boolean);
+  const username = env.VITE_TURN_USERNAME as string | undefined;
+  const credential = env.VITE_TURN_CREDENTIAL as string | undefined;
+  if (urls.length > 0) {
+    const clean = sanitizeIceServers([{ urls, username, credential }]);
+    if (clean.relay > 0) return { servers: [...STUN_ONLY, ...clean.servers], relay: "static", source: "VITE_TURN_URLS" };
+    note = "VITE_TURN_URLS is not a turn:/turns: URL, or VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL is missing";
+    issue = "static-invalid";
+  }
 
-    // Always a warning, never gated by NET_DEBUG: this is the one line that
-    // explains most "it finds the room but never connects" reports.
-    console.warn(
-      `[net] No TURN relay available — ${note || "no relay is configured"}. ` +
-        "Matches between networks that block direct peer traffic will fail; set TURN_URLS and TURN_SECRET on the Convex deployment.",
-    );
-    return { servers: STUN_ONLY, relay: "none", note: note || "no relay is configured" };
-  })();
-  return icePlan;
+  // Always a warning, never gated by NET_DEBUG: this is the one line that
+  // explains most "it finds the room but never connects" reports.
+  console.warn(`[net] No TURN relay available — ${note || "no relay is configured"} (${issue}).`);
+  return { servers: STUN_ONLY, relay: "none", note: note || "no relay is configured", issue };
 }
 
 /** Compatibility shim: the ICE list alone, for anything that just wants servers. */
@@ -289,10 +408,13 @@ export function resolveIceServers(): Promise<RTCIceServer[]> {
 }
 
 /** A log-safe summary of an ICE list: what kinds of server, never any secret. */
+/** Strip any userinfo someone embedded in a relay URL before logging it. */
+const redactUrl = (url: string) => url.replace(/\/\/[^/@]*@/, "//***@");
+
 export function describeIce(list: RTCIceServer[]): string {
   return list
     .map((s) => {
-      const urls = (Array.isArray(s.urls) ? s.urls : [s.urls]).join(" | ");
+      const urls = (Array.isArray(s.urls) ? s.urls : [s.urls]).map((u) => redactUrl(String(u))).join(" | ");
       const kind = urls.includes("turn") ? (s.credential ? "turn (credentialed)" : "turn") : "stun";
       return `${kind}: ${urls}`;
     })
@@ -318,14 +440,21 @@ export type IceFailureKind =
 export function diagnoseIceFailure(input: {
   relay: IcePlan["relay"];
   note?: string;
+  issue?: IcePlanIssue;
+  /** ms epoch the relay credentials expire, when the endpoint told us */
+  expiresAt?: number;
+  now?: number;
   tally: CandidateTally;
   iceState?: string;
 }): { kind: IceFailureKind; text: string; detail: string } {
   const { relay, note, tally } = input;
   const found = `${tally.host} local, ${tally.srflx} reflexive, ${tally.prflx} peer-reflexive, ${tally.relay} relay`;
+  const expired = Boolean(input.expiresAt && input.expiresAt <= (input.now ?? Date.now()));
   // Console-only: keeps the player-facing sentence short while leaving the
   // evidence needed to diagnose a real failure in a bug report.
-  const detail = `candidates ${found}; ICE ${input.iceState ?? "unknown"}; relay ${relay}${note ? ` — ${note}` : ""}`;
+  const detail = `candidates ${found}; ICE ${input.iceState ?? "unknown"}; relay ${relay}${
+    input.issue && input.issue !== "none" ? ` (${input.issue})` : ""
+  }${expired ? " [credentials expired]" : ""}${note ? ` — ${note}` : ""}`;
   if (tally.total === 0) {
     return {
       kind: "no-candidates",
@@ -334,13 +463,51 @@ export function diagnoseIceFailure(input: {
     };
   }
   if (relay === "none") {
+    // There are several distinct ways to have no relay. Saying "set TURN_URLS"
+    // after a CORS failure or a missing VITE_CONVEX_SITE_URL sent operators to
+    // the wrong dashboard.
+    if (input.issue === "endpoint-unreachable") {
+      return {
+        kind: "relay-missing",
+        text: `No direct route through this network, and the relay credential endpoint could not be reached (${note ?? "network or CORS failure"}). Check the deployed Convex site URL, its /turn route and TURN_ALLOWED_ORIGINS.`,
+        detail,
+      };
+    }
+    if (input.issue === "endpoint-rejected") {
+      return {
+        kind: "relay-missing",
+        text: `No direct route through this network. The relay credential endpoint answered "${note ?? "an error"}" — check TURN_URLS / TURN_SECRET and TURN_ALLOWED_ORIGINS on the Convex deployment.`,
+        detail,
+      };
+    }
+    if (input.issue === "no-endpoint") {
+      return {
+        kind: "relay-missing",
+        text: "No direct route through this network, and this build has no Convex site URL to ask for relay credentials. Set VITE_CONVEX_SITE_URL (or VITE_CONVEX_URL) and redeploy the frontend.",
+        detail,
+      };
+    }
+    if (input.issue === "static-invalid") {
+      return {
+        kind: "relay-missing",
+        text: "No direct route through this network, and the static relay variables are invalid. VITE_TURN_URLS needs turn:/turns: URLs plus a username and credential.",
+        detail,
+      };
+    }
     return {
       kind: "relay-missing",
       text: "No direct route through this network, and no relay is configured. The host must set TURN_URLS + TURN_SECRET on the Convex deployment.",
       detail,
     };
   }
-  if (tally.relay === 0 && note && /credential|HTTP \d|reach/i.test(note)) {
+  if (tally.relay === 0 && expired) {
+    return {
+      kind: "relay-auth",
+      text: "The relay credentials had expired before this attempt, so only a direct route was tried, and this network blocks one. Rejoin to fetch fresh credentials.",
+      detail,
+    };
+  }
+  if (tally.relay === 0 && note && /credential|HTTP \d|reach|401|403|reject/i.test(note)) {
     return {
       kind: "relay-auth",
       text: "The relay rejected its credentials, so only a direct route was tried, and this network blocks one. Check TURN_URLS / TURN_SECRET.",
@@ -369,10 +536,7 @@ const IDLE: NetPlayerState = {
 
 /** A short, readable, unambiguous room code (no O/0, no I/1). */
 export function makeRoomCode(): string {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let s = "";
-  for (let i = 0; i < 4; i++) s += alphabet[Math.floor(Math.random() * alphabet.length)];
-  return s;
+  return drawRoomCode();
 }
 
 export class NetSession {
@@ -404,8 +568,8 @@ export class NetSession {
   }
 
   private peer: Peer | null = null;
-  /** the ICE servers and where the relay came from, resolved once per page */
-  private plan: IcePlan = { servers: STUN_ONLY, relay: "none" };
+  /** the ICE servers and where the relay came from; cached until credentials expire */
+  private plan: IcePlan = { servers: STUN_ONLY, relay: "none", issue: "unconfigured" };
   /** guest only: how many data channels we have created while connecting */
   private attempts = 0;
   private dialTimer = 0;
@@ -414,9 +578,15 @@ export class NetSession {
   private failedDials = new WeakSet<DataConnection>();
   /** guest only: the candidates gathered for the current attempt */
   private tally: CandidateTally = emptyTally();
+  /** per-connection candidate counts, kept for diagnostics (never credentials) */
+  private connTally = new WeakMap<DataConnection, CandidateTally>();
+  /** per-connection selected candidate-pair type, when it was measured */
+  private connPair = new WeakMap<DataConnection, string>();
   /** heartbeat that notices a peer which stopped talking without saying so */
   private sweepTimer = 0;
   private conns = new Map<string, DataConnection>();
+  /** newest inbound/outbound channel per peer, so a stale close cannot drop it */
+  private latest = new Map<string, DataConnection>();
   private roster = new Map<string, { name: string; ink: number }>();
   private scores = new Map<string, { kills: number; deaths: number }>();
   private lastState: Record<string, NetPlayerState> = {};
@@ -432,6 +602,29 @@ export class NetSession {
   private config: MatchConfig;
   /** lobby ready flags, host-authoritative */
   private ready = new Map<string, boolean>();
+
+  /* ----------------------------- signaling state ----------------------------- */
+  /** broker endpoint, fixed for the life of the session */
+  private broker: BrokerConfig = BROKER;
+  private signalState: SignalState = "idle";
+  private signalAttempts = 0;
+  private signalTimer = 0;
+  private signalWatchdog = 0;
+  private signalFailure: SignalFailure | null = null;
+  /** `connect()` is idempotent; React StrictMode and pageshow can both call it */
+  private started = false;
+  /** the broker has accepted our id right now */
+  private brokerOpen = false;
+  /** guest: the host's roster confirmed that we are in the room */
+  private joinedRoom = false;
+  private rejoinAttempts = 0;
+  private rejoinTimer = 0;
+  /** a signaling error that killed the dial in flight (not an ICE failure) */
+  private dialFailure: SignalFailure | null = null;
+  /** the one data channel currently being negotiated (guest only) */
+  private pendingDial: DataConnection | null = null;
+  /** a relay-credential refresh may be tried once per dial cycle */
+  private iceRefreshUsed = false;
 
   /**
    * Half the measured round trip, capped at a quarter second.
@@ -459,57 +652,227 @@ export class NetSession {
   /* ------------------------------- lifecycle ------------------------------- */
 
   connect() {
+    // Idempotent: StrictMode, a pageshow restore and an auto-join URL can all
+    // ask for a connection; only the first one may create a Peer.
+    if (this.started) return;
+    this.started = true;
     void this.boot();
   }
 
+  private get isClosed(): boolean {
+    return this.phase === "closed";
+  }
+
+  private setSignal(state: SignalState, detail?: string) {
+    if (this.signalState === state && detail === undefined) return;
+    this.signalState = state;
+    this.handlers.onSignal?.(state, detail);
+  }
+
   /**
-   * Resolve the ICE servers, then dial. The lookup can be a network call (a
-   * credentials endpoint), which is why the Peer is created a beat after
-   * `connect()` returns rather than inside it.
+   * Resolve the ICE servers, then open signaling. The lookup can be a network
+   * call (a credentials endpoint), which is why the Peer is created a beat
+   * after `connect()` returns rather than inside it.
    */
   private async boot() {
-    this.plan = await resolveIcePlan();
-    const relay = this.plan.relay === "none" ? "STUN only" : `relay from ${this.plan.relay}`;
+    this.setSignal("connecting");
+    try {
+      this.plan = await resolveIcePlan();
+    } catch (err) {
+      // resolveIcePlan never rejects by design, but a broken polyfill must not
+      // leave the lobby on "connecting" forever.
+      console.warn(`[net ${this.code}] ICE plan failed`, err);
+      this.plan = { servers: STUN_ONLY, relay: "none", issue: "unconfigured", note: "the ICE plan could not be resolved" };
+    }
+    const relay = this.plan.relay === "none" ? `STUN only (${this.plan.issue ?? "unconfigured"})` : `relay from ${this.plan.relay}`;
     console.info(`[net ${this.code}] ICE: ${describeIce(this.plan.servers)} · ${relay}`);
     if (this.plan.relay === "none") console.warn(`[net ${this.code}] relay unavailable — ${this.plan.note}`);
+    console.info(`[net ${this.code}] signaling: ${describeBroker(this.broker)}`);
     if (this.phase === "closed") return; // the page left while we were looking
     window.clearInterval(this.sweepTimer);
     this.sweepTimer = window.setInterval(() => this.sweepSilent(), 2000);
     this.startPinging();
-    if (this.isHost) this.startHosting();
-    else this.startGuest();
+    const problem = brokerConfigProblem(this.broker, typeof location === "undefined" ? "https:" : location.protocol);
+    if (problem) {
+      // The socket will fail either way; say why before the generic retry text.
+      console.warn(`[net ${this.code}] ${problem}`);
+      this.handlers.onError?.(problem);
+    }
+    this.createPeer();
   }
 
-  private startHosting() {
-    const peer = new Peer(this.hostId, { debug: 0, config: { iceServers: this.plan.servers } });
+  /** Build the signaling Peer. Only safe when no live data channel needs it. */
+  private createPeer() {
+    const options = { debug: 0, config: { iceServers: this.plan.servers } };
+    this.brokerOpen = false;
+    const peer = this.isHost ? new Peer(this.hostId, options) : new Peer(options);
     this.peer = peer;
-    peer.on("open", (id) => {
-      this.me = id;
+    peer.on("open", (id) => this.onBrokerOpen(id));
+    peer.on("connection", (conn) => this.adopt(conn));
+    peer.on("disconnected", () => this.onBrokerLost("the broker closed this browser's signaling socket"));
+    peer.on("error", (err) => this.onPeerError(err));
+    this.armSignalWatchdog();
+  }
+
+  /** Destroy the signaling Peer after removing its listeners (no late callbacks). */
+  private destroyPeer() {
+    const peer = this.peer;
+    this.peer = null;
+    this.brokerOpen = false;
+    if (!peer) return;
+    peer.removeAllListeners();
+    try {
+      peer.destroy();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  private armSignalWatchdog() {
+    window.clearTimeout(this.signalWatchdog);
+    this.signalWatchdog = window.setTimeout(() => {
+      this.signalWatchdog = 0;
+      if (this.phase === "closed" || this.brokerOpen) return;
+      const failure = classifySignalError({ type: "signal-timeout" }, this.broker);
+      console.warn(`[net ${this.code}] signaling watchdog: ${failure.detail}`);
+      this.scheduleSignalRetry(failure);
+    }, SIGNAL_OPEN_TIMEOUT_MS);
+  }
+
+  /** The broker accepted our id. Runs again after every successful reconnect. */
+  private onBrokerOpen(id: string) {
+    window.clearTimeout(this.signalWatchdog);
+    this.signalWatchdog = 0;
+    this.signalAttempts = 0;
+    this.signalFailure = null;
+    this.brokerOpen = true;
+    this.me = id;
+    this.setSignal("open");
+    if (this.isHost) {
+      // The host's own row means "this room exists on the broker and is
+      // accepting guests", which is exactly the moment it becomes true.
       this.roster.set(id, { name: this.name, ink: 0 });
       this.ready.set(id, true);
-      this.phase = "lobby";
-      this.handlers.onStatus?.("WAITING FOR YOUR FRIEND…");
+      if (this.phase === "connecting") this.phase = "lobby";
+      if (this.phase === "lobby") this.handlers.onStatus?.("WAITING FOR YOUR FRIEND…");
+      // After a reconnect, guests may have missed the roster; re-announce it.
+      this.sendRoster();
       this.publish();
-    });
-    peer.on("connection", (conn) => this.adopt(conn));
-    peer.on("disconnected", () => {
-      // The broker drops us when its socket blips; a live match must not.
-      if (this.phase !== "closed") peer.reconnect();
-    });
-    peer.on("error", (err) => this.fail(err));
+      return;
+    }
+    // Guest: an already-open channel is a live match and must not be redialled.
+    if (!this.conns.has(this.hostId) && this.phase !== "playing") this.dialHost();
+    else this.publish();
   }
 
-  private startGuest() {
-    const peer = new Peer({ debug: 0, config: { iceServers: this.plan.servers } });
-    this.peer = peer;
-    peer.on("open", (id) => {
-      this.me = id;
-      this.dialHost();
-    });
-    peer.on("disconnected", () => {
-      if (this.phase !== "closed") peer.reconnect();
-    });
-    peer.on("error", (err) => this.fail(err));
+  /** The signaling socket dropped. Never tear down the game channel for this. */
+  private onBrokerLost(detail: string) {
+    if (this.phase === "closed") return;
+    this.brokerOpen = false;
+    const failure = classifySignalError({ type: "network", message: detail }, this.broker);
+    console.warn(`[net ${this.code}] signaling lost (${failure.kind}): ${failure.detail}`);
+    this.scheduleSignalRetry(failure);
+    // An unreachable host room is no longer a room the roster may advertise.
+    this.publish();
+  }
+
+  /**
+   * Bounded reconnect/backoff. Each attempt is one PeerJS `reconnect()` (same
+   * peer id, existing data channels untouched) or, when there is no peer left
+   * and no channel to protect, a fresh Peer.
+   *
+   * The old code called `peer.reconnect()` straight from the `disconnected`
+   * handler. PeerJS emits `disconnected` from inside its own failure path, so
+   * that reconnected synchronously, failed synchronously, and looped — an
+   * unbounded reconnect storm against the broker, with no state the lobby could
+   * display. This one is scheduled, counted and reported.
+   */
+  private scheduleSignalRetry(failure: SignalFailure) {
+    if (this.phase === "closed") return;
+    this.signalFailure = failure;
+    if (!failure.retriable) {
+      this.setSignal("lost", failure.text);
+      this.handlers.onError?.(failure.text);
+      return;
+    }
+    if (this.signalTimer) return; // one retry in flight at a time
+    const delay = nextSignalBackoff(this.signalAttempts);
+    if (delay === null) {
+      this.setSignal("lost", "every reconnect attempt failed");
+      this.handlers.onError?.(exhaustedSignalText(failure, MAX_SIGNAL_ATTEMPTS));
+      this.publish();
+      return;
+    }
+    this.publish();
+    this.signalAttempts++;
+    this.setSignal("retrying", `attempt ${this.signalAttempts} of ${MAX_SIGNAL_ATTEMPTS} in ${delay}ms`);
+    this.signalTimer = window.setTimeout(() => {
+      this.signalTimer = 0;
+      if (this.phase === "closed" || this.brokerOpen) return;
+      this.retrySignaling();
+    }, delay);
+  }
+
+  private retrySignaling() {
+    if (this.phase === "closed") return;
+    const peer = this.peer;
+    if (peer && !peer.destroyed) {
+      if (peer.open) {
+        this.onBrokerOpen(peer.id ?? this.me);
+        return;
+      }
+      if (peer.disconnected) {
+        try {
+          peer.reconnect(); // same id, live data channels preserved
+          this.armSignalWatchdog();
+          return;
+        } catch (err) {
+          console.warn(`[net ${this.code}] reconnect() refused`, err);
+        }
+      } else {
+        // Still "connecting" from the previous attempt: the socket is wedged.
+        // Destroy it, but only when there is no data channel to keep alive.
+        if (this.conns.size > 0) {
+          this.setSignal("retrying", "signaling is down; the match connection is still live");
+          return;
+        }
+      }
+    }
+    if (this.conns.size > 0) {
+      // Existing WebRTC channels do not need signaling. Keep playing; rebuild
+      // signaling only once they are gone.
+      this.setSignal("retrying", "signaling is down; the match connection is still live");
+      return;
+    }
+    this.destroyPeer();
+    this.createPeer();
+  }
+
+  private onPeerError(err: { type?: string; message?: string }) {
+    const failure = classifySignalError(err, this.broker);
+    console.warn(`[net ${this.code}] signaling error (${failure.kind}): ${failure.detail}`);
+    if (failure.kind === "room-in-use" || failure.kind === "invalid-key" || failure.kind === "incompatible") {
+      this.brokerOpen = false;
+      this.setSignal("lost", failure.kind);
+      this.handlers.onError?.(failure.text);
+      return;
+    }
+    if (failure.kind === "room-not-found") {
+      // A late EXPIRE from an abandoned attempt must not scare a guest that is
+      // already connected through the host's channel.
+      if (!this.isHost && this.conns.has(this.hostId)) return;
+      // The broker itself answered; the host is simply not registered. This is
+      // a signaling/room failure, never an ICE or TURN failure.
+      this.dialFailure = failure;
+      this.brokerOpen = true;
+      this.setSignal("open");
+      const pending = this.pendingDial;
+      if (!this.isHost && pending && !pending.open) this.failDial(pending, failure);
+      else this.handlers.onError?.(failure.text);
+      return;
+    }
+    this.brokerOpen = false;
+    this.scheduleSignalRetry(failure);
   }
 
   /**
@@ -526,8 +889,15 @@ export class NetSession {
    */
   private dialHost() {
     const peer = this.peer;
-    if (!peer || peer.destroyed || this.phase === "closed") return;
+    if (!peer || peer.destroyed || peer.disconnected || this.phase === "closed") return;
+    if (this.conns.has(this.hostId) || this.pendingDial) return; // one dial at a time
+    if (!this.brokerOpen) {
+      // The broker will fire `open` and we dial from there. Dialling while the
+      // socket is down just queues offers that can never be delivered.
+      return;
+    }
     this.attempts++;
+    this.dialFailure = null;
     this.tally = emptyTally();
     this.handlers.onStatus?.(
       this.attempts === 1 ? "FINDING YOUR FRIEND…" : "FIRST ROUTE FAILED — TRYING A FRESH CONNECTION…",
@@ -541,26 +911,56 @@ export class NetSession {
       return;
     }
     const tally = this.tally;
+    this.connTally.set(conn, tally);
+    this.pendingDial = conn;
     this.watchTransport(conn, "host", tally);
     window.clearTimeout(this.dialTimer);
     this.dialTimer = window.setTimeout(() => this.dialFailed(conn, tally), DIAL_TIMEOUT_MS);
     conn.on("open", () => {
       window.clearTimeout(this.dialTimer);
+      this.dialTimer = 0;
+      window.clearTimeout(this.rejoinTimer);
+      this.rejoinTimer = 0;
+      this.dialFailure = null;
+      this.iceRefreshUsed = false; // a future incident may refresh once again
+      if (this.pendingDial === conn) this.pendingDial = null;
+      // Newest wins: a retry that lands after an older attempt must replace it,
+      // and the older channel must not be able to drop the live one later.
+      const previous = this.conns.get(this.hostId);
       this.conns.set(this.hostId, conn);
-      this.roster.set(this.hostId, { name: "HOST", ink: 0 });
-      this.roster.set(this.me, { name: this.name, ink: 1 });
+      this.latest.set(this.hostId, conn);
+      if (previous && previous !== conn) {
+        try {
+          previous.close();
+        } catch {
+          /* already gone */
+        }
+      }
+      // Membership is NOT assumed here: the roster arrives from the host, and
+      // only that confirms we are actually in the room.
+      this.joinedRoom = false;
+      this.rejoinAttempts = 0;
       this.ready.set(this.me, false);
-      this.phase = "lobby";
-      this.send({ t: "hello", name: this.name });
-      this.handlers.onStatus?.("CONNECTED — WAITING FOR THE HOST TO START…");
+      this.send({ t: "hello", name: this.name }, conn);
+      this.handlers.onStatus?.("CONNECTED TO THE HOST — JOINING THE ROOM…");
       this.publish();
     });
     conn.on("data", (d) => this.receive(this.hostId, d));
     conn.on("close", () => {
-      if (this.conns.get(this.hostId) === conn) this.drop(this.hostId);
+      if (this.pendingDial === conn) this.pendingDial = null;
+      if (this.latest.get(this.hostId) === conn) {
+        this.latest.delete(this.hostId);
+        this.drop(this.hostId);
+      }
     });
     conn.on("error", (err) => {
       const type = (err as { type?: string } | undefined)?.type;
+      if (type === "peer-unavailable") {
+        const failure = classifySignalError(err as { type?: string; message?: string }, this.broker);
+        this.dialFailure = failure;
+        this.failDial(conn, failure);
+        return;
+      }
       if (type === "negotiation-failed") this.dialFailed(conn, tally);
       else this.channelError(conn, err);
     });
@@ -575,15 +975,39 @@ export class NetSession {
    * a new inbound connection, which `adopt` picks up under the same peer id.
    * A failure after the channel was open is left to the normal drop/sweep path.
    */
+  private clearDialTimers() {
+    window.clearTimeout(this.dialTimer);
+    this.dialTimer = 0;
+  }
+
+  private closeQuietly(conn: DataConnection | null | undefined) {
+    if (!conn) return;
+    if (this.pendingDial === conn) this.pendingDial = null;
+    try {
+      conn.close();
+    } catch {
+      /* already gone */
+    }
+  }
+
   private dialFailed(conn: DataConnection, tally: CandidateTally) {
     if (this.phase === "closed" || conn.open) return;
     if (this.failedDials.has(conn)) return;
+    // If signaling already explained this dial, do not overwrite that with an
+    // ICE/TURN sentence. This is the exact bug behind the guest screenshot:
+    // an unregistered host was reported as "no relay configured".
+    if (this.dialFailure) {
+      this.failDial(conn, this.dialFailure);
+      return;
+    }
     this.failedDials.add(conn);
-    window.clearTimeout(this.dialTimer);
+    this.clearDialTimers();
     const pc = conn.peerConnection;
     const diagnosis = diagnoseIceFailure({
       relay: this.plan.relay,
       note: this.plan.note,
+      issue: this.plan.issue,
+      expiresAt: this.plan.expiresAt,
       tally,
       iceState: pc?.iceConnectionState,
     });
@@ -592,19 +1016,73 @@ export class NetSession {
       // wait for the guest to redial; a close here is already handled by adopt()
       return;
     }
-    try {
-      conn.close();
-    } catch {
-      /* already gone */
+    this.closeQuietly(conn);
+    // A rejected or expired relay credential is worth exactly one refresh +
+    // retry. It is not a reason to loop, and it is not a reason to tell the
+    // player to check their Wi-Fi.
+    if (diagnosis.kind === "relay-auth" && !this.iceRefreshUsed) {
+      this.iceRefreshUsed = true;
+      void this.retryWithFreshIce(diagnosis.text);
+      return;
     }
+    this.retryOrReport(diagnosis.text);
+  }
+
+  /** A signaling error (host not registered, …) ended this dial. */
+  private failDial(conn: DataConnection, failure: SignalFailure) {
+    if (this.phase === "closed" || conn.open) return;
+    if (this.failedDials.has(conn)) return;
+    this.failedDials.add(conn);
+    this.clearDialTimers();
+    this.closeQuietly(conn);
+    console.warn(`[net ${this.code}] dial ${this.attempts} failed (signaling ${failure.kind}): ${failure.detail}`);
+    this.retryOrReport(failure.text);
+  }
+
+  private retryOrReport(text: string) {
+    if (this.phase === "closed") return;
     if (this.attempts < MAX_DIALS) {
       window.clearTimeout(this.retryTimer);
       this.retryTimer = window.setTimeout(() => {
-        if (this.phase === "connecting") this.dialHost();
+        this.retryTimer = 0;
+        if (this.phase === "connecting" || this.phase === "lobby") this.dialHost();
       }, RETRY_DELAY_MS);
       return;
     }
-    this.handlers.onError?.(diagnosis.text);
+    this.handlers.onError?.(text);
+    this.handlers.onStatus?.("NOT CONNECTED — THE ROOM IS STILL WAITING");
+    this.publish();
+  }
+
+  /**
+   * Fetch a fresh relay credential and retry once with it.
+   *
+   * Only the guest can do this cheaply: it has no live data channel during a
+   * failed dial, so its signaling Peer can be rebuilt with the new ICE list.
+   * The host refreshes its plan on a visibility resume while it is idle (see
+   * `resume()`), which is when its credentials matter for the next guest.
+   */
+  private async retryWithFreshIce(previous: string) {
+    if (this.phase === "closed") return;
+    this.handlers.onStatus?.("RELAY CREDENTIALS EXPIRED — FETCHING FRESH ONES…");
+    let plan: IcePlan;
+    try {
+      plan = await resolveIcePlan(true);
+    } catch {
+      this.retryOrReport(previous);
+      return;
+    }
+    this.plan = plan;
+    if (this.isClosed || this.conns.size > 0) return;
+    if (plan.relay === "none") {
+      this.retryOrReport(previous);
+      return;
+    }
+    console.info(`[net ${this.code}] refreshed ICE: ${describeIce(plan.servers)} · relay from ${plan.relay}`);
+    this.destroyPeer();
+    this.attempts = 0;
+    this.dialFailure = null;
+    this.createPeer(); // dials again when the broker accepts the new peer
   }
 
   /**
@@ -642,9 +1120,8 @@ export class NetSession {
     }
   }
 
-  /** Log which path actually won, and whether it went through the relay. */
+  /** Record which path actually won, and whether it went through the relay. */
   private async reportSelectedPair(conn: DataConnection, tag: string) {
-    if (!NET_DEBUG) return;
     const pc = conn.peerConnection;
     if (!pc?.getStats) return;
     try {
@@ -662,6 +1139,7 @@ export class NetSession {
         if (lc) local = `${lc.candidateType}/${lc.protocol}`;
         if (rc) remote = `${rc.candidateType}/${rc.protocol}`;
       });
+      this.connPair.set(conn, `local ${local} ← remote ${remote}`);
       netLog(`${tag} selected path: local ${local} ← remote ${remote}`);
       if (local.startsWith("relay") || remote.startsWith("relay")) netLog(`${tag} TURN relay is carrying this match`);
     } catch (err) {
@@ -677,63 +1155,134 @@ export class NetSession {
       /* the socket is already gone */
     }
     this.phase = "closed";
+    this.joinedRoom = false;
+    this.brokerOpen = false;
+    this.setSignal("closed");
     window.clearInterval(this.sendTimer);
     window.clearInterval(this.sweepTimer);
     window.clearInterval(this.pingTimer);
     window.clearTimeout(this.dialTimer);
     window.clearTimeout(this.retryTimer);
-    this.peer?.destroy();
-    this.peer = null;
+    window.clearTimeout(this.rejoinTimer);
+    window.clearTimeout(this.signalTimer);
+    window.clearTimeout(this.signalWatchdog);
+    this.dialTimer = 0;
+    this.retryTimer = 0;
+    this.rejoinTimer = 0;
+    this.signalTimer = 0;
+    this.signalWatchdog = 0;
+    // Remove listeners before destroy: PeerJS emits `disconnected` from inside
+    // `destroy()`, and a live listener would try to reconnect a dead peer.
+    this.destroyPeer();
     this.conns.clear();
+    this.latest.clear();
+    this.pendingDial = null;
   }
 
   /* ------------------------------- messaging ------------------------------- */
 
-  private fail(err: { type?: string; message?: string }) {
-    const type = err?.type ?? "";
-    const text =
-      type === "unavailable-id"
-        ? "That match code is already taken — try creating another match."
-        : type === "peer-unavailable"
-          ? "Could not find that match. Check the code and try again."
-          : type === "network" || type === "server-error" || type === "socket-error"
-            ? "The connection broker is unreachable. Try again in a moment."
-            : type === "negotiation-failed"
-              ? "The two browsers could not agree on a route to each other."
-              : type === "browser-incompatible"
-              ? "This browser cannot do WebRTC, so online play is unavailable here."
-              : err?.message || "Connection failed.";
-    this.handlers.onError?.(text);
-  }
-
+  /**
+   * Adopt an inbound channel (host) — newest wins.
+   *
+   * A guest that retries opens a second channel under the same peer id. The old
+   * code kept the first channel and registered the new one only if the id was
+   * free, then let *any* close event drop the peer. A stale retry closing after
+   * the good channel opened therefore removed a connected player. Now the
+   * newest channel is the one the roster talks to, and a close from an older
+   * channel is ignored.
+   */
   private adopt(conn: DataConnection) {
-    this.watchTransport(conn, conn.peer, emptyTally());
+    const tally = emptyTally();
+    this.connTally.set(conn, tally);
+    this.watchTransport(conn, conn.peer, tally);
     const register = () => {
-      if (!this.conns.has(conn.peer)) this.conns.set(conn.peer, conn);
+      const previous = this.conns.get(conn.peer);
+      // The newest *open* channel wins. Merely arriving is not enough: a
+      // retry that never opens must not displace the connection that works.
+      this.conns.set(conn.peer, conn);
+      this.latest.set(conn.peer, conn);
+      if (previous && previous !== conn) {
+        try {
+          previous.close();
+        } catch {
+          /* already gone */
+        }
+      }
     };
     if (conn.open) register();
     else conn.on("open", register);
-    conn.on("data", (d) => this.receive(conn.peer, d));
-    conn.on("close", () => this.drop(conn.peer));
+    conn.on("data", (d) => {
+      if (this.conns.get(conn.peer) === conn) this.receive(conn.peer, d);
+    });
+    conn.on("close", () => {
+      // Identity check: a superseded retry closing must not drop the live one.
+      if (this.conns.get(conn.peer) !== conn) return;
+      this.latest.delete(conn.peer);
+      this.drop(conn.peer);
+    });
     conn.on("error", (err) => this.channelError(conn, err));
   }
 
   private drop(id: string) {
     const had = this.conns.has(id) || this.roster.has(id);
     if (!had) return;
+    const hostLost = !this.isHost && id === this.hostId;
     const gone = this.roster.get(id)?.name ?? "A PLAYER";
     this.conns.delete(id);
+    this.latest.delete(id);
     this.roster.delete(id);
     delete this.lastState[id];
     this.lastSeen.delete(id);
     this.pendingState.delete(id);
     this.scores.delete(id);
-    if (id !== this.me && this.phase !== "closed") this.handlers.onFeed?.(`${gone} LEFT THE MATCH`, false);
+    if (hostLost) {
+      // The host's channel is the whole guest session: anything cached from the
+      // host's roster is no longer confirmed membership.
+      this.joinedRoom = false;
+      this.roster.clear();
+      this.ready.clear();
+      this.lastState = {};
+      this.lastSeen.clear();
+      this.pendingState.clear();
+      this.scores.clear();
+      if (this.phase !== "playing") this.phase = "connecting";
+      this.handlers.onStatus?.("LOST THE HOST — TRYING TO REJOIN…");
+      this.scheduleRejoin();
+    } else if (id !== this.me && this.phase !== "closed") {
+      this.handlers.onFeed?.(`${gone} LEFT THE MATCH`, false);
+    }
     // Tell the page too: its own cache of that player's position is the thing
     // that would otherwise be re-used at the next spawn.
     this.handlers.onPeerGone?.(id);
     if (this.isHost) this.sendRoster();
     this.publish();
+    if (this.isHost && this.conns.size === 0 && !this.brokerOpen && this.phase !== "closed") {
+      // The host kept a dead signaling socket only to protect live channels;
+      // now that none are left it can rebuild it.
+      this.scheduleSignalRetry(this.signalFailure ?? classifySignalError({ type: "network" }, this.broker));
+    }
+  }
+
+  /**
+   * Re-dial the host after an established channel closed. Bounded, and only in
+   * the lobby: a played match that loses its link should say so, not pretend a
+   * rejoin is seamless.
+   */
+  private scheduleRejoin() {
+    if (this.isHost || this.phase === "closed" || this.phase === "playing") return;
+    if (this.rejoinTimer || this.conns.has(this.hostId)) return;
+    if (this.rejoinAttempts >= MAX_REJOINS) {
+      this.handlers.onError?.("Lost the connection to the host and could not get back in. Check the room code, then join again.");
+      return;
+    }
+    const delay = nextSignalBackoff(this.rejoinAttempts) ?? 8000;
+    this.rejoinAttempts++;
+    this.rejoinTimer = window.setTimeout(() => {
+      this.rejoinTimer = 0;
+      if (this.phase === "closed" || this.conns.has(this.hostId)) return;
+      this.attempts = 0;
+      this.dialHost();
+    }, delay);
   }
 
   /**
@@ -782,31 +1331,40 @@ export class NetSession {
       console.warn(`[net ${this.code}] channel ${conn.peer} reported an error but is still open`, err);
       return;
     }
-    this.drop(conn.peer);
+    // A dead attempt must never keep the next dial blocked.
+    if (this.pendingDial === conn) this.pendingDial = null;
+    // Only the current channel for that peer may drop it; a superseded retry
+    // failing later must not remove the live one.
+    if (this.conns.get(conn.peer) === conn) this.drop(conn.peer);
+  }
+
+  /** Only the channel the roster currently uses may drop that peer. */
+  private dropIfCurrent(conn: DataConnection) {
+    if (this.conns.get(conn.peer) === conn || this.latest.get(conn.peer) === conn) this.drop(conn.peer);
   }
 
   private send(msg: NetMsg, conn?: DataConnection) {
     const env: Envelope = { ...msg, from: this.me, name: this.name, ink: this.roster.get(this.me)?.ink ?? 0 };
     const one = conn;
     if (one) {
-      if (this.safeSend(one, env) === "dead") this.drop(one.peer);
+      if (this.safeSend(one, env) === "dead") this.dropIfCurrent(one);
       return;
     }
-    const dead: string[] = [];
-    for (const [id, c] of this.conns) if (this.safeSend(c, env) === "dead") dead.push(id);
-    for (const id of dead) this.drop(id);
+    const dead: DataConnection[] = [];
+    for (const c of this.conns.values()) if (this.safeSend(c, env) === "dead") dead.push(c);
+    for (const c of dead) this.dropIfCurrent(c);
   }
 
   /** Hand a message on untouched — the sender's id has to survive the trip. */
   private forward(env: Envelope, conn?: DataConnection) {
     const one = conn;
     if (one) {
-      if (this.safeSend(one, env) === "dead") this.drop(one.peer);
+      if (this.safeSend(one, env) === "dead") this.dropIfCurrent(one);
       return;
     }
-    const dead: string[] = [];
-    for (const [id, c] of this.conns) if (this.safeSend(c, env) === "dead") dead.push(id);
-    for (const id of dead) this.drop(id);
+    const dead: DataConnection[] = [];
+    for (const c of this.conns.values()) if (this.safeSend(c, env) === "dead") dead.push(c);
+    for (const c of dead) this.dropIfCurrent(c);
   }
 
   private sendRoster() {
@@ -827,12 +1385,12 @@ export class NetSession {
 
   /** Host: everybody but the sender. Guest: the host. */
   private relayToOthers(sender: string, env: Envelope) {
-    const dead: string[] = [];
+    const dead: DataConnection[] = [];
     for (const [id, c] of this.conns) {
       if (id === sender) continue;
-      if (this.safeSend(c, env) === "dead") dead.push(id);
+      if (this.safeSend(c, env) === "dead") dead.push(c);
     }
-    for (const id of dead) this.drop(id);
+    for (const c of dead) this.dropIfCurrent(c);
   }
 
   private receive(from: string, raw: unknown) {
@@ -853,10 +1411,19 @@ export class NetSession {
         this.roster.clear();
         this.ready.clear();
         for (const r of list) {
-          this.roster.set(r.id, { name: r.name, ink: r.ink });
+          if (!r || typeof r.id !== "string") continue;
+          this.roster.set(r.id, { name: String(r.name ?? "PLAYER"), ink: Number(r.ink) || 0 });
           this.ready.set(r.id, r.ready === true);
         }
-        if (!this.roster.has(this.me)) this.roster.set(this.me, { name: this.name, ink: 1 });
+        // Membership is the host's confirmation, not our own optimism. Until
+        // the host lists us we are still joining: IN THE ROOM stays empty.
+        const confirmed = this.me !== "" && this.roster.has(this.me);
+        if (confirmed && !this.joinedRoom) {
+          this.joinedRoom = true;
+          this.rejoinAttempts = 0;
+          this.phase = this.phase === "playing" ? "playing" : "lobby";
+          this.handlers.onStatus?.("IN THE ROOM — READY WHEN YOU ARE");
+        }
         this.publish();
         return;
       }
@@ -991,6 +1558,7 @@ export class NetSession {
           this.config = normalizeMatchConfig(env.config);
           this.handlers.onConfig?.(this.config);
         }
+        if (!this.isHost) this.joinedRoom = true;
         this.phase = "playing";
         this.handlers.onStart?.(this.config);
         break;
@@ -1085,6 +1653,8 @@ export class NetSession {
   /** Mark ourselves ready / not ready. The host is always ready. */
   setReady(ready: boolean) {
     if (this.isHost) return;
+    // A ready flag is only meaningful once the host has confirmed membership.
+    if (!this.joinedRoom || !this.conns.has(this.hostId)) return;
     this.ready.set(this.me, ready);
     this.send({ t: "ready", ready });
     this.publish();
@@ -1166,6 +1736,129 @@ export class NetSession {
     this.handlers.onLatency?.(this.rewindMs);
   }
 
+  /* --------------------------------- status --------------------------------- */
+
+  /** Broker state for the lobby — never inferred from the local roster. */
+  get signaling(): SignalState {
+    return this.signalState;
+  }
+
+  /**
+   * Are we a confirmed member of the room?
+   *
+   * Host: the broker accepted the host id (or people are actually connected).
+   * Guest: the host's roster listed us. This is deliberately stricter than
+   * "we created a Peer" and "we opened a data channel" — the two states that
+   * used to make IN THE ROOM (1) appear on a room that could not accept guests.
+   */
+  get joined(): boolean {
+    if (this.isHost) return this.brokerOpen || this.conns.size > 0 || this.phase === "playing";
+    return this.joinedRoom;
+  }
+
+  /** The broker host/port/path, for the lobby's diagnostics line. */
+  get brokerLabel(): string {
+    return describeBroker(this.broker);
+  }
+
+  /**
+   * Everything a bug report needs, and nothing a bug report must not have.
+   * No username, credential, token or SDP is included.
+   */
+  diagnostics(): NetDiagnostics {
+    const now = Date.now();
+    return {
+      code: this.code,
+      role: this.isHost ? "host" : "guest",
+      broker: describeBroker(this.broker),
+      signaling: this.signalState,
+      signalingAttempts: this.signalAttempts,
+      joined: this.joined,
+      relay: this.plan.relay,
+      relayIssue: this.plan.issue ?? "none",
+      relayNote: this.plan.note ?? "",
+      relayExpiresInMs: this.plan.expiresAt ? Math.max(0, this.plan.expiresAt - now) : null,
+      iceServers: describeIce(this.plan.servers),
+      browserOnline: typeof navigator === "undefined" ? true : navigator.onLine,
+      peers: [...this.conns.entries()].map(([id, conn]) => ({
+        id,
+        open: Boolean(conn.open),
+        ice: conn.peerConnection?.iceConnectionState ?? "unknown",
+        connection: conn.peerConnection?.connectionState ?? "unknown",
+        candidates: this.connTally.get(conn) ?? emptyTally(),
+        path: this.connPair.get(conn) ?? "not measured",
+      })),
+    };
+  }
+
+  /* ------------------------------ page lifecycle ----------------------------- */
+
+  /**
+   * The tab is visible again (or came back from bfcache).
+   *
+   * Browsers throttle timers in hidden tabs, and a sleeping Windows laptop or a
+   * backgrounded phone can drop the broker socket entirely. Re-check signaling
+   * and redial only if there is no live channel. Never create a new room: the
+   * code and the lease belong to the session, not to a timer.
+   */
+  resume() {
+    if (this.phase === "closed") return;
+    if (!this.brokerOpen) {
+      if (this.signalState === "lost") {
+        // An exhausted cycle may be sitting on a wedged socket (never open,
+        // never disconnected). A visible tab is a user action, so start one
+        // fresh bounded cycle — but only when nothing live would be destroyed.
+        this.signalAttempts = 0;
+        if (this.conns.size === 0) {
+          this.destroyPeer();
+          this.createPeer();
+          void this.refreshIdleIce();
+          return;
+        }
+      }
+      if (this.signalTimer) return;
+      if (!this.peer || this.peer.destroyed) {
+        if (this.conns.size === 0) this.createPeer();
+      } else if (this.peer.open) {
+        this.onBrokerOpen(this.peer.id ?? this.me);
+      } else if (this.peer.disconnected) {
+        this.scheduleSignalRetry(classifySignalError({ type: "disconnected" }, this.broker));
+      } else {
+        this.armSignalWatchdog();
+      }
+    } else if (!this.isHost && !this.conns.has(this.hostId) && !this.pendingDial && this.phase !== "playing") {
+      this.dialHost();
+    }
+    void this.refreshIdleIce();
+  }
+
+  /** Rebuild signaling with fresh TURN credentials while nothing is connected. */
+  private async refreshIdleIce() {
+    if (this.phase === "closed" || this.conns.size > 0 || this.pendingDial) return;
+    const expiresAt = this.plan.expiresAt;
+    if (!expiresAt || expiresAt - Date.now() > TURN_REFRESH_SKEW_MS) return;
+    const before = describeIce(this.plan.servers);
+    const plan = await resolveIcePlan(true);
+    if (this.isClosed) return;
+    this.plan = plan;
+    this.iceRefreshUsed = false;
+    if (plan.relay === "none" || describeIce(plan.servers) === before) return;
+    console.info(`[net ${this.code}] refreshed idle ICE: ${describeIce(plan.servers)} · relay from ${plan.relay}`);
+    if (this.conns.size > 0) return;
+    this.destroyPeer();
+    this.signalAttempts = 0;
+    this.createPeer();
+  }
+
+  /**
+   * The page is really going away (a reload or navigation, not bfcache).
+   * Best-effort goodbye, then a deterministic teardown. The room lease is kept
+   * by the page, so a reload can resume the same code.
+   */
+  suspend() {
+    this.close();
+  }
+
   /* --------------------------------- roster --------------------------------- */
 
   getPlayers(): NetPlayer[] {
@@ -1174,7 +1867,13 @@ export class NetSession {
 
   private publish() {
     const list: NetPlayer[] = [];
-    for (const [id, info] of this.roster) list.push(this.row(id, info));
+    // A guest has no confirmed membership until the host's roster says so.
+    if (this.isHost || this.joinedRoom) {
+      for (const [id, info] of this.roster) {
+        if (id === this.me && !this.joined) continue; // not reachable yet
+        list.push(this.row(id, info));
+      }
+    }
     list.sort((a, b) => Number(b.isHost) - Number(a.isHost) || b.kills - a.kills);
     this.snapshot = list;
     this.handlers.onChange?.();
@@ -1196,3 +1895,26 @@ export class NetSession {
     };
   }
 }
+
+export type NetDiagnostics = {
+  code: string;
+  role: "host" | "guest";
+  broker: string;
+  signaling: SignalState;
+  signalingAttempts: number;
+  joined: boolean;
+  relay: IcePlan["relay"];
+  relayIssue: IcePlanIssue;
+  relayNote: string;
+  relayExpiresInMs: number | null;
+  iceServers: string;
+  browserOnline: boolean;
+  peers: {
+    id: string;
+    open: boolean;
+    ice: string;
+    connection: string;
+    candidates: CandidateTally;
+    path: string;
+  }[];
+};

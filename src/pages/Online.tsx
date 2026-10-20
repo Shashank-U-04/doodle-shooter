@@ -26,7 +26,8 @@ import {
   type MapId,
   type MatchConfig,
 } from "@/game/maps";
-import { NetSession, makeRoomCode, type NetPlayer } from "@/game/net";
+import { NetSession, type NetPlayer, type SignalState } from "@/game/net";
+import { clearRoomLease, codeForCreate, isValidRoomCode, normalizeRoomCode, writeRoomLease } from "@/game/room";
 
 const KILLS_TO_WIN = 15;
 const INK_LIST = Object.values(INK_HEX).filter((v): v is string => typeof v === "string");
@@ -42,6 +43,8 @@ export default function Online() {
   const [players, setPlayers] = useState<NetPlayer[]>([]);
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [signal, setSignal] = useState<SignalState>("idle");
+  const [signalDetail, setSignalDetail] = useState("");
   const [phase, setPhase] = useState<"lobby" | "playing">("lobby");
   const [copied, setCopied] = useState(false);
   const [match, setMatch] = useState<MatchConfig>(() =>
@@ -60,10 +63,21 @@ export default function Online() {
   const wire = useCallback((s: NetSession) => {
     s.setHandlers({
       onStatus: (t) => setStatus(t),
-      onError: (t) => setError(t),
+      onError: (t) => {
+        setError(t);
+        // Safe metadata only: broker endpoint, relay source, candidate counts.
+        console.warn(`[net ${s.code}] ${t}`, s.diagnostics());
+      },
       onFeed: (t) => setStatus(t),
       onChange: () => setPlayers(s.getPlayers()),
       onConfig: (cfg) => setMatch(cfg),
+      onSignal: (state, detail) => {
+        setSignal(state);
+        setSignalDetail(detail ?? "");
+        // A recovered broker makes the previous "unreachable" error stale; an
+        // ICE/TURN error is not cleared by this, because signaling never left.
+        if (state === "open") setError(null);
+      },
     });
   }, []);
 
@@ -74,20 +88,26 @@ export default function Online() {
       return;
     }
     localStorage.setItem("dd_name", who);
-    const s = new NetSession(makeRoomCode(), who, true, match);
+    // Reuse this tab's live room instead of drawing a new code on every
+    // mount/reload. A new code comes only after LEAVE (which clears the lease)
+    // or after the lease expires.
+    const lease = codeForCreate(sessionStorage, Date.now());
+    const s = new NetSession(lease.code, who, true, match);
+    writeRoomLease(sessionStorage, { code: s.code, isHost: true, createdAt: Date.now() });
     wire(s);
     s.connect();
     ref.current = s;
     setSession(s);
     setMode("host");
     setError(null);
+    setStatus(lease.resumed ? `REOPENING ROOM ${s.code}…` : "OPENING YOUR ROOM…");
   }, [match, name, wire]);
 
   const join = useCallback(
     (codeArg?: string) => {
-      const code = (codeArg ?? codeInput).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
-      if (code.length < 3) {
-        setError("Enter the code your friend sent you.");
+      const code = normalizeRoomCode(codeArg ?? codeInput);
+      if (!isValidRoomCode(code)) {
+        setError("Enter the 4-letter code your friend sent you.");
         return;
       }
       const who = name.trim().slice(0, 16);
@@ -97,6 +117,7 @@ export default function Online() {
       }
       localStorage.setItem("dd_name", who);
       const s = new NetSession(code, who, false, match);
+      writeRoomLease(sessionStorage, { code: s.code, isHost: false, createdAt: Date.now() });
       wire(s);
       s.connect();
       ref.current = s;
@@ -110,6 +131,9 @@ export default function Online() {
   const leave = useCallback(() => {
     ref.current?.close();
     ref.current = null;
+    // Leaving is the explicit way to replace a room: the next CREATE is free
+    // to draw a new code.
+    clearRoomLease(sessionStorage);
     setSession(null);
     setPlayers([]);
     setStatus("");
@@ -121,6 +145,30 @@ export default function Online() {
 
   // a session must never outlive the page that owns it
   useEffect(() => () => ref.current?.close(), []);
+
+  // Tab visibility and the page lifecycle are not room lifecycles. Switching
+  // tabs must not create a new room or destroy a working peer; coming back
+  // only re-checks signaling. A real unload (not bfcache) does tear down the
+  // transport, and the lease lets the reload resume the same code.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (!document.hidden) ref.current?.resume();
+    };
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (!event.persisted) ref.current?.suspend();
+    };
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) ref.current?.resume();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
+    };
+  }, []);
 
   // Arriving from /setup with ?create=1 or ?code=XXXX: open or join the room
   // once. The timer keeps React StrictMode's mount → cleanup → mount cycle from
@@ -380,6 +428,12 @@ export default function Online() {
               </div>
 
               <div className="dd-netstatus">{status}</div>
+              {signal !== "open" && signal !== "idle" && (
+                <div className="dd-netstatus">
+                  SIGNALING {signal.toUpperCase()}
+                  {signalDetail ? ` — ${signalDetail}` : ""}
+                </div>
+              )}
               {error && <div className="dd-neterr">{error}</div>}
 
               <div className="mainbtns">
@@ -387,23 +441,30 @@ export default function Online() {
                   <button
                     type="button"
                     className="start"
-                    disabled={!allReady}
+                    disabled={!allReady || !session.joined}
                     onClick={() => session.beginMatch()}
                   >
                     ENTER ARENA
                     <i>
-                      {!allReady
-                        ? `${readyGuests}/${guests.length} friends ready — waiting on the rest`
-                        : guests.length > 0
-                          ? `${guests.length} friend${guests.length === 1 ? "" : "s"} ready · ${info.name.toLowerCase()}`
-                          : "waiting for a friend… you can still scope the map"}
+                      {!session.joined
+                        ? "this room is not reachable on the signaling broker yet"
+                        : !allReady
+                          ? `${readyGuests}/${guests.length} friends ready — waiting on the rest`
+                          : guests.length > 0
+                            ? `${guests.length} friend${guests.length === 1 ? "" : "s"} ready · ${info.name.toLowerCase()}`
+                            : "waiting for a friend… you can still scope the map"}
                     </i>
                   </button>
                 ) : (
                   <>
-                    <button type="button" className="start" onClick={() => session.setReady(!me?.ready)}>
-                      {me?.ready ? "READY — TAP TO UNREADY" : "I'M READY"}
-                      <i>the host starts when everyone is ready</i>
+                    <button
+                      type="button"
+                      className="start"
+                      disabled={!session.joined}
+                      onClick={() => session.setReady(!me?.ready)}
+                    >
+                      {!session.joined ? "JOINING…" : me?.ready ? "READY — TAP TO UNREADY" : "I'M READY"}
+                      <i>{session.joined ? "the host starts when everyone is ready" : "waiting for the host to confirm this seat"}</i>
                     </button>
                     <button type="button" className="start" disabled>
                       WAITING FOR HOST<i>the room starts when they do</i>

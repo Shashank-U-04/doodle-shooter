@@ -86,6 +86,52 @@ packet budget is what sets the ceiling.
 > `localhost`). The first connection can take a couple of seconds while the two
 > browsers negotiate, and each player needs a modern desktop browser.
 
+#### The signaling broker (finding each other)
+
+The broker is **PeerJS**: the host registers `ds-pvp-<CODE>` with it, the guest
+asks it for that id, and the two browsers exchange one offer/answer and their
+ICE candidates. It is not involved in gameplay. Discovery therefore fails if
+the broker is unreachable, even though the match itself would have been
+peer-to-peer — and that failure is reported separately from an ICE/TURN failure.
+
+The default broker is the public PeerJS cloud endpoint,
+`wss://0.peerjs.com:443/`. The lobby logs the endpoint it is using and shows a
+`SIGNALING …` line whenever it is not connected. To use your own broker (for
+isolation or because the cloud broker is blocked on a network), set these in
+the **frontend** build:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VITE_PEER_HOST` | `0.peerjs.com` | PeerServer hostname |
+| `VITE_PEER_PORT` | `443` | port |
+| `VITE_PEER_PATH` | `/` | server path (normalised to `/name/`) |
+| `VITE_PEER_KEY` | `peerjs` | server key |
+| `VITE_PEER_SECURE` | `1` | `0` uses `ws://` (only valid on an `http:` page) |
+
+A self-hosted broker is a small Node `PeerServer` with TLS in front of it. It
+must be reachable over **WebSockets**, not just HTTP. A broker on `ws://` cannot
+be used from an `https://` game — the browser blocks it as mixed content, which
+the app now reports explicitly instead of waiting for a generic timeout.
+
+Signaling recovery is bounded: five attempts at 0.5s/1s/2s/4s/8s, then the
+lobby stops and says the broker is unreachable. A hidden tab that becomes
+visible again starts one fresh bounded cycle; it never creates a new room, and
+it never tears down a data channel that is still carrying a match.
+
+#### Room codes stay put
+
+A room code belongs to the room, not to a render. It is drawn once when the
+room is created and stored in this tab's `sessionStorage` (not shared between
+tabs). Reloading, returning from bfcache or switching tabs resumes the same
+code for up to six hours. `LEAVE ROOM` clears it, so the next `CREATE MATCH` is
+the only thing that draws a new code. An expired or deliberately replaced room
+is the only other way the code changes.
+
+The lobby's `IN THE ROOM` list is confirmed membership: the host appears only
+after the broker accepts the host id, and a guest appears only after the host's
+roster lists it. A guest that opened a data channel but was never confirmed is
+shown as `JOINING…`, not as a player.
+
 #### Playing across two networks
 
 A direct browser-to-browser route only exists if at least one of you can be
@@ -99,10 +145,22 @@ The relay is configured **on the server**, not in the client bundle. A Convex
 HTTP action mints a short-lived credential per match
 (`src/convex/turn.ts`, `GET <deployment>.convex.site/turn`), so the relay's
 shared secret never ships to the browser and can be rotated without rebuilding
-the frontend. Any coturn-compatible relay that supports the TURN REST shared
-secret (`use-auth-secret`) works — a self-hosted coturn, or a managed relay that
-hands you a shared secret. Providers that only issue an API key (Cloudflare
-Realtime TURN, Metered) are still usable through `VITE_TURN_CREDENTIALS_URL`.
+the frontend. The endpoint uses the standard TURN REST scheme
+(`username = <unix expiry>:<label>`, `credential = base64(HMAC-SHA1(secret, username))`),
+which coturn's `use-auth-secret` accepts.
+
+A provider that instead issues an **API key** and expects you to call its own
+API (Cloudflare Realtime/Calls TURN, Metered's dashboard API, Twilio) is not a
+TURN REST shared-secret server. Do not put that key in `TURN_SECRET`. Either run
+coturn/a provider that supports `use-auth-secret`, or expose a small
+server-side proxy that calls the provider and returns `{ iceServers }`, then
+point `VITE_TURN_CREDENTIALS_URL` at it. That URL is public to the browser, so
+the proxy must be the thing holding the provider key, not the client.
+
+Credentials are cached only until they are about to expire (the endpoint's
+`expiresAt`/`ttl`). Expired credentials are re-fetched when a tab becomes
+visible while idle, and a relay rejection triggers one refresh-and-retry before
+the player is shown an error.
 
 Set these on the **Convex deployment** (dashboard → Settings → Environment
 Variables, or `bunx convex env set`):
@@ -133,6 +191,30 @@ unreachable, relay gathered but unable to carry the session) instead of
 blaming the player's network. Set `VITE_NET_DEBUG=1` to also log gathering
 state, every candidate type, and the selected candidate pair — `net.ts` never
 logs a credential or a username.
+
+#### Diagnosing an online failure
+
+The lobby now separates the three layers that used to share one vague message.
+Each row below is a different root cause with a different fix; configuring TURN
+will not fix a broker that cannot be reached.
+
+| What the lobby shows | Layer | What it means | Where to look |
+| --- | --- | --- | --- |
+| `SIGNALING RETRYING` / `LOST`, `broker is unreachable` | Broker | The WebSocket to the signaling server failed or was closed and every bounded retry failed. The room code is fine; nobody can discover it. | Broker hostname/port/path, `VITE_PEER_SECURE` vs page protocol, a firewall/proxy that blocks WebSockets, a self-hosted PeerServer behind TLS. |
+| `room code is already held` | Broker | Another peer (often an older tab) still owns `ds-pvp-<CODE>`. | `LEAVE ROOM` then create again, which draws a new code. |
+| `host is not reachable on the signaling broker` | Broker/room | The broker answered, but no host is registered under that code: the host left, its broker socket dropped, or the code is stale. | Host lobby's `SIGNALING` line; host may need to leave and recreate the room. |
+| `no relay is configured` + `TURN_URLS` | TURN config | `/turn` answered `configured: false`. | Set `TURN_URLS` + `TURN_SECRET` on the **Convex** deployment, then curl `/turn`. |
+| `relay credential endpoint could not be reached` | TURN/frontend | The browser could not fetch `/turn` (wrong site URL, CORS, endpoint down, or a 4s timeout). | `VITE_CONVEX_SITE_URL`, `TURN_ALLOWED_ORIGINS`, the Convex site deployment. Rebuild Vercel after changing client env. |
+| `relay credentials had expired` / `relay rejected its credentials` | TURN credentials | The relay refused the username/credential pair. | `TURN_SECRET` must be the relay's shared secret, `TURN_URLS` its real `turn:`/`turns:` URLs; check the deployment clock. |
+| `relay is configured but did not answer` | TURN reachability | No relay candidate was gathered from this network. | UDP may be blocked; include `turns:<host>:443?transport=tcp` and verify the provider allows TURN over TCP/TLS. |
+| `relay answered but could not carry the session` | TURN/ICE | A relay candidate existed, but the selected pair still failed. | Provider permissions (data channels), or a broken relay; compare with a different provider/network. |
+| `No network route could be gathered` | Browser/network | Even host candidates failed. | Device offline, DNS, or a WebRTC-policy extension/enterprise policy. |
+
+Diagnostics are deliberately safe to paste: the net layer logs the broker
+endpoint, relay source and expiry, candidate-type counts, ICE states and the
+selected candidate-pair type. It never logs a TURN username/credential, the
+shared secret, or a room token. Use `VITE_NET_DEBUG=1` to see per-candidate and
+per-connection logging in production builds.
 
 ### The studio theme
 
@@ -191,7 +273,8 @@ The app expects `VITE_CONVEX_URL` and a Convex deployment (see [Environment](#en
 | --- | --- | --- |
 | `VITE_CONVEX_URL` | Client | Convex backend URL used by the React client |
 | `CONVEX_DEPLOYMENT` | Client env | Ties the client to a specific Convex deployment |
-| `VITE_CONVEX_SITE_URL` | Client | Convex HTTP-actions origin (`https://<deployment>.convex.site`), where `/turn` mints relay credentials. Derived from `VITE_CONVEX_URL` if omitted |
+| `VITE_CONVEX_SITE_URL` | Client | Convex HTTP-actions origin (`https://<deployment>.convex.site`), where `/turn` mints relay credentials. Derived from `VITE_CONVEX_URL` if omitted; set it explicitly in Vercel |
+| `VITE_PEER_HOST`, `VITE_PEER_PORT`, `VITE_PEER_PATH`, `VITE_PEER_KEY`, `VITE_PEER_SECURE` | Client | Optional self-hosted signaling broker. Unset means the public PeerJS cloud broker |
 | `TURN_URLS` | Convex dashboard | Relay URLs, comma separated. Include a `turns:` entry on port 443 |
 | `TURN_SECRET` | Convex dashboard | Relay shared secret used to mint ephemeral credentials. Server-side only |
 | `TURN_TTL`, `TURN_ALLOWED_ORIGINS` | Convex dashboard | Optional credential lifetime (seconds) and origin allow-list |
@@ -241,13 +324,39 @@ npx convex env set TURN_SECRET "<the relay's static-auth-secret>"
 Verify it without a browser:
 
 ```bash
+# 1. The endpoint itself (no Origin header).
 curl -s https://<deployment>.convex.site/turn
 # { "configured": true, "iceServers": [ … ], "ttl": 3600, "expiresAt": … }
 # or { "configured": false, "reason": "TURN_URLS is not set …" }
+
+# 2. CORS from the real game origin (the browser sends this Origin).
+curl -si -H 'Origin: https://yourgame.vercel.app' https://<deployment>.convex.site/turn \
+  | grep -i 'HTTP/\|access-control-allow-origin\|cache-control'
+# Expect 200 + Access-Control-Allow-Origin: https://yourgame.vercel.app
+# and Cache-Control: no-store. No ACAO header = TURN_ALLOWED_ORIGINS blocks it.
+
+# 3. The signaling broker must accept a WebSocket upgrade from the game host.
+#    A 404/200 HTTP answer does not prove WebSockets work through a proxy.
+#    In devtools › Network › WS, the lobby connection must stay open.
 ```
+
+Do not print or paste the TURN credential response into an issue: it contains a
+short-lived relay credential. `configured: true` proves the endpoint can mint a
+credential, **not** that a relay candidate was gathered. Only a real match that
+selects a `relay/…` candidate pair proves the relay works (set
+`VITE_NET_DEBUG=1` and look for `TURN relay is carrying this match`).
 
 A `configured: false` answer is exactly what the game shows the player when a
 match cannot find a direct route.
+
+### Frontend environment changes need a redeploy
+
+Vite inlines `VITE_*` values at **build** time. Editing them in Vercel does not
+change an existing deployment: trigger a new deployment (Redeploy without build
+cache) and confirm the bundle was rebuilt. `VITE_CONVEX_SITE_URL` missing from
+the build is reported by the lobby as *“this build has no Convex site URL”*,
+which is a different failure from a deployed `/turn` returning
+`configured: false`.
 
 ### Custom domain
 
@@ -262,6 +371,7 @@ In Vercel → Project → **Settings → Domains**, add your domain and follow t
 | `bun run preview` | Serve the production build locally |
 | `bun run lint` | ESLint |
 | `bun run format` | Prettier |
+| `bun scripts/check-net.ts` | Headless online-play checks: TURN credential format, URL parsing, ICE filtering/failure classes, signaling retry/classification, TURN CORS, room-lease stability |
 
 ## Controls Reference
 

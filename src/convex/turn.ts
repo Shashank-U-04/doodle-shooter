@@ -134,24 +134,56 @@ export function buildTurnPayload(opts: {
  * origins. Unset means `*`, which is defensible here: the response is a
  * deliberately public, expiring relay credential, exactly like the open-relay
  * endpoints it replaces. It is never allowed to be cached.
+ *
+ * A configured origin that is *not* on the list gets no `Access-Control-Allow-
+ * Origin` header at all. The old code echoed `configured[0]` in that case: a
+ * blocked browser request looked like a normal 200 in logs, so the only visible
+ * symptom was "no relay" in the game.
  */
-function corsHeaders(origin: string | null): Record<string, string> {
-  const configured = (process.env.TURN_ALLOWED_ORIGINS ?? "")
+/** Origins are schemes + hosts; a trailing slash or trailing space is a typo. */
+const cleanOrigin = (o: string) => o.trim().replace(/\/+$/, "").toLowerCase();
+
+export function allowedOrigins(raw: string | undefined): string[] {
+  return (raw ?? "")
     .split(",")
-    .map((o) => o.trim())
+    .map(cleanOrigin)
     .filter(Boolean);
-  const allowed = configured.length === 0 ? "*" : origin && configured.includes(origin) ? origin : configured[0];
-  return {
-    "Access-Control-Allow-Origin": allowed,
+}
+
+export function originAllowed(origin: string | null, raw?: string): boolean {
+  const configured = allowedOrigins(raw);
+  if (configured.length === 0) return true;
+  return Boolean(origin && configured.includes(cleanOrigin(origin)));
+}
+
+export function corsHeadersFor(origin: string | null, raw?: string): Record<string, string> {
+  const configured = allowedOrigins(raw);
+  const headers: Record<string, string> = {
     Vary: "Origin",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Max-Age": "600",
     "Cache-Control": "no-store",
   };
+  if (configured.length === 0) headers["Access-Control-Allow-Origin"] = "*";
+  else if (origin && configured.includes(cleanOrigin(origin))) headers["Access-Control-Allow-Origin"] = origin;
+  return headers;
+}
+
+function corsHeaders(origin: string | null): Record<string, string> {
+  return corsHeadersFor(origin, process.env.TURN_ALLOWED_ORIGINS);
 }
 
 export const turnRequest = httpAction(async (_ctx, request) => {
+  const origin = request.headers.get("Origin");
+  const allowed = originAllowed(origin, process.env.TURN_ALLOWED_ORIGINS);
+  if (!allowed) {
+    console.warn(`[turn] refused origin ${origin ?? "(none)"} (TURN_ALLOWED_ORIGINS does not list it)`);
+    return new Response(JSON.stringify({ configured: false, reason: "this origin is not allowed to mint TURN credentials" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json", ...corsHeaders(origin) },
+    });
+  }
   const payload = buildTurnPayload({
     urls: process.env.TURN_URLS,
     secret: process.env.TURN_SECRET,
@@ -161,10 +193,12 @@ export const turnRequest = httpAction(async (_ctx, request) => {
   if (!payload.configured) console.warn(`[turn] relay unavailable: ${payload.reason}`);
   return new Response(JSON.stringify(payload), {
     status: 200,
-    headers: { "Content-Type": "application/json", ...corsHeaders(request.headers.get("Origin")) },
+    headers: { "Content-Type": "application/json", ...corsHeaders(origin) },
   });
 });
 
 export const turnPreflight = httpAction(async (_ctx, request) => {
-  return new Response(null, { status: 204, headers: corsHeaders(request.headers.get("Origin")) });
+  const origin = request.headers.get("Origin");
+  const allowed = originAllowed(origin, process.env.TURN_ALLOWED_ORIGINS);
+  return new Response(null, { status: allowed ? 204 : 403, headers: corsHeaders(origin) });
 });
