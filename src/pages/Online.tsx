@@ -27,6 +27,8 @@ import {
   type MatchConfig,
 } from "@/game/maps";
 import { NetSession, type NetPlayer, type SignalState } from "@/game/net";
+import { ColyseusSession, resumableSeat } from "@/game/colyseus";
+import { NET_TRANSPORT, type MatchSession } from "@/game/transport";
 import { clearRoomLease, codeForCreate, isValidRoomCode, normalizeRoomCode, writeRoomLease } from "@/game/room";
 
 const KILLS_TO_WIN = 15;
@@ -36,7 +38,7 @@ export default function Online() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const setup = useMemo(() => readSetup(), []);
-  const [session, setSession] = useState<NetSession | null>(null);
+  const [session, setSession] = useState<MatchSession | null>(null);
   const [mode, setMode] = useState<"menu" | "host" | "join">("menu");
   const [name, setName] = useState(() => setup.name || localStorage.getItem("dd_name") || "");
   const [codeInput, setCodeInput] = useState("");
@@ -53,14 +55,14 @@ export default function Online() {
       grapple: params.get("grapple") === null ? setup.grapple : params.get("grapple") === "1",
     }),
   );
-  const ref = useRef<NetSession | null>(null);
+  const ref = useRef<MatchSession | null>(null);
 
   const remember = useCallback((v: string) => {
     setName(v);
     localStorage.setItem("dd_name", v);
   }, []);
 
-  const wire = useCallback((s: NetSession) => {
+  const wire = useCallback((s: MatchSession) => {
     s.setHandlers({
       onStatus: (t) => setStatus(t),
       onError: (t) => {
@@ -88,19 +90,27 @@ export default function Online() {
       return;
     }
     localStorage.setItem("dd_name", who);
-    // Reuse this tab's live room instead of drawing a new code on every
-    // mount/reload. A new code comes only after LEAVE (which clears the lease)
-    // or after the lease expires.
-    const lease = codeForCreate(sessionStorage, Date.now());
-    const s = new NetSession(lease.code, who, true, match);
-    writeRoomLease(sessionStorage, { code: s.code, isHost: true, createdAt: Date.now() });
+    let s: MatchSession;
+    let resumed = false;
+    if (NET_TRANSPORT === "colyseus") {
+      // The server draws the code; the session keeps its own reconnection seat.
+      s = new ColyseusSession("", who, true, match);
+    } else {
+      // Reuse this tab's live room instead of drawing a new code on every
+      // mount/reload. A new code comes only after LEAVE (which clears the lease)
+      // or after the lease expires.
+      const lease = codeForCreate(sessionStorage, Date.now());
+      resumed = lease.resumed;
+      s = new NetSession(lease.code, who, true, match);
+      writeRoomLease(sessionStorage, { code: s.code, isHost: true, createdAt: Date.now() });
+    }
     wire(s);
     s.connect();
     ref.current = s;
     setSession(s);
     setMode("host");
     setError(null);
-    setStatus(lease.resumed ? `REOPENING ROOM ${s.code}…` : "OPENING YOUR ROOM…");
+    setStatus(resumed ? `REOPENING ROOM ${s.code}…` : "OPENING YOUR ROOM…");
   }, [match, name, wire]);
 
   const join = useCallback(
@@ -116,8 +126,13 @@ export default function Online() {
         return;
       }
       localStorage.setItem("dd_name", who);
-      const s = new NetSession(code, who, false, match);
-      writeRoomLease(sessionStorage, { code: s.code, isHost: false, createdAt: Date.now() });
+      let s: MatchSession;
+      if (NET_TRANSPORT === "colyseus") {
+        s = new ColyseusSession(code, who, false, match);
+      } else {
+        s = new NetSession(code, who, false, match);
+        writeRoomLease(sessionStorage, { code: s.code, isHost: false, createdAt: Date.now() });
+      }
       wire(s);
       s.connect();
       ref.current = s;
@@ -126,6 +141,25 @@ export default function Online() {
       setError(null);
     },
     [codeInput, match, name, wire],
+  );
+
+  /**
+   * Colyseus only: take back the seat this tab held before a reload. Never
+   * creates or joins anything new; if the hold ran out, the lobby says so.
+   */
+  const resume = useCallback(
+    (seat: { code: string; isHost: boolean }) => {
+      const who = name.trim().slice(0, 16) || (seat.isHost ? "HOST" : "GUEST");
+      const s = new ColyseusSession(seat.code, who, seat.isHost, match, { resumeOnly: true });
+      wire(s);
+      s.connect();
+      ref.current = s;
+      setSession(s);
+      setMode(seat.isHost ? "host" : "join");
+      setError(null);
+      setStatus(`REJOINING MATCH ${seat.code}…`);
+    },
+    [match, name, wire],
   );
 
   const leave = useCallback(() => {
@@ -173,13 +207,18 @@ export default function Online() {
   // Arriving from /setup with ?create=1 or ?code=XXXX: open or join the room
   // once. The timer keeps React StrictMode's mount → cleanup → mount cycle from
   // opening a room that the cleanup has already torn down.
+  // With the Colyseus transport, a reload also resumes a held seat on its own:
+  // a guest's ?code= has been consumed by Convex Auth by then (see colyseus.ts).
   useEffect(() => {
     const wantsCreate = params.get("create") === "1";
     const wantsCode = params.get("code");
-    if (!wantsCreate && !wantsCode) return;
+    const held =
+      NET_TRANSPORT === "colyseus" && !wantsCreate && !wantsCode ? resumableSeat(sessionStorage, Date.now()) : null;
+    if (!wantsCreate && !wantsCode && !held) return;
     const t = window.setTimeout(() => {
       if (wantsCreate) create();
       else if (wantsCode) join(wantsCode);
+      else if (held) resume(held);
     }, 0);
     return () => window.clearTimeout(t);
     // mount-only: these are the initial URL choices
@@ -224,6 +263,9 @@ export default function Online() {
   const readyGuests = guests.filter((p) => p.ready).length;
   const allReady = guests.every((p) => p.ready);
   const me = players.find((p) => p.isMe);
+  // The match server can hand the room to a guest when the host leaves for
+  // good; PeerJS never marks a guest as host, so this is `mode === "host"` there.
+  const hosting = mode === "host" || Boolean(me?.isHost);
   const info = mapInfo(match.map);
 
   return (
@@ -297,7 +339,10 @@ export default function Online() {
                     <b>{KILLS_TO_WIN}</b> kills
                   </div>
                   <div>
-                    <b>note</b> play is peer-to-peer, straight between your browsers
+                    <b>note</b>{" "}
+                    {NET_TRANSPORT === "colyseus"
+                      ? "the lobby runs on the match server"
+                      : "play is peer-to-peer, straight between your browsers"}
                   </div>
                 </div>
               </div>
@@ -350,11 +395,11 @@ export default function Online() {
 
           {session && (mode === "host" || mode === "join") && (
             <>
-              <h1>{mode === "host" ? "MATCH CODE" : `CODE ${session.code}`}</h1>
+              <h1>{hosting ? "MATCH CODE" : `CODE ${session.code}`}</h1>
               <h2>
                 {info.name.toLowerCase()} · grappling hook {match.grapple ? "on" : "off"}
               </h2>
-              {mode === "host" && (
+              {hosting && (
                 <>
                   <div className="dd-netcode">{session.code}</div>
                   <div className="mainbtns">
@@ -372,10 +417,10 @@ export default function Online() {
                   <h2>send it to your friend, then start</h2>
                 </>
               )}
-              {mode === "join" && <h2>connecting to the host…</h2>}
+              {!hosting && <h2>connecting to the host…</h2>}
 
               {/* the host sets the battlefield and the rule; guests read them */}
-              {mode === "host" ? (
+              {hosting ? (
                 <>
                   <div className="mapgrid small">
                     {MAPS.map((m) => (
@@ -437,7 +482,7 @@ export default function Online() {
               {error && <div className="dd-neterr">{error}</div>}
 
               <div className="mainbtns">
-                {mode === "host" ? (
+                {hosting ? (
                   <button
                     type="button"
                     className="start"
@@ -487,7 +532,7 @@ export default function Online() {
  * the arena
  * ======================================================================== */
 
-function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => void }) {
+function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => void }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<GameHandle | null>(null);
   const remotes = useRef(new Map<string, NetPlayerState>());

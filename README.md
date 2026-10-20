@@ -216,6 +216,32 @@ selected candidate-pair type. It never logs a TURN username/credential, the
 shared secret, or a room token. Use `VITE_NET_DEBUG=1` to see per-candidate and
 per-connection logging in production builds.
 
+### Colyseus lobby (opt-in preview)
+
+The multiplayer migration to [Colyseus](server/README.md) is in progress (plan:
+[docs/colyseus-migration.md](docs/colyseus-migration.md)). **PeerJS remains the
+default.** A build with `VITE_NET_TRANSPORT=colyseus` runs the lobby on the match
+server instead: the server draws the room code, owns the roster, ready flags,
+map and grapple rule, the four-player limit and the decision to start, and holds
+a dropped player's seat for 30 seconds so a reload resumes it. Gameplay sync is
+not on Colyseus yet — in that build the arena loads with no opponents and says so.
+
+Try it locally:
+
+```bash
+cd server && npm ci && npm start            # match server on :2567
+# in the repo root, another terminal:
+VITE_NET_TRANSPORT=colyseus bun run dev      # Vite on :5173, an allowed dev origin
+```
+
+Open `/online` in two different browsers (or one normal and one private
+window — each tab keeps its own seat), create a match in one and join with the
+code in the other.
+
+**Fallback:** unset `VITE_NET_TRANSPORT` (or set it to anything but
+`colyseus`) and rebuild. Nothing else changes: the PeerJS, TURN and Convex
+configuration is untouched by the flag.
+
 ### The studio theme
 
 The chrome around the game uses a **Studio theme** — gallery-clean, warm off-whites, thin framing, muted neutrals, careful spacing, soft editorial presentation. The game itself renders as pencil-and-ink on paper: outlines, hatching, toon shading, and a scribble vignette when hurt.
@@ -279,6 +305,8 @@ The app expects `VITE_CONVEX_URL` and a Convex deployment (see [Environment](#en
 | `TURN_SECRET` | Convex dashboard | Relay shared secret used to mint ephemeral credentials. Server-side only |
 | `TURN_TTL`, `TURN_ALLOWED_ORIGINS` | Convex dashboard | Optional credential lifetime (seconds) and origin allow-list |
 | `VITE_NET_DEBUG` | Client | `1` enables verbose ICE diagnostics in production builds |
+| `VITE_NET_TRANSPORT` | Client | `colyseus` opts the online lobby into the Colyseus match server. Unset (or anything else) keeps PeerJS |
+| `VITE_COLYSEUS_URL` | Client | Match server URL for `VITE_NET_TRANSPORT=colyseus`. Development builds default to `http://localhost:2567`; production builds need it set |
 | `VITE_TURN_CREDENTIALS_URL` | Client | Optional third-party ICE-service endpoint, checked before the built-in one |
 | `VITE_TURN_URLS` | Client | Static fallback: comma-separated `turn:` / `turns:` relay URLs |
 | `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` | Client | Credentials for `VITE_TURN_URLS` (visible to clients — prefer the server-side setup) |

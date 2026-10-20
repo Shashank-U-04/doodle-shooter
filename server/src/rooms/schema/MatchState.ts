@@ -10,12 +10,15 @@ export const Player = schema({
   isHost: t.boolean().default(false),
   /** lobby ready flag; the host is always ready */
   ready: t.boolean().default(false),
+  /** false while the seat is held for a reconnection */
+  connected: t.boolean().default(true),
 });
 export type Player = SchemaType<typeof Player>;
 
 export const MatchState = schema({
   /** the room code players type to join; equal to the Colyseus roomId */
   code: t.string(),
+  /** "lobby" until the host starts, then "playing" */
   phase: t.string().default("lobby"),
   map: t.string(),
   grapple: t.boolean().default(true),

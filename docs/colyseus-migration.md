@@ -28,13 +28,14 @@ Authority is split:
 
 ## Behaviour → Colyseus mapping
 
-Status: **S1** = implemented in this milestone (`server/`); **S2+** = later.
+Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus behind
+`VITE_NET_TRANSPORT=colyseus` (`src/game/colyseus.ts`); **S3+** = later.
 
 | Behaviour today (PeerJS) | Where | Colyseus replacement | Status |
 |---|---|---|---|
 | Host creates room; 4-letter code from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` | `room.ts drawRoomCode`, `Online.tsx create` | `client.create("match", {name, map, grapple})`; server draws the code, uses it as `roomId`, guarantees uniqueness among live rooms | S1 |
-| Code survives a reload of the host tab (sessionStorage lease) | `room.ts` lease | Colyseus reconnection token stored in the lease instead of the code alone | S2 |
-| Guest joins by code; code normalised to `A-Z0-9`, 3–8 chars | `room.ts`, `Online.tsx join` | `client.joinById(code)` after the same normalisation | S1 (server), S2 (client) |
+| Code survives a reload of the host tab (sessionStorage lease) | `room.ts` lease | Reconnection token kept per tab in sessionStorage (`dd_colyseus_seat`); seat held 30 s server-side | S2 ✓ |
+| Guest joins by code; code normalised to `A-Z0-9`, 3–8 chars | `room.ts`, `Online.tsx join` | `client.joinById(code)` after the same normalisation | S2 ✓ |
 | Unknown code: guest times out after dial retries | `dialHost`, `retryOrReport` | `joinById` rejects immediately ("room not found") | S1 |
 | Room full: host answers `full`, guest closes | `receive("hello")` | `maxClients` (4, or 2–4 if requested); join rejected by matchmaker | S1 |
 | `hello {name}` → roster entry, name ≤ 16 chars | `receive("hello")` | `onJoin(options.name)`; name sanitised (control chars stripped, trimmed, ≤ 16) | S1 |
@@ -42,12 +43,12 @@ Status: **S1** = implemented in this milestone (`server/`); **S2+** = later.
 | `roster` broadcast (id, name, ink, ready) | `sendRoster` | `MatchState.players: MapSchema<Player>` synced automatically | S1 |
 | `ready {ready}` guest → host; host always ready | `setReady`, `receive("ready")` | `ready` message, zod-validated; ignored from host or outside lobby | S1 |
 | `config {map, grapple}` host-only, normalised | `setConfig`, `normalizeMatchConfig` | Create options normalised like the client; `config` message host-only, lobby-only, map whitelist | S1 |
-| Start button: host only, needs ≥ 1 guest, all guests ready | `Online.tsx allReady`, `beginMatch` | `start` message: server checks host, player count, all ready; sets `phase = "playing"` | S2 |
-| Mid-match joiner drops straight into the arena | `receive("hello")` while playing | Room stays unlocked; `phase` in state tells the joiner | S2 |
+| Start button: host only, needs ≥ 1 guest, all guests ready | `Online.tsx allReady`, `beginMatch` | `start` request: server checks host, lobby phase, ≥ 1 guest, none reconnecting, all ready; sets `phase = "playing"`; refusals shown in the lobby | S2 ✓ |
+| Mid-match joiner drops straight into the arena | `receive("hello")` while playing | Room stays unlocked; `phase` in state tells the joiner | S2 ✓ |
 | Guest leaves (`bye` or channel close) → removed, feed "X LEFT" | `drop` | `onLeave` removes the player; client derives the feed line from the state diff | S1 (server) |
-| Silent peer dropped after 12 s while playing | `sweepSilent` | WebSocket close / ping timeout; then `allowReconnection` window | S1 (close), S2 (reconnect) |
+| Silent peer dropped after 12 s while playing | `sweepSilent` | WebSocket close / ping timeout; then `allowReconnection` window (30 s) | S2 ✓ |
 | **Host leaves → the room is dead**; guests retry twice, then error | `drop(hostId)`, `scheduleRejoin` | **Changed:** server owns the room, so the longest-standing guest becomes host. Needs review — see "Decisions" | S1 |
-| Guest lobby rejoin after dropped channel (2 tries) | `scheduleRejoin` | `allowReconnection(client, N)` in `onDrop` + SDK reconnection | S2 |
+| Guest lobby rejoin after dropped channel (2 tries) | `scheduleRejoin` | `allowReconnection(client, 30)` in `onDrop`; SDK auto-reconnect for transient drops; `client.reconnect(token)` after a reload | S2 ✓ |
 | `state` 20 Hz per player: x,y,z,yaw,pitch,hp,alive,moving,firing,weapon,epoch,seq | `tick`, `NetPlayerState` | `state` message → server stores latest per player, rate-limits, rejects non-finite, gates by epoch/seq (`shouldApplyState`), rebroadcasts | S3 |
 | Host folds every body into one `states` packet per tick | `tick` (host) | Server patch rate / one `states` broadcast per tick | S3 |
 | `hit {victim, dmg, epoch, origin}` routed to the victim only | `receive("hit")` | Server forwards to the victim's client only (`client.send`), after sanity checks (victim exists, alive, dmg bounds, epoch matches, shooter alive, range) | S3 |
@@ -86,17 +87,41 @@ Status: **S1** = implemented in this milestone (`server/`); **S2+** = later.
    host leaves.
 2. **Malformed messages disconnect the sender.** This is Colyseus' default for a
    payload that fails its validator. A real client never sends one.
-3. **Room codes are server-drawn.** The current reload-resume lease reuses a
-   client-held code; under Colyseus this becomes a reconnection token (S2).
+3. **Room codes are server-drawn.** The PeerJS reload-resume lease reuses a
+   client-held code; under Colyseus a reconnection token does that job (S2).
 4. **Single process.** Code uniqueness is tracked in memory, which is correct
    for one server process. Scaling out needs Redis presence and driver.
+
+## Open issues found during S2
+
+- **Vercel's install command is unverified.** `bun.lock` is the maintained
+  lockfile (it changes with `package.json` and contains `peerjs`); the root
+  `package-lock.json` has not changed since the first commit and lacks `peerjs`.
+  S2 added `@colyseus/sdk` to `package.json` and `bun.lock` only. Whether
+  Vercel runs `bun install` or `npm install` has not been checked in its
+  dashboard; until it has, production readiness of this branch is not claimed.
+- **`?code=` collides with Convex Auth (all transports).** `ConvexAuthProvider`
+  treats a `code` query parameter as its OAuth/magic-link callback: on every page
+  load it deletes it from the URL and calls `signIn` with it. A guest's
+  `/online?code=XXXX` link works on first load only because the lobby reads the
+  parameter first; after a reload the code is gone (PeerJS guests land on the
+  menu), and every invite sends the room code to Convex as a sign-in code. The
+  Colyseus lobby resumes from its stored seat instead of the URL, so it is not
+  affected. Fix (not applied — it touches auth and the PeerJS default): pass
+  `shouldHandleCode` to `ConvexAuthProvider` so `/online` is skipped, or rename
+  the lobby's parameter (e.g. `room=`).
+- **Gameplay is not on Colyseus yet.** With the flag on, the arena loads with
+  no opponents and a "COLYSEUS PREVIEW" notice; scores stay at zero (S3).
+- **Bundle size.** The Colyseus SDK is loaded with a dynamic `import()` when a
+  Colyseus session connects, so PeerJS builds do not download it. The `/online`
+  chunk grows by about 2 KB gzipped for the adapter itself.
 
 ## Milestones
 
 - **S1 (this change):** `server/` workspace: roster, join/leave, validated
   options and limits, ready + config messages, `/health`, two-client
   integration tests.
-- **S2 — lobby on Colyseus behind a flag:** a `VITE_NET_TRANSPORT=colyseus`
+- **S2 — lobby on Colyseus behind a flag (done):** a `VITE_NET_TRANSPORT=colyseus`
   build flag selects a `ColyseusSession` that implements the same surface the
   pages use from `NetSession` (`getPlayers`, `setReady`, `setConfig`,
   `beginMatch`, handlers). PeerJS stays the default. Adds the `start` message,

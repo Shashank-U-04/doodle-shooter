@@ -14,6 +14,8 @@ export const MIN_PLAYERS = 2;
 export const NAME_MAX = 16;
 /** Ink palette size; every player in a room gets a different index. */
 export const INK_COUNT = 6;
+/** How long a dropped player (reload, lost network) keeps their seat. */
+export const RECONNECT_SECONDS = 30;
 
 export const MAP_IDS = ["district", "valley", "sanctuary", "tomb"] as const;
 export type MapId = (typeof MAP_IDS)[number];
