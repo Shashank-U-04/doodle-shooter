@@ -816,12 +816,17 @@
    the title screen's own button treatment — same ink, same wobbly corners,
    same hand font — and adds only the one thing a picker cannot do without:
    a visible selected state. */
+/* Two columns on every screen a full thumb fits beside its neighbour.
+   A flex row sized each card from the 640 px snapshot's intrinsic width, so the
+   first card always claimed a whole line; a grid column is sized by the panel
+   instead, which is what makes the pair sit side by side. */
 .dd-screen .mapgrid {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 14px;
-  margin: 16px 0 6px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 14px 12px;
+  max-width: 880px;
+  margin: 16px auto 6px;
 }
 .dd-screen .mapgrid button {
   font: inherit;
@@ -831,7 +836,8 @@
   border: 3px solid #1a30c0;
   border-radius: 9px 13px 8px 12px / 12px 8px 11px 9px;
   padding: 9px 9px 12px;
-  min-width: 300px;
+  min-width: 0;
+  width: 100%;
   cursor: pointer;
   transform: rotate(-0.8deg);
   line-height: 1.05;
@@ -858,9 +864,12 @@
   border-color: #d02030;
 }
 /* the lobby keeps the same card, a size down so the roster stays on screen */
+.dd-screen .mapgrid.small {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 8px;
+}
 .dd-screen .mapgrid button.small {
-  min-width: 178px;
-  max-width: 220px;
+  min-width: 0;
   font-size: 21px;
   padding: 7px 7px 9px;
 }
@@ -888,10 +897,26 @@
 .dd-screen .mapgrid button.on i {
   opacity: 0.95;
 }
-@media (max-width: 720px) {
+/* the compact lobby strip stays four across while the names still fit */
+@media (max-width: 980px) {
+  .dd-screen .mapgrid.small {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 900px) {
   .dd-screen .mapgrid button {
-    min-width: 0;
-    width: 100%;
+    font-size: 24px;
+  }
+  .dd-screen .mapgrid button i {
+    font-size: 14px;
+  }
+}
+@media (max-width: 720px) {
+  .dd-screen .mapgrid,
+  .dd-screen .mapgrid.small {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dd-screen .mapgrid button {
     font-size: 24px;
   }
 }

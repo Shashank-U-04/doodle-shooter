@@ -329,7 +329,7 @@ export default function Online() {
               {/* the host sets the battlefield and the rule; guests read them */}
               {mode === "host" ? (
                 <>
-                  <div className="mapgrid">
+                  <div className="mapgrid small">
                     {MAPS.map((m) => (
                       <button
                         key={m.id}
