@@ -1,3 +1,7 @@
-.env.local
 node_modules
 dist
+
+# Environment files and dotenvx private keys never belong in git.
+.env
+.env.*
+!.env.example

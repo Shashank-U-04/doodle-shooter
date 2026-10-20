@@ -1,0 +1,109 @@
+# Colyseus migration — design and behaviour map
+
+Target: React + Three.js frontend on Vercel, Colyseus (Node.js, WebSockets) for
+multiplayer. PeerJS, WebRTC/TURN and Convex stay in place until each of their
+responsibilities has a verified replacement.
+
+Baseline for this migration: `main` at `f8bb68b`.
+
+## How online play works today
+
+`src/game/net.ts` (`NetSession`) runs a **star over WebRTC data channels**
+brokered by the public PeerJS server. The host's peer id is `ds-pvp-<CODE>`, so
+a 4-letter code is all a guest needs. Guests talk only to the host; the host
+relays. Convex is used for auth and for minting TURN credentials
+(`src/convex/turn.ts`); it carries no game traffic.
+
+Authority is split:
+
+- **Each player owns their own body**: position, health, alive/dead, respawn.
+- **The shooter decides a hit connected** and reports it; the **victim**
+  validates it (`engine.takeNetHit`: epoch check, lag-rewound pose, body
+  capsule, line of sight against the world, range ≤ 170, dmg ≤ 300) and applies
+  the damage.
+- **The host owns** the roster, ink colours, ready flags, match config, the
+  4-player limit and the start/rematch signals.
+- **Scores are not owned by anyone**: every client counts `death` messages
+  itself, and the winner (first to 15 kills, `Online.tsx`) is derived locally.
+
+## Behaviour → Colyseus mapping
+
+Status: **S1** = implemented in this milestone (`server/`); **S2+** = later.
+
+| Behaviour today (PeerJS) | Where | Colyseus replacement | Status |
+|---|---|---|---|
+| Host creates room; 4-letter code from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` | `room.ts drawRoomCode`, `Online.tsx create` | `client.create("match", {name, map, grapple})`; server draws the code, uses it as `roomId`, guarantees uniqueness among live rooms | S1 |
+| Code survives a reload of the host tab (sessionStorage lease) | `room.ts` lease | Colyseus reconnection token stored in the lease instead of the code alone | S2 |
+| Guest joins by code; code normalised to `A-Z0-9`, 3–8 chars | `room.ts`, `Online.tsx join` | `client.joinById(code)` after the same normalisation | S1 (server), S2 (client) |
+| Unknown code: guest times out after dial retries | `dialHost`, `retryOrReport` | `joinById` rejects immediately ("room not found") | S1 |
+| Room full: host answers `full`, guest closes | `receive("hello")` | `maxClients` (4, or 2–4 if requested); join rejected by matchmaker | S1 |
+| `hello {name}` → roster entry, name ≤ 16 chars | `receive("hello")` | `onJoin(options.name)`; name sanitised (control chars stripped, trimmed, ≤ 16) | S1 |
+| Ink 0–5, lowest free | `freeInk` | Same rule, server-side; part of `Player` schema | S1 |
+| `roster` broadcast (id, name, ink, ready) | `sendRoster` | `MatchState.players: MapSchema<Player>` synced automatically | S1 |
+| `ready {ready}` guest → host; host always ready | `setReady`, `receive("ready")` | `ready` message, zod-validated; ignored from host or outside lobby | S1 |
+| `config {map, grapple}` host-only, normalised | `setConfig`, `normalizeMatchConfig` | Create options normalised like the client; `config` message host-only, lobby-only, map whitelist | S1 |
+| Start button: host only, needs ≥ 1 guest, all guests ready | `Online.tsx allReady`, `beginMatch` | `start` message: server checks host, player count, all ready; sets `phase = "playing"` | S2 |
+| Mid-match joiner drops straight into the arena | `receive("hello")` while playing | Room stays unlocked; `phase` in state tells the joiner | S2 |
+| Guest leaves (`bye` or channel close) → removed, feed "X LEFT" | `drop` | `onLeave` removes the player; client derives the feed line from the state diff | S1 (server) |
+| Silent peer dropped after 12 s while playing | `sweepSilent` | WebSocket close / ping timeout; then `allowReconnection` window | S1 (close), S2 (reconnect) |
+| **Host leaves → the room is dead**; guests retry twice, then error | `drop(hostId)`, `scheduleRejoin` | **Changed:** server owns the room, so the longest-standing guest becomes host. Needs review — see "Decisions" | S1 |
+| Guest lobby rejoin after dropped channel (2 tries) | `scheduleRejoin` | `allowReconnection(client, N)` in `onDrop` + SDK reconnection | S2 |
+| `state` 20 Hz per player: x,y,z,yaw,pitch,hp,alive,moving,firing,weapon,epoch,seq | `tick`, `NetPlayerState` | `state` message → server stores latest per player, rate-limits, rejects non-finite, gates by epoch/seq (`shouldApplyState`), rebroadcasts | S3 |
+| Host folds every body into one `states` packet per tick | `tick` (host) | Server patch rate / one `states` broadcast per tick | S3 |
+| `hit {victim, dmg, epoch, origin}` routed to the victim only | `receive("hit")` | Server forwards to the victim's client only (`client.send`), after sanity checks (victim exists, alive, dmg bounds, epoch matches, shooter alive, range) | S3 |
+| Victim validates hit against rewound pose + world raycast | `engine.takeNetHit` | **Stays on the client** for now (see below) | — |
+| `death {killer}` → everyone bumps kills/deaths, feed | `apply("death")`, `reportDeath` | Server owns `kills`/`deaths` in `Player`; client sends `death`, server validates killer and updates score | S3 |
+| First to 15 kills wins (derived per client) | `Online.tsx KILLS_TO_WIN` | Server declares `winnerId` and freezes the round | S3 |
+| `respawn {epoch}` after 3.2 s; spawn pad = ink at start | `Online.tsx` | Server enforces respawn delay and epoch monotonicity; spawn choice stays on the client | S3 |
+| `rematch` host-only: scores cleared, engine reset | `rematch`, `beginRematch` | `rematch` message, host-only; server clears scores and `winnerId` | S3 |
+| `ping`/`pong` every 2 s → half-RTT feeds aim lead/rewind | `startPinging`, `noteRtt` | SDK latency measurement (or `ping` message), capped at 250 ms as today | S3 |
+| TURN credentials, ICE plan, signaling diagnostics | `net.ts`, `signaling.ts`, `convex/turn.ts` | Not needed over WebSockets; retired with PeerJS | S5 |
+| Convex auth (`@convex-dev/auth`) | `src/convex/auth*`, `use-auth.ts` | Out of scope; keep until a persistence/auth decision (Supabase deferred) | later |
+
+## What cannot move to the server yet
+
+- **Movement and collision.** Physics (`world.ts resolveMove`, grapple, focus
+  dash, crouch, depenetration) runs in the engine on the client. Server-side
+  movement validation needs the map colliders built headlessly. That looks
+  feasible: `scripts/check-valley.ts` already builds the real Egypt map and runs
+  `resolveMove` without a renderer. But it means extracting map collider
+  construction from Three.js scene building, and doing it for all four maps.
+  Until then the server can only bounds-check positions and speeds.
+- **Hit registration.** Hit detection uses the shooter's raycast against
+  Three.js meshes, and validation uses the victim's pose history and
+  `raycastWorld`. Moving this to the server needs the same headless colliders
+  and a server-side pose history. Plan: keep the shooter-reports/victim-validates
+  model, add server sanity checks (S3), and consider server-side lag-compensated
+  validation only after colliders are extracted.
+- **Health.** The victim's engine applies damage (`damagePlayer`, regen). A
+  server-owned HP would fight the engine's regen and local damage (self-damage,
+  void). Keep HP client-reported and server-checked for plausibility at first.
+
+## Decisions needing review
+
+1. **Host migration.** Today the room dies with its host. The server promotes the
+   longest-standing guest instead. Easy to revert: dispose the room when the
+   host leaves.
+2. **Malformed messages disconnect the sender.** This is Colyseus' default for a
+   payload that fails its validator. A real client never sends one.
+3. **Room codes are server-drawn.** The current reload-resume lease reuses a
+   client-held code; under Colyseus this becomes a reconnection token (S2).
+4. **Single process.** Code uniqueness is tracked in memory, which is correct
+   for one server process. Scaling out needs Redis presence and driver.
+
+## Milestones
+
+- **S1 (this change):** `server/` workspace: roster, join/leave, validated
+  options and limits, ready + config messages, `/health`, two-client
+  integration tests.
+- **S2 — lobby on Colyseus behind a flag:** a `VITE_NET_TRANSPORT=colyseus`
+  build flag selects a `ColyseusSession` that implements the same surface the
+  pages use from `NetSession` (`getPlayers`, `setReady`, `setConfig`,
+  `beginMatch`, handlers). PeerJS stays the default. Adds the `start` message,
+  reconnection and CORS origin allow-listing.
+- **S3 — gameplay relay:** state/hit/death/respawn/rematch through the server,
+  with server-owned scores and winner.
+- **S4 — hosting:** pick a host for the Node service, set up a staging deploy
+  and a Vercel preview pointing at it.
+- **S5 — retirement:** remove PeerJS, the TURN endpoint and the signaling code
+  once Colyseus is the default and verified in production.
