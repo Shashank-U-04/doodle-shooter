@@ -25,6 +25,7 @@ type BodyRow = RosterRow & {
   yaw: number;
   pitch: number;
   moving: boolean;
+  firing: boolean;
   alive: boolean;
   weapon: string;
   epoch: number;
@@ -469,6 +470,14 @@ describe("match room", () => {
       assert.strictEqual(b.weapon, "RIFLE", "unknown weapon ignored");
       move(g, { x: 54, y: 0, z: 0, weapon: "KATANA" });
       await eventually(() => snapshot(h).players[g.sessionId].weapon === "KATANA", "known weapon applied");
+    });
+
+    it("echoes the cosmetic firing flag to everyone else", async () => {
+      const { h, g } = await playing();
+      g.send("move", { ...body({ x: 3 }), firing: true });
+      await eventually(() => snapshot(h).players[g.sessionId].firing === true, "muzzle puffs on");
+      g.send("move", body({ x: 3 }));
+      await eventually(() => snapshot(h).players[g.sessionId].firing === false, "off when omitted");
     });
 
     it("disconnects a client that sends a malformed body, leaving everyone else as they were", async () => {

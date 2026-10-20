@@ -8,7 +8,7 @@
 
 import type { MatchConfig } from "./maps";
 import type { NetHandlers, NetPlayer } from "./net";
-import type { NetPlayerState, NetShotOrigin } from "./types";
+import type { NetCombatIntent, NetPlayerState, NetShotLanded, NetShotOrigin } from "./types";
 
 export type NetTransport = "peerjs" | "colyseus";
 
@@ -40,6 +40,19 @@ export function readColyseusUrl(env: Env): string | null {
 export const NET_TRANSPORT: NetTransport = readNetTransport(viteEnv());
 
 /**
+ * Callbacks a session may call. The PeerJS session only ever uses NetHandlers;
+ * the server-authoritative ones are the Colyseus session's.
+ */
+export type MatchHandlers = NetHandlers & {
+  /** the server confirmed one of our attacks landed */
+  onShotLanded?: (hit: NetShotLanded) => void;
+  /** the server took health off us (`killerId` null: our own grenade, a trap) */
+  onHurt?: (damage: number, killerId: string | null) => void;
+  /** the server's word on our health, whenever it changes */
+  onHealth?: (hp: number, alive: boolean, killerId: string | null) => void;
+};
+
+/**
  * Everything Online.tsx uses from a session. NetSession satisfies it as is;
  * ColyseusSession implements it over the server.
  */
@@ -56,7 +69,7 @@ export interface MatchSession {
   close(): void;
   resume(): void;
   suspend(): void;
-  setHandlers(patch: NetHandlers): void;
+  setHandlers(patch: MatchHandlers): void;
   getPlayers(): NetPlayer[];
   getConfig(): MatchConfig;
   setConfig(patch: Partial<MatchConfig>): void;
@@ -70,4 +83,8 @@ export interface MatchSession {
   reportRespawn(epoch: number): void;
   /** log-safe connection details for a console warning */
   diagnostics(): unknown;
+  /** true when the server decides hits and health (the engine then sends intents) */
+  readonly serverCombat?: boolean;
+  /** server combat: hand an attack to the server */
+  reportCombat?(intent: NetCombatIntent): void;
 }

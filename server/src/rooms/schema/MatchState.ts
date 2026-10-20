@@ -24,11 +24,18 @@ export const Player = schema({
   /** look angle, radians in [−π/2, π/2] */
   pitch: t.float32().default(0),
   moving: t.boolean().default(false),
-  /** standing, as the client's own engine reports (death is its call for now) */
+  /** a weapon is going off (drawn as muzzle puffs / a swing); cosmetic, client-reported */
+  firing: t.boolean().default(false),
+  /** standing; the server's call (it applies all damage) */
   alive: t.boolean().default(false),
   weapon: t.string().default("RIFLE"),
   /** bumped by the server each time it accepts a teleport; viewers snap on a change */
   epoch: t.uint32().default(0),
+
+  // ---- combat (server-authoritative; see src/combat.ts) ----
+  hp: t.float32().default(120),
+  kills: t.uint16().default(0),
+  deaths: t.uint16().default(0),
 });
 export type Player = SchemaType<typeof Player>;
 
@@ -41,6 +48,10 @@ export const MatchState = schema({
   grapple: t.boolean().default(true),
   maxPlayers: t.uint8(),
   hostId: t.string().default(""),
+  /** set when someone reaches the winning score; combat stops until a rematch */
+  winnerId: t.string().default(""),
+  /** bumped by each host rematch; clients restart the round when it changes */
+  round: t.uint16().default(0),
   players: t.map(Player),
 });
 export type MatchState = SchemaType<typeof MatchState>;

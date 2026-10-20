@@ -31,6 +31,8 @@ import { buildEgypt, type EgyptMap, type Mood, type Outcome as EgyptOutcome, typ
 import type { MapId } from "./maps";
 import { makeBlobRig, makeMummyRig, makeRig, makeWaspRig, type Rig } from "./rig";
 import { KATANA_MELEE } from "./weapons";
+import type { NetCombatIntent, NetShotLanded } from "./types";
+import { WEAPONS } from "./arsenal";
 import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
 import type { EngineCallbacks, GameHandle, HudState, NetPlayerState, NetRemotePlayer, NetShotOrigin } from "./types";
 
@@ -125,32 +127,6 @@ type BossAtk = {
 
 /* ============================== data ============================== */
 
-type WeaponDef = {
-  name: string;
-  kind: string;
-  hint: string;
-  magSize: number;
-  reserve: number;
-  maxReserve: number;
-  interval: number;
-  damage: number;
-  headMul: number;
-  pellets: number;
-  spread: number;
-  adsSpread: number;
-  reloadTime: number;
-  auto: boolean;
-  zoom: number;
-  katana?: boolean;
-};
-
-const WEAPONS: WeaponDef[] = [
-  { name: "RIFLE", kind: "rifle", hint: "auto · put the red dot on them", magSize: 35, reserve: 175, maxReserve: 350, interval: 1 / 11, damage: 24, headMul: 2.6, pellets: 1, spread: 0.016, adsSpread: 0.0034, reloadTime: 1.45, auto: true, zoom: 58 },
-  { name: "SHOTGUN", kind: "shotgun", hint: "pump · devastating up close", magSize: 6, reserve: 36, maxReserve: 72, interval: 0.78, damage: 19, headMul: 1.8, pellets: 10, spread: 0.062, adsSpread: 0.034, reloadTime: 2.0, auto: false, zoom: 68 },
-  { name: "SNIPER", kind: "sniper", hint: "scoped bolt action · one shot, one erasure", magSize: 5, reserve: 25, maxReserve: 50, interval: 0.9, damage: 150, headMul: 3, pellets: 1, spread: 0.075, adsSpread: 0.0004, reloadTime: 2.1, auto: false, zoom: 20 },
-  { name: "KATANA", kind: "katana", hint: "slash · hold aim to block & return bullets", magSize: Infinity, reserve: Infinity, maxReserve: Infinity, interval: 0.27, damage: 75, headMul: 1.6, pellets: 1, spread: 0, adsSpread: 0, reloadTime: 0, auto: false, zoom: 82, katana: true },
-  { name: "REVOLVER", kind: "revolver", hint: "hand cannon · headshots erase", magSize: 6, reserve: 36, maxReserve: 72, interval: 0.3, damage: 62, headMul: 3, pellets: 1, spread: 0.006, adsSpread: 0.002, reloadTime: 1.9, auto: false, zoom: 52 },
-];
 
 const SPAWN_TABLE: { t: EnemyKind; from: number; w: number }[] = [
   { t: "grunt", from: 1, w: 10 },
@@ -480,6 +456,16 @@ export function createGame(
   let focusCharge = 0;
   let slowmoT = 0;
   let focusChain = 0;
+  /**
+   * Online over the match server: the server decides every hit, the damage and
+   * our health. Our attacks become intents (cb.onNetCombat); remote hit
+   * feedback waits for its confirmation (showNetHit); nothing local changes
+   * our health. Off for solo play and for the PeerJS match.
+   */
+  let serverCombat = false;
+  const netAuthority = () => pvp.active && serverCombat;
+  const intent = (i: NetCombatIntent) => cb.onNetCombat?.(i);
+  const vec = (v: THREE.Vector3) => ({ x: v.x, y: v.y, z: v.z });
   let blocking = false;
   // Online only: the two flags the net layer broadcasts about us. They are
   // written from the same places the solo game already tracks movement and
@@ -812,6 +798,7 @@ export function createGame(
     const eye = eyePos();
     const base = fwdVec();
     const spread = (mouseAim ? def.adsSpread : def.spread) * (player.onGround ? 1 : 1.8);
+    if (netAuthority()) intent({ kind: "fire", weapon: def.name, origin: vec(eye), dir: vec(base), ads: mouseAim, air: !player.onGround });
     for (let i = 0; i < def.pellets; i++) {
       const dir = base.clone();
       dir.x += rand(-spread, spread);
@@ -837,7 +824,9 @@ export function createGame(
         def.headMul,
         rem ? rem.dist : undefined,
       );
-      if (rem) {
+      if (rem && netAuthority()) {
+        // the tracer stops on them; whether it hurt them is the server's call
+      } else if (rem) {
         spawnShards(hitPoint, INK.RED, rem.head ? 5 : 3, 2.5);
         cb.onHitmarker(false, rem.head);
         cb.onNetHit?.({
@@ -859,6 +848,7 @@ export function createGame(
     if (s.def.katana || reloadT > 0 || s.mag >= s.def.magSize || s.reserve <= 0) return;
     reloadT = s.def.reloadTime;
     fx.reload();
+    if (netAuthority()) intent({ kind: "reload", weapon: s.def.name });
   }
 
   function finishReload() {
@@ -900,6 +890,7 @@ export function createGame(
     const eye = eyePos();
     const fwd = fwdVec();
     let hitAny = false;
+    if (netAuthority()) intent({ kind: "slash", origin: vec(eye), dir: vec(fwd) });
     for (const e of enemies) {
       if (!e.alive) continue;
       const reach = KATANA_MELEE.reach * e.def.scale;
@@ -917,6 +908,8 @@ export function createGame(
       hitAny = true;
       const head = a.pos.clone().add(new THREE.Vector3(0, 1.62, 0));
       const headHit = meleeHits(eye, fwd, head, KATANA_MELEE.reach, 0.9);
+      // The server settles it, and charges the meter when it confirms (showNetHit).
+      if (netAuthority()) continue;
       spawnShards(chest, INK.RED, headHit ? 7 : 4, 3);
       cb.onHitmarker(false, headHit);
       cb.onNetHit?.({
@@ -1003,6 +996,9 @@ export function createGame(
     if (target) {
       damageEnemy(target, 9999, false, "focus");
       cb.onTip("<b>EXECUTED</b>", 1.2);
+    } else if (victim && netAuthority()) {
+      intent({ kind: "dash", origin: vec(eye), dir: vec(fwd) });
+      cb.onTip("<b>SLASHED</b>", 1.2);
     } else if (victim) {
       cb.onHitmarker(false, false);
       cb.onNetHit?.({
@@ -1118,6 +1114,16 @@ export function createGame(
       }
     }
     pushHud();
+  }
+
+  /** The server says we are down: the online half of damagePlayer()'s death. */
+  function netFall(killerId: string | null) {
+    if (!player.alive) return;
+    player.hp = 0;
+    player.alive = false;
+    mouseFire = false;
+    mouseAim = false;
+    cb.onNetDeath?.(killerId);
   }
 
   function addScore(n: number, feed?: string) {
@@ -1285,6 +1291,8 @@ export function createGame(
       const f = Math.sqrt(Math.max(0, 1 - d / radius));
       damageEnemy(e, dmg * f * (fromPlayer ? 1.5 : 1), false, fromPlayer ? "blast" : "enemy");
     }
+    // Online over the match server the blast is settled there, for everyone.
+    if (netAuthority()) return;
     const pd = player.pos.distanceTo(pos);
     if (pd < radius * 0.8) {
       damagePlayer(dmg * Math.sqrt(Math.max(0, 1 - pd / (radius * 0.8))));
@@ -3021,6 +3029,7 @@ export function createGame(
     player.grenades--;
     player.nadeCd = 0.6;
     const eye = eyePos();
+    if (netAuthority()) intent({ kind: "throw", origin: vec(eye), dir: vec(fwdVec()) });
     const mesh = new THREE.Mesh(nadeGeo, makeInkMaterial(INK.BLACK, true));
     mesh.position.copy(eye);
     scene.add(mesh);
@@ -3047,7 +3056,7 @@ export function createGame(
           player.grenades = Math.min(player.maxGrenades, player.grenades + 1);
           cb.onKillFeed("+AMMO · +GRENADE", false);
         } else {
-          player.hp = Math.min(player.maxHp, player.hp + 35);
+          if (!netAuthority()) player.hp = Math.min(player.maxHp, player.hp + 35);
           cb.onKillFeed("+HEALTH", false);
         }
         fx.pickup();
@@ -3135,7 +3144,7 @@ export function createGame(
 
     // regen
     p.regenDelay = Math.max(0, p.regenDelay - dt);
-    if (p.regenDelay <= 0 && p.hp < p.maxHp) p.hp = Math.min(p.maxHp, p.hp + 11 * dt);
+    if (p.regenDelay <= 0 && p.hp < p.maxHp && !netAuthority()) p.hp = Math.min(p.maxHp, p.hp + 11 * dt);
     p.hurtFx = Math.max(0, p.hurtFx - dt * 1.4);
     p.flashFx = Math.max(0, p.flashFx - dt * 1.2);
     p.nadeCd = Math.max(0, p.nadeCd - dt);
@@ -3511,7 +3520,7 @@ export function createGame(
     else if (out.sound === "mummy") fx.mummy();
     if (out.loot) {
       const l = out.loot;
-      if (l.health) player.hp = clamp(player.hp + l.health, 0, player.maxHp);
+      if (l.health && !netAuthority()) player.hp = clamp(player.hp + l.health, 0, player.maxHp);
       if (l.grenades) player.grenades = Math.min(player.maxGrenades, player.grenades + l.grenades);
       if (l.ammo) {
         for (const s of slots) {
@@ -3686,7 +3695,8 @@ export function createGame(
       // through the path-fail valve.
       if (world.colliders.length !== collidersBefore) buildNav();
       const spike = egypt.hazard(player.pos, performance.now());
-      if (spike > 0) damagePlayer(spike);
+      if (spike > 0 && netAuthority()) intent({ kind: "hazard", damage: spike });
+      else if (spike > 0) damagePlayer(spike);
       if (player.alive) {
         const door = egypt.travelAt(player.pos);
         if (door) travelTo(door);
@@ -4350,6 +4360,35 @@ export function createGame(
     },
     isAlive() {
       return player.alive;
+    },
+    setServerCombat(on: boolean) {
+      serverCombat = on;
+    },
+    showNetHit(hit: NetShotLanded) {
+      if (!pvp.active) return;
+      spawnShards(new THREE.Vector3(hit.x, hit.y, hit.z), INK.RED, hit.head ? 5 : 3, 2.5);
+      cb.onHitmarker(hit.kill, hit.head);
+      if (hit.focus) addFocus(KATANA_MELEE.focusGain);
+    },
+    netDamage(dmg: number, killerId: string | null) {
+      if (!netAuthority() || !player.alive || !Number.isFinite(dmg) || dmg <= 0) return;
+      // The feel of being hit, without damagePlayer()'s local rules: the server
+      // has already applied it, paused or not.
+      player.hp = Math.max(0, player.hp - dmg);
+      player.hurtFx = Math.min(1, player.hurtFx + 0.5);
+      shakeT = Math.max(shakeT, 0.25);
+      fx.hurt();
+      if (player.hp <= 0) netFall(killerId);
+      pushHud();
+    },
+    syncNetHealth(hp: number, alive: boolean, killerId: string | null) {
+      if (!netAuthority() || !Number.isFinite(hp)) return;
+      // Revived on the server before our own respawn timer: the respawn
+      // (netRespawn) brings the body back; nothing to do until then.
+      if (!player.alive) return;
+      if (!alive) netFall(killerId);
+      else player.hp = clamp(hp, 0, player.maxHp);
+      pushHud();
     },
     toMenu() {
       resetRun();

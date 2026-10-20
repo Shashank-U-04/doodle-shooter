@@ -13,7 +13,7 @@ import { testServer } from "./harness.js";
 import type { MatchRoom } from "../src/rooms/MatchRoom.js";
 import { ColyseusSession, RESUME_WINDOW_MS, resumableSeat, SEAT_KEY, type ColyseusSessionDeps } from "../../src/game/colyseus.js";
 import { readColyseusUrl, readNetTransport } from "../../src/game/transport.js";
-import type { NetPlayerState } from "../../src/game/types.js";
+import type { NetPlayerState, NetShotLanded } from "../../src/game/types.js";
 
 const URL = "http://localhost:2568";
 
@@ -245,11 +245,20 @@ describe("frontend Colyseus lobby adapter", () => {
       ...over,
     });
 
-    type Arena = { bodies: Map<string, NetPlayerState>; gone: string[]; body: NetPlayerState };
+    type Arena = {
+      bodies: Map<string, NetPlayerState>;
+      gone: string[];
+      body: NetPlayerState;
+      landed: NetShotLanded[];
+      hurt: { damage: number; killer: string | null }[];
+      health: { hp: number; alive: boolean; killer: string | null }[];
+      feed: string[];
+      rematches: number;
+    };
 
     /** What PvpMatch does on mount: install the arena handlers and start ticking. */
     function enterArena(t: Tab, body: NetPlayerState): Arena {
-      const arena: Arena = { bodies: new Map(), gone: [], body };
+      const arena: Arena = { bodies: new Map(), gone: [], body, landed: [], hurt: [], health: [], feed: [], rematches: 0 };
       t.session.setStateProvider(() => arena.body);
       t.session.startTicking();
       t.session.setHandlers({
@@ -258,6 +267,11 @@ describe("frontend Colyseus lobby adapter", () => {
           arena.gone.push(id);
           arena.bodies.delete(id);
         },
+        onShotLanded: (hit) => arena.landed.push(hit),
+        onHurt: (damage, killer) => arena.hurt.push({ damage, killer }),
+        onHealth: (hp, alive, killer) => arena.health.push({ hp, alive, killer }),
+        onFeed: (text) => arena.feed.push(text),
+        onRematch: () => arena.rematches++,
       });
       return arena;
     }
@@ -337,6 +351,70 @@ describe("frontend Colyseus lobby adapter", () => {
       assert.ok((ha.bodies.get(gid)?.epoch ?? 0) >= 2, "a new epoch, so the arena snaps instead of sliding");
       assert.strictEqual(ha.bodies.size, 1);
       assert.strictEqual(count(h), 2);
+    });
+
+    describe("combat", () => {
+      // a clear stretch of street in the district (server/test/combat-room.test.ts checks it)
+      const A = { x: 0, y: 0.2, z: 38 };
+      const B = { x: 0, y: 0.2, z: 30 };
+      const eye = (p: { x: number; y: number; z: number }) => ({ x: p.x, y: p.y + 1.6, z: p.z });
+      const toward = (from: { x: number; y: number; z: number }, to: { x: number; y: number; z: number }) => {
+        const d = { x: to.x - from.x, y: to.y - from.y, z: to.z - from.z };
+        const l = Math.hypot(d.x, d.y, d.z);
+        return { x: d.x / l, y: d.y / l, z: d.z / l };
+      };
+      /** What the engine emits when it fires at a point (the server rolls the spread). */
+      const shootAt = (t: Tab, from: typeof A, at: typeof A, weapon = "RIFLE") =>
+        t.session.reportCombat({ kind: "fire", weapon, origin: eye(from), dir: toward(eye(from), at), ads: true, air: false });
+
+      async function armed() {
+        const { h, g } = await started();
+        const ha = enterArena(h, engineBody({ ...A }));
+        const ga = enterArena(g, engineBody({ ...B }));
+        await eventually(() => ha.bodies.has(g.session.me) && ga.bodies.has(h.session.me), "both placed");
+        return { h, g, ha, ga };
+      }
+
+      it("sends fire as intent and routes the server's verdict to both arenas", async () => {
+        const { h, g, ha, ga } = await armed();
+        shootAt(h, A, { x: B.x, y: B.y + 1, z: B.z });
+        await eventually(() => ha.landed.length === 1 && ga.hurt.length === 1, "shooter's hitmarker and victim's hurt");
+        assert.deepStrictEqual([ha.landed[0].head, ha.landed[0].kill, ha.landed[0].focus], [false, false, false]);
+        assert.deepStrictEqual(ga.hurt[0], { damage: 24, killer: h.session.me });
+        await eventually(() => ga.health.at(-1)?.hp === 96, "victim's health synced");
+        assert.strictEqual(ga.health.at(-1)?.alive, true);
+        assert.strictEqual(ha.hurt.length, 0, "the shooter is not hurt");
+        await eventually(() => ha.bodies.get(g.session.me)?.hp === 96, "the shooter sees the victim's health");
+      });
+
+      it("reports a kill: health, killer, score and feed agree", async () => {
+        const { h, g, ha, ga } = await armed();
+        h.session.reportCombat({ kind: "fire", weapon: "SNIPER", origin: eye(A), dir: toward(eye(A), { x: B.x, y: B.y + 1.52, z: B.z }), ads: true, air: false });
+        await eventually(() => ga.health.some((x) => !x.alive), "victim down");
+        assert.deepStrictEqual(ga.health.find((x) => !x.alive), { hp: 0, alive: false, killer: h.session.me });
+        assert.strictEqual(ha.landed.at(-1)?.kill, true);
+        await eventually(() => h.session.getPlayers().find((p) => p.isMe)?.kills === 1, "score");
+        assert.strictEqual(g.session.getPlayers().find((p) => p.isMe)?.deaths, 1);
+        assert.deepStrictEqual(ga.feed.filter((t) => t.includes("ERASED")), [], "the victim writes their own obituary");
+      });
+
+      it("drops a non-finite intent instead of getting itself disconnected", async () => {
+        const { h, ga } = await armed();
+        h.session.reportCombat({ kind: "fire", weapon: "RIFLE", origin: { x: Number.NaN, y: 1, z: 1 }, dir: { x: 0, y: 0, z: -1 }, ads: false, air: false });
+        await new Promise((r) => setTimeout(r, 200));
+        assert.strictEqual(h.session.joined, true);
+        assert.strictEqual(ga.hurt.length, 0);
+      });
+
+      it("restarts both arenas on the host's rematch, with a clean score", async () => {
+        const { h, g, ha, ga } = await armed();
+        h.session.reportCombat({ kind: "fire", weapon: "SNIPER", origin: eye(A), dir: toward(eye(A), { x: B.x, y: B.y + 1.52, z: B.z }), ads: true, air: false });
+        await eventually(() => h.session.getPlayers().find((p) => p.isMe)?.kills === 1, "a kill on the board");
+        g.session.rematch(); // a guest cannot
+        h.session.rematch();
+        await eventually(() => ha.rematches === 1 && ga.rematches === 1, "both restart");
+        await eventually(() => h.session.getPlayers().every((p) => p.kills === 0 && p.deaths === 0), "score cleared");
+      });
     });
 
     it("skips a non-finite frame instead of getting itself disconnected", async () => {

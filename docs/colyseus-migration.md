@@ -30,7 +30,8 @@ Authority is split:
 
 Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus behind
 `VITE_NET_TRANSPORT=colyseus` (`src/game/colyseus.ts`); **S3A** = player movement
-(`server/src/movement.ts`); **S3B+** = later.
+(`server/src/movement.ts`); **S3B** = combat (`server/src/rooms/Combat.ts`);
+**S4+** = later.
 
 | Behaviour today (PeerJS) | Where | Colyseus replacement | Status |
 |---|---|---|---|
@@ -50,15 +51,15 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
 | Silent peer dropped after 12 s while playing | `sweepSilent` | WebSocket close / ping timeout; then `allowReconnection` window (30 s) | S2 ✓ |
 | **Host leaves → the room is dead**; guests retry twice, then error | `drop(hostId)`, `scheduleRejoin` | **Changed:** server owns the room, so the longest-standing guest becomes host. Needs review — see "Decisions" | S1 |
 | Guest lobby rejoin after dropped channel (2 tries) | `scheduleRejoin` | `allowReconnection(client, 30)` in `onDrop`; SDK auto-reconnect for transient drops; `client.reconnect(token)` after a reload | S2 ✓ |
-| `state` 20 Hz per player: x,y,z,yaw,pitch,hp,alive,moving,firing,weapon,epoch,seq | `tick`, `NetPlayerState` | `move` message, zod-validated; server clamps to the map volume, speed-limits, rate-limits teleports (epoch changes) and keeps its own epoch; body synced in `Player`. `hp` and `firing` not synced yet | S3A ✓ |
+| `state` 20 Hz per player: x,y,z,yaw,pitch,hp,alive,moving,firing,weapon,epoch,seq | `tick`, `NetPlayerState` | `move` message, zod-validated; server clamps to the map volume, speed-limits, rate-limits teleports (epoch changes) and keeps its own epoch; body synced in `Player` (`firing` cosmetic, `hp` server-owned) | S3A ✓ |
 | Host folds every body into one `states` packet per tick | `tick` (host) | Room state patches at 50 ms (20 Hz) carry every changed body | S3A ✓ |
-| `hit {victim, dmg, epoch, origin}` routed to the victim only | `receive("hit")` | Server forwards to the victim's client only (`client.send`), after sanity checks (victim exists, alive, dmg bounds, epoch matches, shooter alive, range) | S3B |
-| Victim validates hit against rewound pose + world raycast | `engine.takeNetHit` | **Stays on the client** for now (see below) | — |
-| `death {killer}` → everyone bumps kills/deaths, feed | `apply("death")`, `reportDeath` | Server owns `kills`/`deaths` in `Player`; client sends `death`, server validates killer and updates score | S3B |
-| First to 15 kills wins (derived per client) | `Online.tsx KILLS_TO_WIN` | Server declares `winnerId` and freezes the round | S3B |
-| `respawn {epoch}` after 3.2 s; spawn pad = ink at start | `Online.tsx` | Server enforces respawn delay and epoch monotonicity; spawn choice stays on the client | S3B |
-| `rematch` host-only: scores cleared, engine reset | `rematch`, `beginRematch` | `rematch` message, host-only; server clears scores and `winnerId` | S3B |
-| `ping`/`pong` every 2 s → half-RTT feeds aim lead/rewind | `startPinging`, `noteRtt` | SDK latency measurement (or `ping` message), capped at 250 ms as today | S3B |
+| `hit {victim, dmg, epoch, origin}`: the shooter decides it hit | `fireWeapon`, `receive("hit")` | **Replaced:** clients send `fire`/`slash`/`dash`/`throw` intents; the server decides hits with the engine's rays, hitboxes and the real map walls, and applies damage | S3B ✓ |
+| Victim validates hit against rewound pose + world raycast | `engine.takeNetHit` | Server-side lag compensation (body history, ≤ 350 ms) | S3B ✓ |
+| `death {killer}` → everyone bumps kills/deaths, feed | `apply("death")`, `reportDeath` | Server owns health, `kills`/`deaths`; `eliminated` event drives the feed | S3B ✓ |
+| First to 15 kills wins (derived per client) | `Online.tsx KILLS_TO_WIN` | Server sets `winnerId` and stops combat; clients still show the overlay from the score | S3B ✓ |
+| `respawn {epoch}` after 3.2 s; spawn pad = ink at start | `Online.tsx` | Server revives after 3.2 s when the client re-places the body; spawn choice stays on the client | S3B ✓ |
+| `rematch` host-only: scores cleared, engine reset | `rematch`, `beginRematch` | `rematch` message, host-only; server resets and bumps `round` | S3B ✓ |
+| `ping`/`pong` every 2 s → half-RTT feeds aim lead/rewind | `startPinging`, `noteRtt` | SDK `room.ping` every 2 s; sent as each attack's `lag` for server-side rewind (the engine no longer leads targets) | S3B ✓ |
 | TURN credentials, ICE plan, signaling diagnostics | `net.ts`, `signaling.ts`, `convex/turn.ts` | Not needed over WebSockets; retired with PeerJS | S5 |
 | Convex auth (`@convex-dev/auth`) | `src/convex/auth*`, `use-auth.ts` | Out of scope; keep until a persistence/auth decision (Supabase deferred) | later |
 
@@ -73,15 +74,12 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
   `scripts/check-valley.ts` already build the real maps without a renderer) —
   but it means a second physics step on the server and client-side
   reconciliation, which would change movement feel.
-- **Hit registration.** Hit detection uses the shooter's raycast against
-  Three.js meshes, and validation uses the victim's pose history and
-  `raycastWorld`. Moving this to the server needs the same headless colliders
-  and a server-side pose history. Plan: keep the shooter-reports/victim-validates
-  model, add server sanity checks (S3B), and consider server-side lag-compensated
-  validation only after colliders are extracted.
-- **Health.** The victim's engine applies damage (`damagePlayer`, regen). A
-  server-owned HP would fight the engine's regen and local damage (self-damage,
-  void). Keep HP client-reported and server-checked for plausibility at first.
+- **Per-player world state.** Egyptian doors, spike traps, chests and pickups
+  live in each client's own world. S3B treats doors as open on the server,
+  takes spike hits as validated self-reports, does not apply chest healing, and
+  does not track reserve ammunition or grenade counts (magazines, reloads, fire
+  rate and the grenade cooldown are enforced). Making them server-side means
+  moving that map state to the server.
 
 ## Decisions needing review
 
@@ -94,6 +92,13 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
    client-held code; under Colyseus a reconnection token does that job (S2).
 4. **Single process.** Code uniqueness is tracked in memory, which is correct
    for one server process. Scaling out needs Redis presence and driver.
+5. **Erasing yourself scores no kill (S3B).** The PeerJS code gives the victim a
+   kill for their own grenade (`reportDeath` bumps the victim's kills when the
+   killer is themselves). The server counts a death and no kill.
+6. **Shots stay in the shooter's zone (S3B).** The engine tests every remote
+   body regardless of zone, and the surface floor is too low to stop a round,
+   so a shot straight down could hit a player 140 m below in the sanctuary. The
+   server only tests bodies in the shooter's zone.
 
 ## Open issues found during S2
 
@@ -113,9 +118,15 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
   affected. Fix (not applied — it touches auth and the PeerJS default): pass
   `shouldHandleCode` to `ConvexAuthProvider` so `/online` is skipped, or rename
   the lobby's parameter (e.g. `room=`).
-- **Combat is not on Colyseus yet.** With the flag on, players see and follow
-  each other (S3A), but shots, damage, deaths, respawn timing and scores are
-  local only; the arena shows a "COLYSEUS PREVIEW — MOVEMENT ONLY" notice (S3B).
+- **Pre-existing quirks the server reproduces faithfully (S3B):** a chest-high
+  katana cut at arm's length always counts as a head cut (the head cone
+  contains the chest), so one slash erases; grenades bounce at the absolute
+  height 0.12, so one thrown underground jumps to surface height; after two
+  focus dashes the meter stays locked until a round restarts.
+- **Pre-existing in the PeerJS path (not changed):** the victim rejects any hit
+  over 300 (`takeNetHit`), so sniper headshots (450) never land there; and
+  `src/game/weapons.ts` disagrees with the engine's real weapon table (now
+  `src/game/arsenal.ts`).
 - **Bundle size.** The Colyseus SDK is loaded with a dynamic `import()` when a
   Colyseus session connects, so PeerJS builds do not download it. The `/online`
   chunk grows by about 2 KB gzipped for the adapter itself.
@@ -133,8 +144,10 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
 - **S3A — player movement (done):** bodies in the room state; validated `move`
   protocol (volume, speed, teleport rate); remote players drawn by the existing
   engine through the session's `onRemoteState`/`onPeerGone`.
-- **S3B — combat:** hit/death/respawn/rematch through the server, with
-  server-owned scores and winner; `hp`/`firing` in the body.
+- **S3B — combat (done):** intents only from clients; server-side hits (map
+  walls, hitboxes, lag compensation), damage, health, regen, deaths, respawns,
+  scores, winner and rematch; the engine predicts tracers, muzzle flashes and
+  sound and shows hit feedback only when the server confirms it.
 - **S4 — hosting:** pick a host for the Node service, set up a staging deploy
   and a Vercel preview pointing at it.
 - **S5 — retirement:** remove PeerJS, the TURN endpoint and the signaling code

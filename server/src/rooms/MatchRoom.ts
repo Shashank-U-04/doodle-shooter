@@ -11,6 +11,7 @@ import {
   type MapId,
 } from "../rules.js";
 import { isOriginAllowed, originPolicy } from "../origins.js";
+import { Combat, type EliminatedEvent, type HitEvent } from "./Combat.js";
 import {
   clampPitch,
   COORD_LIMIT,
@@ -39,12 +40,32 @@ const moveMessage = z.object({
   yaw: angle,
   pitch: angle,
   moving: z.boolean(),
+  /** cosmetic: draws muzzle puffs on this body for everyone else (damage is never taken from it) */
+  firing: z.boolean().optional(),
   alive: z.boolean(),
   weapon: z.string().max(16),
   /** the client's own body generation; a change asks for a teleport */
   epoch: z.number().int().min(0).max(2 ** 31 - 1),
 });
 type MoveMessage = z.infer<typeof moveMessage>;
+
+const vec = z.object({ x: coord, y: coord, z: coord });
+/** per-client counter, strictly increasing; a repeat is a duplicate and is dropped */
+const shotId = z.number().int().min(1).max(2 ** 31 - 1);
+/** how old the bodies the client aimed at were, ms (clamped to MAX_REWIND_MS) */
+const lag = z.number().int().min(0).max(5000);
+const weaponName = z.string().max(16);
+
+/**
+ * Combat intents (src/rooms/Combat.ts decides what they do). A payload of the
+ * wrong shape disconnects the sender, as for `move`; a well-formed intent the
+ * rules refuse (too fast, dead, unknown weapon, …) is dropped silently.
+ */
+const fireMessage = z.object({ shot: shotId, weapon: weaponName, origin: vec, dir: vec, ads: z.boolean(), air: z.boolean(), lag });
+const meleeMessage = z.object({ shot: shotId, origin: vec, dir: vec, lag });
+const throwMessage = z.object({ shot: shotId, origin: vec, dir: vec });
+const reloadMessage = z.object({ weapon: weaponName });
+const hazardMessage = z.object({ damage: z.number().min(0).max(1000) });
 
 /**
  * Codes held by live rooms in this process. A room's code is its roomId, so
@@ -77,8 +98,9 @@ const FORBIDDEN = 403;
  *
  * The server owns the roster, the player limit, the ready flags, the match
  * rules and the decision to start. While playing it also holds every body's
- * position, facing and movement state, within the limits in movement.ts.
- * Combat (hits, damage, deaths, scores) is not synchronized yet.
+ * position, facing and movement state, within the limits in movement.ts, and
+ * runs all combat (Combat.ts): clients send intent, the server decides hits,
+ * damage, health, deaths, respawns, scores and the winner.
  *
  * Identity is the Colyseus session: a player who drops keeps their seat for
  * RECONNECT_SECONDS, and only the holder of that seat's reconnection token can
@@ -92,6 +114,10 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   reconnectSeconds = RECONNECT_SECONDS;
   /** per-player movement limiter; server-only, keyed by session id */
   private motion = new Map<string, Motion>();
+  /** health, deaths and scores; public so tests can read its counters */
+  combat = new Combat(this.state, (type: "hit" | "eliminated", message: HitEvent | EliminatedEvent) =>
+    this.broadcast(type, message),
+  );
 
   /**
    * Matchmaking gate: refuse browsers on origins that are not allowed. The
@@ -132,9 +158,22 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       for (const p of this.state.players.values()) p.spawned = false;
       this.motion.clear();
       this.state.phase = "playing";
+      this.combat.resetMatch();
       return { ok: true };
     },
     move: validate(moveMessage, (client, message) => this.applyMove(client.sessionId, message)),
+    fire: validate(fireMessage, (client, m) => this.combat.fire(client.sessionId, m)),
+    slash: validate(meleeMessage, (client, m) => this.combat.slash(client.sessionId, m)),
+    dash: validate(meleeMessage, (client, m) => this.combat.dash(client.sessionId, m)),
+    throw: validate(throwMessage, (client, m) => this.combat.throwGrenade(client.sessionId, m)),
+    reload: validate(reloadMessage, (client, m) => this.combat.reload(client.sessionId, m.weapon)),
+    hazard: validate(hazardMessage, (client, m) => this.combat.hazard(client.sessionId, m.damage)),
+    /** host → server: run the match again (scores, health and the winner reset) */
+    rematch: (client: Client) => {
+      if (client.sessionId !== this.state.hostId || this.state.phase !== "playing") return;
+      this.combat.resetMatch();
+      this.state.round += 1;
+    },
   };
 
   /** Accept a client's proposed body, within the map's volume and the movement limits. */
@@ -169,9 +208,11 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     p.yaw = wrapAngle(m.yaw);
     p.pitch = clampPitch(m.pitch);
     p.moving = m.moving;
-    p.alive = m.alive;
+    p.firing = m.firing === true;
+    // `alive` is the server's now (combat decides it); the client's report is ignored.
     if ((WEAPONS as readonly string[]).includes(m.weapon)) p.weapon = m.weapon;
     p.spawned = true;
+    this.combat.moved(p, result.teleported, p.weapon);
   }
 
   /** The same rules the lobby's ENTER ARENA button shows, enforced here. */
@@ -194,6 +235,8 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     this.state.grapple = opts.grapple;
     this.state.maxPlayers = opts.maxPlayers;
     this.setPatchRate(PATCH_INTERVAL_MS);
+    // regen, grenade fuses and late respawns
+    this.setSimulationInterval(() => this.combat.tick(), PATCH_INTERVAL_MS);
   }
 
   onJoin(client: Client, options: unknown) {
@@ -208,6 +251,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     player.ready = isHost;
     this.state.players.set(client.sessionId, player);
     if (isHost) this.state.hostId = client.sessionId;
+    this.combat.joined(player);
   }
 
   /**
@@ -232,12 +276,14 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     // is a re-spawn, not a step.
     const motion = this.motion.get(client.sessionId);
     if (motion) motion.clientEpoch = null;
+    this.combat.reconnected(client.sessionId);
   }
 
   /** Gone for good: left on purpose, or the reconnection window ran out. */
   onLeave(client: Client) {
     this.state.players.delete(client.sessionId);
     this.motion.delete(client.sessionId);
+    this.combat.forget(client.sessionId);
     if (client.sessionId !== this.state.hostId) return;
     // The roster lives on the server, so the room outlives its host: the
     // longest-standing connected guest takes over and is ready by definition.

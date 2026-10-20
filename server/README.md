@@ -5,9 +5,10 @@ matches, part of the migration away from PeerJS (see
 [`../docs/colyseus-migration.md`](../docs/colyseus-migration.md)). It owns the
 lobby: roster, player limit, ready flags, match rules, the decision to start,
 and reconnection — and, in the arena, every player's body (position, facing,
-movement state), within server-enforced limits. The frontend uses it only when
-built with `VITE_NET_TRANSPORT=colyseus`; PeerJS is still the default. Combat
-(hits, damage, deaths, scores) does not run through it yet.
+movement state) within server-enforced limits, and all combat: clients send
+intent, the server decides hits, damage, health, deaths, respawns, scores and
+the winner. The frontend uses it only when built with
+`VITE_NET_TRANSPORT=colyseus`; PeerJS is still the default.
 
 It is a standalone npm package with its own `package-lock.json`. The root
 frontend build, lint and Vercel deployment do not touch this folder.
@@ -107,7 +108,13 @@ default 4).
 | `ready` | `{ ready: boolean }` | guests | lobby only; the host is always ready |
 | `config` | `{ map?, grapple? }` | host | lobby only; unknown maps rejected |
 | `start` | — | host | send with `room.request("start")`; answers `{ ok: true }` or `{ ok: false, reason }` |
-| `move` | `{ x, y, z, yaw, pitch, moving, alive, weapon, epoch }` | everyone | playing only; see Movement |
+| `move` | `{ x, y, z, yaw, pitch, moving, firing?, alive, weapon, epoch }` | everyone | playing only; see Movement (`alive` is ignored: the server decides it) |
+| `fire` | `{ shot, weapon, origin, dir, ads, air, lag }` | everyone | see Combat |
+| `slash`, `dash` | `{ shot, origin, dir, lag }` | everyone | katana; see Combat |
+| `throw` | `{ shot, origin, dir }` | everyone | grenade; see Combat |
+| `reload` | `{ weapon }` | everyone | starts a reload of that gun |
+| `hazard` | `{ damage }` | everyone | a spike trap the client stood on; see Combat |
+| `rematch` | — | host | resets health, scores and the winner; bumps `round` |
 
 `start` is refused with `not-host`, `not-in-lobby`, `no-guests` (nobody to play),
 `guest-reconnecting` (a guest's seat is held for a reconnection) or
@@ -144,9 +151,69 @@ and the server decides what everyone else sees (`src/movement.ts`).
   client's first move places it. After a reconnect the next move re-places it,
   because a reloaded page runs a fresh engine whose epochs restart.
 
-What this does not do: walls are not checked on the server, so inside those
-limits the client still chooses its path, and `alive` is the client's own
-report until combat moves to the server.
+What this does not do: walls are not checked for movement, so inside those
+limits the client still chooses its path. `firing` is cosmetic (other players
+draw muzzle puffs from it) and never decides anything.
+
+## Combat
+
+The server referees every attack (`src/rooms/Combat.ts`, rules in
+`src/combat.ts`). A client sends what it did — "fired the rifle from here, that
+way" — never what it hit; there is no message that claims damage or a kill.
+
+- **The numbers are the game's.** Weapon stats come from the engine's rack
+  (`src/game/arsenal.ts`; note `src/game/weapons.ts` is an older, different
+  table the engine never read for guns), the katana from `KATANA_MELEE`, and
+  hitboxes, range, spread, grenade physics, blast falloff, the focus dash,
+  health, regen, the 3.2 s respawn and the 15-kill win from the engine and the
+  lobby. `test/combat-parity.test.ts` fails if any of them drift.
+- **Hits** are the engine's rays, ported line for line: per pellet, the server
+  rolls the spread (hip or ADS, ×1.8 off the ground), stops the ray at the
+  first wall of the shooter's zone (real map colliders, below), and tests the
+  other bodies' head spheres and boxes. Damage is `damage × headMul` per
+  pellet, applied once; one `hit` event per victim per shot.
+- **Walls** come from `src/maps/colliders.json`, exported from the real map
+  builders by `npx tsx scripts/export-colliders.ts` (re-run it after changing a
+  map; the parity test fails if it is stale). Egyptian doors are left out:
+  each player opens them in their own world, so the server treats them as open.
+- **Firing rules:** the shooter must be placed, connected and alive, the match
+  running and undecided; the shot's origin within 3 m of the shooter's eye; the
+  aim a unit vector; the shot id higher than any before (duplicates and
+  replays are dropped). Each weapon fires at its interval, with 150 ms of
+  slack for network bunching; magazines empty and refill only after the
+  weapon's reload time; switching weapons cancels a reload.
+- **Lag compensation:** a shot is tested against the bodies as they were
+  `lag` ms ago (the client's round trip + `100 ms, capped at 350 ms), and
+  against where they are now.
+- **Katana:** the engine's reach/arc cones; three landed cuts fill the focus
+  meter, which opens a 2.6 s window for up to two dashes (95 damage).
+- **Grenades:** the server flies the grenade with the engine's integration and
+  sets it off after the 1.6 s fuse; everyone in the blast is hurt (×1.5 for
+  everyone but the thrower), credited to the thrower.
+- **Health and death:** 120 hp, regen 11 hp/s after 4.5 s without damage. At
+  0 the player is down: a death, a kill for the attacker (none for erasing
+  yourself), an `eliminated` event, and a respawn once 3.2 s have passed and
+  the client re-places the body (or 2 s after that regardless). First to 15
+  kills sets `winnerId` and stops combat until the host's `rematch`.
+- **Order:** messages are processed one at a time in arrival order, so when
+  two players fire at once the first shot processed lands and a player it
+  kills can no longer fire.
+
+What the server does not decide, and why:
+
+- **Spike traps** run on each client's clock; a client reports one it stood
+  on (exactly 12, at most every 850 ms, never on the surface or in the
+  district). A client can only hurt itself this way — or skip reporting.
+- **ADS and airborne** (which set the spread) are the client's report.
+- **Reserve ammunition and grenade count** are not tracked: chests and
+  pickups grant them in each client's own world. Magazines, reloads, fire
+  rate and the grenade cooldown are enforced. **Chest healing does not apply**
+  under server authority (the server owns health and cannot see chests).
+- **Walls do not stop a katana or a blast** — they do not in the engine either.
+
+Events: `hit` `{ attacker, victim, weapon, damage, head, kill, x, y, z }` (damage
+is health actually taken) and `eliminated` `{ victim, killer, weapon }` (`killer`
+is `""` for no credit).
 
 ## Leaving and reconnecting
 

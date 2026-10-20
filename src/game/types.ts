@@ -145,6 +145,22 @@ export type NetHitReport = {
   origin: NetShotOrigin;
 };
 
+/**
+ * Server-authoritative combat (the Colyseus transport): what the engine sends
+ * instead of deciding hits itself. Positions and directions are world space;
+ * `dir` is the unscattered aim (the server rolls the spread).
+ */
+export type NetCombatIntent =
+  | { kind: "fire"; weapon: string; origin: NetShotOrigin; dir: NetShotOrigin; ads: boolean; air: boolean }
+  | { kind: "slash"; origin: NetShotOrigin; dir: NetShotOrigin }
+  | { kind: "dash"; origin: NetShotOrigin; dir: NetShotOrigin }
+  | { kind: "throw"; origin: NetShotOrigin; dir: NetShotOrigin }
+  | { kind: "reload"; weapon: string }
+  | { kind: "hazard"; damage: number };
+
+/** The server confirmed one of our attacks landed: draw the splash and the hitmarker. */
+export type NetShotLanded = { x: number; y: number; z: number; head: boolean; kill: boolean; /** a katana hit charges the focus meter */ focus: boolean };
+
 /** A remote player the engine should draw this frame. */
 export type NetRemotePlayer = {
   id: string;
@@ -170,6 +186,8 @@ export type EngineCallbacks = {
   onNetHit?: (hit: NetHitReport) => void;
   /** we were erased; killerId names the remote that did it (null = self/void) */
   onNetDeath?: (killerId: string | null) => void;
+  /** server combat only: we attacked; the server decides what it did */
+  onNetCombat?: (intent: NetCombatIntent) => void;
 };
 
 export interface GameHandle {
@@ -214,4 +232,17 @@ export interface GameHandle {
   netRespawn(preferIndex?: number): void;
   /** True while our own player is still standing. */
   isAlive(): boolean;
+  // ---- server-authoritative combat (Colyseus): inert unless switched on ----
+  /**
+   * Hand hits, damage and health to the server: attacks become onNetCombat
+   * intents, and nothing local (our own grenade, a trap, a chest) changes our
+   * health. Tracers, muzzle flashes and sounds are still drawn at once.
+   */
+  setServerCombat(on: boolean): void;
+  /** The server says one of our attacks landed. */
+  showNetHit(hit: NetShotLanded): void;
+  /** The server took `dmg` off us (`killerId` null: our own doing). */
+  netDamage(dmg: number, killerId: string | null): void;
+  /** The server's word on our health; corrects drift and enforces its deaths. */
+  syncNetHealth(hp: number, alive: boolean, killerId: string | null): void;
 }

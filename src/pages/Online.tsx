@@ -615,6 +615,8 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
         onAim: setAds,
         // our rounds landed on someone: they are the authority on their own body
         onNetHit: (hit) => session.reportHit(hit.victim, hit.dmg, hit.epoch, hit.origin),
+        // Colyseus: our attacks go to the server, which decides what they did
+        onNetCombat: (intent) => session.reportCombat?.(intent),
         onNetDeath: (killerId) => {
           session.reportDeath(killerId ?? session.me);
           // A client never applies its own death envelope, so the victim's page
@@ -661,6 +663,7 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
     };
 
     handle.setPvp(true);
+    handle.setServerCombat(session.serverCombat === true);
     handle.setSensitivity(Number(localStorage.getItem("dd_sens") || 100));
     handle.setInvert(localStorage.getItem("dd_invert") === "1");
     handle.setMusic(localStorage.getItem("dd_music") !== "0");
@@ -695,6 +698,10 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
         handle.takeNetHit(dmg, killer, session.rewindMs, origin);
       },
       onLatency: (ms) => handle.setNetLatency(ms),
+      // Colyseus: the server's verdicts (PeerJS never calls these)
+      onShotLanded: (hit) => handle.showNetHit(hit),
+      onHurt: (dmg, killer) => handle.netDamage(dmg, killer),
+      onHealth: (hp, alive, killer) => handle.syncNetHealth(hp, alive, killer),
       // a rematch (or the very first start) rebuilds the arena from scratch
       onStart: () => resetRound(),
       onRematch: () => resetRound(),

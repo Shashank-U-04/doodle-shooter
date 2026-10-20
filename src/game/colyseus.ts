@@ -9,8 +9,12 @@
 // times a second and every other body comes back in the room state, as the
 // server validated it (server/src/movement.ts), through the same
 // onRemoteState/onPeerGone callbacks the PeerJS transport uses — so the engine
-// draws remote players exactly as it does over WebRTC. Combat is not
-// synchronized yet: hits, deaths, respawns and rematches are still no-ops.
+// draws remote players exactly as it does over WebRTC.
+//
+// Combat is the server's (server/src/rooms/Combat.ts): the engine's attacks
+// arrive here as intents and go up with a shot id and a lag estimate; the
+// server's verdicts come back as `hit` / `eliminated` events and as health,
+// kills and deaths in the state. Nothing this client claims can hurt anyone.
 //
 // Reloads: the server holds a dropped seat for a short window, and only the
 // holder of that seat's reconnection token can take it back. The token is kept
@@ -19,9 +23,9 @@
 
 import type { Client, Room } from "@colyseus/sdk";
 import { normalizeMatchConfig, type MatchConfig } from "./maps";
-import type { NetHandlers, NetPlayer, SignalState } from "./net";
-import type { NetPlayerState } from "./types";
-import { readColyseusUrl, viteEnv, type MatchSession } from "./transport";
+import type { NetPlayer, SignalState } from "./net";
+import type { NetCombatIntent, NetPlayerState, NetShotOrigin } from "./types";
+import { readColyseusUrl, viteEnv, type MatchHandlers, type MatchSession } from "./transport";
 
 /** sessionStorage key for this tab's seat; separate from the PeerJS lease. */
 export const SEAT_KEY = "dd_colyseus_seat";
@@ -36,6 +40,19 @@ export const RESUME_WINDOW_MS = 28_000;
 /** How often our body is sent (Hz); the server patches at the same rate. */
 export const MOVE_RATE_HZ = 20;
 
+/** How often the round trip is measured, ms. */
+const PING_EVERY_MS = 2000;
+/**
+ * How far behind the server our view of other bodies is, beyond the round
+ * trip: up to one patch (50 ms) plus the engine's easing toward each new
+ * position (~70 ms). The server rewinds bodies by round trip + this (capped).
+ */
+const VIEW_DELAY_MS = 100;
+
+/** server/src/rooms/Combat.ts events */
+type HitEvent = { attacker: string; victim: string; weapon: string; damage: number; head: boolean; kill: boolean; x: number; y: number; z: number };
+type EliminatedEvent = { victim: string; killer: string; weapon: string };
+
 /** What the server answers to `start` (server/src/rooms/MatchRoom.ts). */
 type StartResult = { ok: true } | { ok: false; reason: string };
 
@@ -47,6 +64,8 @@ type RoomJSON = {
   grapple?: boolean;
   maxPlayers?: number;
   hostId?: string;
+  winnerId?: string;
+  round?: number;
   players?: Record<string, PlayerJSON>;
 };
 
@@ -64,9 +83,13 @@ type PlayerJSON = {
   yaw?: number;
   pitch?: number;
   moving?: boolean;
+  firing?: boolean;
   alive?: boolean;
   weapon?: string;
   epoch?: number;
+  hp?: number;
+  kills?: number;
+  deaths?: number;
 };
 
 type Seat = {
@@ -180,11 +203,12 @@ export class ColyseusSession implements MatchSession {
   me = "";
   phase: "connecting" | "lobby" | "playing" | "closed" = "connecting";
   readonly rewindMs = 0;
+  readonly serverCombat = true;
 
   private readonly url: string | null;
   private readonly storage: SeatStorage | null;
   private readonly resumeOnly: boolean;
-  private handlers: NetHandlers = {};
+  private handlers: MatchHandlers = {};
   private room: Room | null = null;
   private config: MatchConfig;
   private snapshot: NetPlayer[] = [];
@@ -202,6 +226,16 @@ export class ColyseusSession implements MatchSession {
   private remoteSeq = 0;
   /** lobby-relevant fields last published, so onChange is not fired 20× a second */
   private rosterKey = "";
+  /** our measured round trip to the server, ms */
+  private rtt = 0;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  /** strictly increasing per page; the server drops anything it has seen */
+  private shotSeq = 0;
+  /** our own health as last handed to the arena, and who took the last of it */
+  private healthKey = "";
+  private killedBy: string | null = null;
+  /** the rematch counter as last seen */
+  private round: number | null = null;
 
   constructor(code: string, name: string, isHost: boolean, config: MatchConfig, deps: ColyseusSessionDeps = {}) {
     this.code = code.toUpperCase();
@@ -213,7 +247,7 @@ export class ColyseusSession implements MatchSession {
     this.resumeOnly = deps.resumeOnly ?? false;
   }
 
-  setHandlers(patch: NetHandlers) {
+  setHandlers(patch: MatchHandlers) {
     Object.assign(this.handlers, patch);
     // State patches only carry changes, so a player standing still sends
     // none. The arena installs its body handler after the match has started:
@@ -315,6 +349,11 @@ export class ColyseusSession implements MatchSession {
       this.fail("Lost the connection to the match server and could not get back in. Join again.");
     });
     room.onError((code, message) => console.warn(`[colyseus ${this.code}] error ${code}`, message ?? ""));
+    room.onMessage("hit", (e: HitEvent) => this.onHitEvent(e));
+    room.onMessage("eliminated", (e: EliminatedEvent) => this.onEliminated(e));
+    const ping = () => room.ping((ms) => (this.rtt = ms));
+    ping();
+    this.pingTimer = setInterval(ping, PING_EVERY_MS);
 
     this.setSignal("open");
     this.handlers.onStatus?.(this.isHost ? "ROOM OPEN — SEND THE CODE" : "IN THE ROOM — READY WHEN YOU ARE");
@@ -335,6 +374,7 @@ export class ColyseusSession implements MatchSession {
     if (this.phase === "closed") return;
     this.phase = "closed";
     this.stopTicking();
+    this.stopPinging();
     // Leaving on purpose gives the seat up at once, and this tab forgets it.
     clearSeat(this.storage);
     const room = this.room;
@@ -358,9 +398,15 @@ export class ColyseusSession implements MatchSession {
     }
   }
 
+  private stopPinging() {
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    this.pingTimer = null;
+  }
+
   private fail(text: string) {
     this.phase = "closed";
     this.stopTicking();
+    this.stopPinging();
     this.setSignal("lost", text);
     this.handlers.onError?.(text);
   }
@@ -393,8 +439,8 @@ export class ColyseusSession implements MatchSession {
           ink: p.ink,
           isMe: p.id === this.me,
           isHost: p.isHost,
-          kills: 0,
-          deaths: 0,
+          kills: p.kills ?? 0,
+          deaths: p.deaths ?? 0,
           state: p.spawned ? this.bodyOf(p) : { ...IDLE },
           online: p.connected,
           ready: p.isHost || p.ready,
@@ -412,8 +458,16 @@ export class ColyseusSession implements MatchSession {
     } else if (this.phase !== "closed") {
       this.phase = "lobby";
     }
-    // Bodies change every patch; the roster rarely does. Re-render only for the latter.
-    const key = JSON.stringify(this.snapshot.map((p) => [p.id, p.name, p.ink, p.isHost, p.ready, p.online]));
+    // A host rematch: every client restarts the round from the same moment.
+    const round = s.round ?? 0;
+    if (this.round !== null && round > this.round && this.phase === "playing") {
+      this.killedBy = null;
+      this.handlers.onRematch?.();
+    }
+    this.round = round;
+    this.syncHealth(players.find((p) => p.id === this.me));
+    // Bodies change every patch; the roster and the score rarely do. Re-render only for those.
+    const key = JSON.stringify(this.snapshot.map((p) => [p.id, p.name, p.ink, p.isHost, p.ready, p.online, p.kills, p.deaths]));
     if (key !== this.rosterKey) {
       this.rosterKey = key;
       this.handlers.onChange?.();
@@ -428,11 +482,11 @@ export class ColyseusSession implements MatchSession {
       z: p.z ?? 0,
       yaw: p.yaw ?? 0,
       pitch: p.pitch ?? 0,
-      // Health is not synchronized yet; a standing body reads as full.
-      hp: IDLE.hp,
+      hp: p.hp ?? IDLE.hp,
       alive: p.alive ?? false,
       moving: p.moving ?? false,
-      firing: false,
+      // cosmetic (muzzle puffs, the swing); what a shot did is the server's call
+      firing: p.firing ?? false,
       weapon: p.weapon ?? IDLE.weapon,
       epoch: p.epoch ?? 0,
       seq: ++this.remoteSeq,
@@ -512,7 +566,7 @@ export class ColyseusSession implements MatchSession {
     if (this.previewNoted) return;
     this.previewNoted = true;
     // Deferred so it lands after the arena has installed its feed handler.
-    globalThis.setTimeout(() => this.handlers.onFeed?.("COLYSEUS PREVIEW — MOVEMENT ONLY, COMBAT IS NOT SYNCED YET", true), 0);
+    globalThis.setTimeout(() => this.handlers.onFeed?.("COLYSEUS PREVIEW — THE MATCH SERVER REFEREES EVERY SHOT", true), 0);
   }
 
   private stopTicking() {
@@ -534,18 +588,86 @@ export class ColyseusSession implements MatchSession {
       yaw: s.yaw,
       pitch: s.pitch,
       moving: s.moving,
+      firing: s.firing,
       alive: s.alive,
       weapon: s.weapon,
       epoch: s.epoch,
     });
   }
 
-  /* -------------------------- combat (next milestone) -------------------------- */
+  /* --------------------------------- combat --------------------------------- */
 
+  /** Hand an attack to the server, stamped with a shot id and how old our view is. */
+  reportCombat(i: NetCombatIntent) {
+    const room = this.room;
+    if (!room || this.phase !== "playing") return;
+    const ok = (v: NetShotOrigin) => Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
+    // The server disconnects a client that sends a non-finite number.
+    if ("origin" in i && (!ok(i.origin) || !ok(i.dir))) return;
+    const lag = Math.max(0, Math.min(5000, Math.round(this.rtt + VIEW_DELAY_MS)));
+    switch (i.kind) {
+      case "fire":
+        room.send("fire", { shot: ++this.shotSeq, weapon: i.weapon, origin: i.origin, dir: i.dir, ads: i.ads, air: i.air, lag });
+        break;
+      case "slash":
+      case "dash":
+        room.send(i.kind, { shot: ++this.shotSeq, origin: i.origin, dir: i.dir, lag });
+        break;
+      case "throw":
+        room.send("throw", { shot: ++this.shotSeq, origin: i.origin, dir: i.dir });
+        break;
+      case "reload":
+        room.send("reload", { weapon: i.weapon });
+        break;
+      case "hazard":
+        if (Number.isFinite(i.damage)) room.send("hazard", { damage: i.damage });
+        break;
+    }
+  }
+
+  private onHitEvent(e: HitEvent) {
+    if (e.victim === this.me) {
+      if (e.kill) this.killedBy = e.attacker === this.me ? null : e.attacker;
+      this.handlers.onHurt?.(e.damage, e.attacker === this.me ? null : e.attacker);
+    } else if (e.attacker === this.me) {
+      this.handlers.onShotLanded?.({ x: e.x, y: e.y, z: e.z, head: e.head, kill: e.kill, focus: e.weapon === "KATANA" });
+    }
+  }
+
+  /** The kill feed. Our own obituary is written by the arena when we fall. */
+  private onEliminated(e: EliminatedEvent) {
+    if (e.victim === this.me) {
+      this.killedBy = e.killer || null;
+      return;
+    }
+    const name = (id: string) => this.snapshot.find((p) => p.id === id)?.name ?? "SOMEONE";
+    const text = e.killer ? `${name(e.killer)} ERASED ${name(e.victim)}` : `${name(e.victim)} ERASED THEMSELVES`;
+    this.handlers.onFeed?.(text, e.killer === this.me);
+  }
+
+  /** Our health as the server has it; the arena corrects its own copy to match. */
+  private syncHealth(me: PlayerJSON | undefined) {
+    if (!me || this.phase !== "playing" || !me.spawned) return;
+    const hp = me.hp ?? IDLE.hp;
+    const alive = me.alive ?? false;
+    const key = `${hp}|${alive}`;
+    if (key === this.healthKey) return;
+    this.healthKey = key;
+    if (alive) this.killedBy = null;
+    this.handlers.onHealth?.(hp, alive, this.killedBy);
+  }
+
+  // The server keeps the score and decides deaths and respawns; these PeerJS
+  // reports have nothing to do here.
   reportHit() {}
   reportDeath() {}
   reportRespawn() {}
-  rematch() {}
+
+  /** Host only: the server resets the round for everyone (see onRematch in sync()). */
+  rematch() {
+    if (!this.room || !this.isHostNow()) return;
+    this.room.send("rematch");
+  }
 
   diagnostics() {
     return {

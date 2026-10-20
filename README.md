@@ -225,8 +225,8 @@ server instead: the server draws the room code, owns the roster, ready flags,
 map and grapple rule, the four-player limit and the decision to start, and holds
 a dropped player's seat for 30 seconds so a reload resumes it. In the arena,
 players see each other move (the server validates every position, speed and
-teleport); combat is not on Colyseus yet — shots and scores stay local, and the
-arena says so.
+teleport), and the server referees every shot: hits, damage, health, deaths,
+respawns and the score are its call, and a client cannot claim damage.
 
 Try it locally:
 
