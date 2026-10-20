@@ -109,6 +109,19 @@ const SILENCE_MS = 12000;
 export const MAX_PLAYERS = 4;
 
 /**
+ * How long one dial attempt gets before it is declared dead (ms).
+ *
+ * A direct ICE handshake on a workable route completes in one to three
+ * seconds. Eight seconds is well past that, and leaves room for a second
+ * attempt inside the twenty seconds a player will actually wait.
+ */
+const DIAL_TIMEOUT_MS = 8000;
+/** Fresh peer connections a guest may open before it reports the failure. */
+const MAX_DIALS = 2;
+/** Beat between the two attempts, so the broker has dropped the dead channel. */
+const RETRY_DELAY_MS = 700;
+
+/**
  * The ICE server list, resolved once per page.
  *
  * PeerJS ships a default list, but it is shared by every PeerJS app in the
@@ -119,31 +132,131 @@ export const MAX_PLAYERS = 4;
  * cases, then whichever TURN relay the deployment configured for the hard ones.
  *
  * Preference order:
- *   1. `VITE_TURN_CREDENTIALS_URL` — an endpoint returning an `RTCIceServer[]`
- *      (or `{ iceServers }`) — e.g. Metered's Open Relay. Best, because those
- *      credentials expire and can be rotated without a redeploy.
- *   2. `VITE_TURN_URLS` + `VITE_TURN_USERNAME` + `VITE_TURN_CREDENTIAL` — a
+ *   1. This deployment's own credential endpoint, `<VITE_CONVEX_SITE_URL>/turn`
+ *      (src/convex/turn.ts). Best, because the relay secret never reaches the
+ *      browser, the credential expires, and no redeploy is needed to rotate.
+ *   2. `VITE_TURN_CREDENTIALS_URL` — a third-party credential endpoint
+ *      (Metered Open Relay, Cloudflare Realtime TURN, …). Explicit opt-in.
+ *   4. `VITE_TURN_URLS` + `VITE_TURN_USERNAME` + `VITE_TURN_CREDENTIAL` — a
  *      static relay, for providers that hand out long-lived credentials.
- *   3. STUN only. Fine on a home network, cannot cross a symmetric NAT, so a
- *      cellular-to-cellular match will not connect without 1 or 2.
+ *   5. STUN only. Fine on a home network, cannot cross a symmetric NAT, so a
+ *      cellular-to-cellular match will not connect without a relay.
+ *
+ * Relays are the only way a match between two restricted networks works; when
+ * none is available this records *why* (see `IcePlan.note`) instead of leaving
+ * the player with a generic timeout.
  */
-let iceLookup: Promise<RTCIceServer[]> | null = null;
+const STUN_ONLY: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
 
-export function resolveIceServers(): Promise<RTCIceServer[]> {
-  if (iceLookup) return iceLookup;
-  iceLookup = (async (): Promise<RTCIceServer[]> => {
-    const stun: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
+/** Verbose ICE logging is a development tool, not a production console flood. */
+const NET_DEBUG = Boolean(import.meta.env.VITE_NET_DEBUG) || Boolean(import.meta.env.DEV);
+function netLog(...args: unknown[]) {
+  if (NET_DEBUG) console.info(...args);
+}
 
-    const endpoint = import.meta.env.VITE_TURN_CREDENTIALS_URL as string | undefined;
-    if (endpoint) {
+export type IcePlan = {
+  servers: RTCIceServer[];
+  /** where the relay (if any) came from */
+  relay: "none" | "static" | "endpoint" | "deployment";
+  /** log-safe explanation when there is no relay, or the endpoint failed */
+  note?: string;
+};
+
+/** What kind of ICE candidate a connection actually managed to gather. */
+export type CandidateTally = { host: number; srflx: number; relay: number; prflx: number; total: number };
+
+export const emptyTally = (): CandidateTally => ({ host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 });
+
+const isRelayUrl = (u: string) => /^turns?:/i.test(u);
+const isIceUrl = (u: string) => /^(stuns?|turns?):/i.test(u);
+
+/**
+ * Drop everything the browser cannot use before it reaches RTCPeerConnection.
+ *
+ * A relay entry with no username/credential can only ever answer 401, and a
+ * `http://` or `stun:` URL in a relay slot quietly consumes the whole ICE
+ * allowance while gathering nothing. Both are rejected here, and the count is
+ * kept so the diagnostics can say the configuration itself was broken rather
+ * than blaming the network.
+ */
+export function sanitizeIceServers(input: unknown): { servers: RTCIceServer[]; relay: number; dropped: number } {
+  const servers: RTCIceServer[] = [];
+  let relay = 0;
+  let dropped = 0;
+  const list = Array.isArray(input) ? input : [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== "object") {
+      dropped++;
+      continue;
+    }
+    const e = entry as { urls?: unknown; username?: unknown; credential?: unknown };
+    const raw = Array.isArray(e.urls) ? e.urls : typeof e.urls === "string" ? [e.urls] : [];
+    const urls = raw.map((u) => String(u).trim()).filter((u) => isIceUrl(u));
+    if (urls.length === 0) {
+      dropped++;
+      continue;
+    }
+    if (!urls.some(isRelayUrl)) {
+      servers.push({ urls });
+      continue;
+    }
+    const username = typeof e.username === "string" ? e.username : "";
+    const credential = typeof e.credential === "string" ? e.credential : "";
+    if (!username || !credential) {
+      dropped++;
+      continue;
+    }
+    servers.push({ urls, username, credential });
+    relay++;
+  }
+  return { servers, relay, dropped };
+}
+
+let icePlan: Promise<IcePlan> | null = null;
+
+/**
+ * Resolve the complete ICE list once per page.
+ *
+ * Order matters: the deployment's own credential endpoint first (nothing
+ * secret ships in the bundle and the relay can rotate without a redeploy),
+ * then an explicitly configured third-party endpoint, then a static relay.
+ * Whatever the outcome, the reason is recorded rather than swallowed.
+ */
+export function resolveIcePlan(): Promise<IcePlan> {
+  if (icePlan) return icePlan;
+  icePlan = (async (): Promise<IcePlan> => {
+    const explicit = import.meta.env.VITE_TURN_CREDENTIALS_URL as string | undefined;
+    const convexUrl = import.meta.env.VITE_CONVEX_URL as string | undefined;
+    const site =
+      (import.meta.env.VITE_CONVEX_SITE_URL as string | undefined)?.replace(/\/+$/, "") ??
+      convexUrl?.replace(/\.convex\.cloud\/?$/, ".convex.site");
+
+    const endpoints: { url: string; relay: IcePlan["relay"] }[] = [];
+    if (explicit) endpoints.push({ url: explicit, relay: "endpoint" });
+    if (site) endpoints.push({ url: `${site}/turn`, relay: "deployment" });
+
+    let note = "";
+    for (const endpoint of endpoints) {
       try {
-        const res = await fetch(endpoint, { cache: "no-store" });
-        const body = (await res.json()) as RTCIceServer[] | { iceServers?: RTCIceServer[] };
-        const list = Array.isArray(body) ? body : (body.iceServers ?? []);
-        if (list.length > 0) return [...stun, ...list];
-        console.warn("[net] TURN credentials endpoint returned nothing; falling back to STUN.");
+        const res = await fetch(endpoint.url, { cache: "no-store" });
+        if (!res.ok) {
+          note = `the relay credential service answered HTTP ${res.status}`;
+          continue;
+        }
+        const body = (await res.json()) as
+          | RTCIceServer[]
+          | { iceServers?: RTCIceServer[]; configured?: boolean; reason?: string };
+        const raw = Array.isArray(body) ? body : (body.iceServers ?? []);
+        const clean = sanitizeIceServers(raw);
+        if (clean.relay > 0) {
+          return { servers: [...STUN_ONLY, ...clean.servers], relay: endpoint.relay };
+        }
+        note =
+          (!Array.isArray(body) && typeof body.reason === "string" && body.reason) ||
+          "the relay credential service returned no usable TURN server";
+        if (clean.dropped > 0) note += ` (${clean.dropped} rejected) `;
       } catch (err) {
-        console.warn("[net] TURN credentials endpoint failed:", err);
+        note = `the relay credential service could not be reached (${(err as Error)?.message ?? String(err)})`;
       }
     }
 
@@ -153,15 +266,26 @@ export function resolveIceServers(): Promise<RTCIceServer[]> {
       .filter(Boolean);
     const username = import.meta.env.VITE_TURN_USERNAME as string | undefined;
     const credential = import.meta.env.VITE_TURN_CREDENTIAL as string | undefined;
-    if (urls.length > 0 && username && credential) return [...stun, { urls, username, credential }];
+    if (urls.length > 0) {
+      const clean = sanitizeIceServers([{ urls, username, credential }]);
+      if (clean.relay > 0) return { servers: [...STUN_ONLY, ...clean.servers], relay: "static" };
+      note = "VITE_TURN_URLS is not a turn:/turns: URL, or VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL is missing";
+    }
 
+    // Always a warning, never gated by NET_DEBUG: this is the one line that
+    // explains most "it finds the room but never connects" reports.
     console.warn(
-      "[net] No TURN relay configured — two networks behind symmetric NATs (mobile hotspots, office wifi) will not connect. " +
-        "Set VITE_TURN_URLS / VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL, or VITE_TURN_CREDENTIALS_URL.",
+      `[net] No TURN relay available — ${note || "no relay is configured"}. ` +
+        "Matches between networks that block direct peer traffic will fail; set TURN_URLS and TURN_SECRET on the Convex deployment.",
     );
-    return stun;
+    return { servers: STUN_ONLY, relay: "none", note: note || "no relay is configured" };
   })();
-  return iceLookup;
+  return icePlan;
+}
+
+/** Compatibility shim: the ICE list alone, for anything that just wants servers. */
+export function resolveIceServers(): Promise<RTCIceServer[]> {
+  return resolveIcePlan().then((p) => p.servers);
 }
 
 /** A log-safe summary of an ICE list: what kinds of server, never any secret. */
@@ -173,6 +297,68 @@ export function describeIce(list: RTCIceServer[]): string {
       return `${kind}: ${urls}`;
     })
     .join("  ·  ");
+}
+
+export type IceFailureKind =
+  | "relay-missing"
+  | "relay-auth"
+  | "relay-unreachable"
+  | "relay-blocked"
+  | "no-candidates";
+
+/**
+ * Turn a dead connection into an actionable sentence.
+ *
+ * The old messages guessed ("if you are both on mobile data…") no matter what
+ * had actually happened. This one reads the plan and the candidates the browser
+ * really gathered, so "no relay exists", "the relay rejected us", "the relay is
+ * configured but unreachable" and "nothing was gathered at all" stop looking
+ * like the same failure.
+ */
+export function diagnoseIceFailure(input: {
+  relay: IcePlan["relay"];
+  note?: string;
+  tally: CandidateTally;
+  iceState?: string;
+}): { kind: IceFailureKind; text: string; detail: string } {
+  const { relay, note, tally } = input;
+  const found = `${tally.host} local, ${tally.srflx} reflexive, ${tally.prflx} peer-reflexive, ${tally.relay} relay`;
+  // Console-only: keeps the player-facing sentence short while leaving the
+  // evidence needed to diagnose a real failure in a bug report.
+  const detail = `candidates ${found}; ICE ${input.iceState ?? "unknown"}; relay ${relay}${note ? ` — ${note}` : ""}`;
+  if (tally.total === 0) {
+    return {
+      kind: "no-candidates",
+      text: "No network route could be gathered at all — check this device's connection, firewall or DNS and try again.",
+      detail,
+    };
+  }
+  if (relay === "none") {
+    return {
+      kind: "relay-missing",
+      text: "No direct route through this network, and no relay is configured. The host must set TURN_URLS + TURN_SECRET on the Convex deployment.",
+      detail,
+    };
+  }
+  if (tally.relay === 0 && note && /credential|HTTP \d|reach/i.test(note)) {
+    return {
+      kind: "relay-auth",
+      text: "The relay rejected its credentials, so only a direct route was tried, and this network blocks one. Check TURN_URLS / TURN_SECRET.",
+      detail,
+    };
+  }
+  if (tally.relay === 0) {
+    return {
+      kind: "relay-unreachable",
+      text: "A relay is configured but did not answer from this network. Use a turns: URL on port 443 so it survives restrictive firewalls.",
+      detail,
+    };
+  }
+  return {
+    kind: "relay-blocked",
+    text: "The relay answered but could not carry the session. Use a turns: URL on port 443, and check that the relay allows data channels.",
+    detail,
+  };
 }
 
 const IDLE: NetPlayerState = {
@@ -218,8 +404,16 @@ export class NetSession {
   }
 
   private peer: Peer | null = null;
-  /** the ICE list handed to every RTCPeerConnection this session creates */
-  private ice: RTCIceServer[] = [];
+  /** the ICE servers and where the relay came from, resolved once per page */
+  private plan: IcePlan = { servers: STUN_ONLY, relay: "none" };
+  /** guest only: how many data channels we have created while connecting */
+  private attempts = 0;
+  private dialTimer = 0;
+  private retryTimer = 0;
+  /** a channel that has already been reported dead, so one failure is spoken once */
+  private failedDials = new WeakSet<DataConnection>();
+  /** guest only: the candidates gathered for the current attempt */
+  private tally: CandidateTally = emptyTally();
   /** heartbeat that notices a peer which stopped talking without saying so */
   private sweepTimer = 0;
   private conns = new Map<string, DataConnection>();
@@ -274,8 +468,10 @@ export class NetSession {
    * `connect()` returns rather than inside it.
    */
   private async boot() {
-    this.ice = await resolveIceServers();
-    console.info(`[net ${this.code}] ICE: ${describeIce(this.ice)}`);
+    this.plan = await resolveIcePlan();
+    const relay = this.plan.relay === "none" ? "STUN only" : `relay from ${this.plan.relay}`;
+    console.info(`[net ${this.code}] ICE: ${describeIce(this.plan.servers)} · ${relay}`);
+    if (this.plan.relay === "none") console.warn(`[net ${this.code}] relay unavailable — ${this.plan.note}`);
     if (this.phase === "closed") return; // the page left while we were looking
     window.clearInterval(this.sweepTimer);
     this.sweepTimer = window.setInterval(() => this.sweepSilent(), 2000);
@@ -285,7 +481,7 @@ export class NetSession {
   }
 
   private startHosting() {
-    const peer = new Peer(this.hostId, { debug: 0, config: { iceServers: this.ice } });
+    const peer = new Peer(this.hostId, { debug: 0, config: { iceServers: this.plan.servers } });
     this.peer = peer;
     peer.on("open", (id) => {
       this.me = id;
@@ -304,35 +500,11 @@ export class NetSession {
   }
 
   private startGuest() {
-    const peer = new Peer({ debug: 0, config: { iceServers: this.ice } });
+    const peer = new Peer({ debug: 0, config: { iceServers: this.plan.servers } });
     this.peer = peer;
     peer.on("open", (id) => {
       this.me = id;
-      const conn = peer.connect(this.hostId, { reliable: true });
-      this.watchTransport(conn, "host");
-      const giveUp = window.setTimeout(() => {
-        if (this.phase !== "connecting") return;
-        // The broker found the host — a bad code surfaces as `peer-unavailable`
-        // long before this. What has not happened is a data channel, which is a
-        // route problem, and on mobile data it is nearly always a missing relay.
-        this.handlers.onError?.(
-          "Found the match, but the two devices could not open a direct line. On mobile data this needs a TURN relay.",
-        );
-      }, 20000);
-      conn.on("open", () => {
-        window.clearTimeout(giveUp);
-        this.conns.set(this.hostId, conn);
-        this.roster.set(this.hostId, { name: "HOST", ink: 0 });
-        this.roster.set(this.me, { name: this.name, ink: 1 });
-        this.ready.set(this.me, false);
-        this.phase = "lobby";
-        this.send({ t: "hello", name: this.name });
-        this.handlers.onStatus?.("CONNECTED — WAITING FOR THE HOST TO START…");
-        this.publish();
-      });
-      conn.on("data", (d) => this.receive(this.hostId, d));
-      conn.on("close", () => this.drop(this.hostId));
-      conn.on("error", (err) => this.channelError(conn, err));
+      this.dialHost();
     });
     peer.on("disconnected", () => {
       if (this.phase !== "closed") peer.reconnect();
@@ -341,47 +513,160 @@ export class NetSession {
   }
 
   /**
-   * Follow one connection's ICE lifecycle to the console.
+   * Open the data channel to the host — again, with a fresh peer connection, if
+   * the first route dies.
+   *
+   * Renegotiating an ICE restart is not something PeerJS exposes (it handles a
+   * single offer per connection), so the reliable recovery is a whole new
+   * connection. A second attempt costs one handshake and routinely succeeds
+   * where the first did not: the browser gathers a different set of reflexive
+   * candidates, and a relay candidate that was still gathering at the 8-second
+   * mark is now available. Before this the session simply sat on "negotiating"
+   * forever and then blamed the player's network.
+   */
+  private dialHost() {
+    const peer = this.peer;
+    if (!peer || peer.destroyed || this.phase === "closed") return;
+    this.attempts++;
+    this.tally = emptyTally();
+    this.handlers.onStatus?.(
+      this.attempts === 1 ? "FINDING YOUR FRIEND…" : "FIRST ROUTE FAILED — TRYING A FRESH CONNECTION…",
+    );
+    let conn: DataConnection;
+    try {
+      conn = peer.connect(this.hostId, { reliable: true });
+    } catch (err) {
+      console.warn(`[net ${this.code}] could not dial the host`, err);
+      this.handlers.onError?.("The connection could not be opened. Check the code and try again.");
+      return;
+    }
+    const tally = this.tally;
+    this.watchTransport(conn, "host", tally);
+    window.clearTimeout(this.dialTimer);
+    this.dialTimer = window.setTimeout(() => this.dialFailed(conn, tally), DIAL_TIMEOUT_MS);
+    conn.on("open", () => {
+      window.clearTimeout(this.dialTimer);
+      this.conns.set(this.hostId, conn);
+      this.roster.set(this.hostId, { name: "HOST", ink: 0 });
+      this.roster.set(this.me, { name: this.name, ink: 1 });
+      this.ready.set(this.me, false);
+      this.phase = "lobby";
+      this.send({ t: "hello", name: this.name });
+      this.handlers.onStatus?.("CONNECTED — WAITING FOR THE HOST TO START…");
+      this.publish();
+    });
+    conn.on("data", (d) => this.receive(this.hostId, d));
+    conn.on("close", () => {
+      if (this.conns.get(this.hostId) === conn) this.drop(this.hostId);
+    });
+    conn.on("error", (err) => {
+      const type = (err as { type?: string } | undefined)?.type;
+      if (type === "negotiation-failed") this.dialFailed(conn, tally);
+      else this.channelError(conn, err);
+    });
+  }
+
+  /**
+   * One dial attempt is dead.
+   *
+   * The guest retries once with a fresh connection while the lobby is still
+   * connecting, then explains what actually failed (see `diagnoseIceFailure`).
+   * The host has nobody to dial: it stays put and the guest's retry arrives as
+   * a new inbound connection, which `adopt` picks up under the same peer id.
+   * A failure after the channel was open is left to the normal drop/sweep path.
+   */
+  private dialFailed(conn: DataConnection, tally: CandidateTally) {
+    if (this.phase === "closed" || conn.open) return;
+    if (this.failedDials.has(conn)) return;
+    this.failedDials.add(conn);
+    window.clearTimeout(this.dialTimer);
+    const pc = conn.peerConnection;
+    const diagnosis = diagnoseIceFailure({
+      relay: this.plan.relay,
+      note: this.plan.note,
+      tally,
+      iceState: pc?.iceConnectionState,
+    });
+    console.warn(`[net ${this.code}] dial ${this.attempts} failed (${diagnosis.kind}): ${diagnosis.text} · ${diagnosis.detail}`);
+    if (this.isHost) {
+      // wait for the guest to redial; a close here is already handled by adopt()
+      return;
+    }
+    try {
+      conn.close();
+    } catch {
+      /* already gone */
+    }
+    if (this.attempts < MAX_DIALS) {
+      window.clearTimeout(this.retryTimer);
+      this.retryTimer = window.setTimeout(() => {
+        if (this.phase === "connecting") this.dialHost();
+      }, RETRY_DELAY_MS);
+      return;
+    }
+    this.handlers.onError?.(diagnosis.text);
+  }
+
+  /**
+   * Follow one connection's ICE lifecycle.
    *
    * Cross-network play fails at this layer and nowhere else, and "it never
    * connected" is not a diagnosis. The candidate types say whether a direct
-   * path was ever possible; a pair stuck in `checking` is the signature of a
-   * missing TURN relay, and a `relay` candidate appearing is proof one is
-   * doing its job.
+   * path was ever possible; a `relay` candidate appearing is proof the TURN
+   * server is reachable, and a pair stuck in `checking` with no relay candidate
+   * is the signature of a missing relay. Verbose here is development-only: the
+   * console is not where a production player should meet their diagnostics.
    */
-  private watchTransport(conn: DataConnection, who: string) {
+  private watchTransport(conn: DataConnection, who: string, tally: CandidateTally) {
     const tag = `[net ${this.code}] ${who}`;
-    conn.on("iceStateChanged", (state) => {
-      console.info(`${tag} ICE ${state}`);
-      if (state !== "failed") return;
-      this.handlers.onError?.(
-        "The direct connection failed. That usually means both of you are behind a symmetric NAT and the match needs a TURN relay.",
-      );
-    });
     const pc = conn.peerConnection;
-    if (!pc) return;
-    pc.addEventListener("icegatheringstatechange", () => console.info(`${tag} gathering ${pc.iceGatheringState}`));
-    pc.addEventListener("connectionstatechange", () => console.info(`${tag} connection ${pc.connectionState}`));
-    pc.addEventListener("icecandidate", (e) => {
-      if (!e.candidate) return;
-      const c = e.candidate;
-      const kind =
-        c.type === "relay" ? "TURN relay" : c.type === "srflx" ? "STUN reflexive" : c.type === "host" ? "local" : c.type;
-      console.info(`${tag} candidate ${kind} ${c.protocol} ${c.address}:${c.port}`);
+    conn.on("iceStateChanged", (state) => {
+      netLog(`${tag} ICE ${state}`);
+      if (state === "failed") this.dialFailed(conn, tally);
     });
-    // Still negotiating well past any healthy handshake: say so before the
-    // player gives up on their own.
-    const slow = window.setTimeout(() => {
-      if (conn.open || this.phase === "closed") return;
-      const s = pc.iceConnectionState;
-      if (s === "new" || s === "checking") {
-        this.handlers.onError?.(
-          "Still negotiating the connection. If you are both on mobile data, this match needs a TURN relay to get through.",
-        );
-      }
-    }, 12000);
-    conn.on("open", () => window.clearTimeout(slow));
-    conn.on("close", () => window.clearTimeout(slow));
+    if (pc) {
+      pc.addEventListener("icegatheringstatechange", () => netLog(`${tag} gathering ${pc.iceGatheringState}`));
+      pc.addEventListener("connectionstatechange", () => {
+        netLog(`${tag} connection ${pc.connectionState}`);
+        if (pc.connectionState === "failed") this.dialFailed(conn, tally);
+      });
+      pc.addEventListener("icecandidate", (e) => {
+        if (!e.candidate) return;
+        const c = e.candidate;
+        const kind = c.type === "relay" ? "relay" : c.type === "srflx" ? "srflx" : c.type === "prflx" ? "prflx" : "host";
+        tally[kind]++;
+        tally.total++;
+        netLog(`${tag} candidate ${kind} ${c.protocol} ${c.address}:${c.port}`);
+      });
+      conn.on("open", () => void this.reportSelectedPair(conn, tag));
+    }
+  }
+
+  /** Log which path actually won, and whether it went through the relay. */
+  private async reportSelectedPair(conn: DataConnection, tag: string) {
+    if (!NET_DEBUG) return;
+    const pc = conn.peerConnection;
+    if (!pc?.getStats) return;
+    try {
+      const report = await pc.getStats();
+      let local = "unknown";
+      let remote = "unknown";
+      report.forEach((s) => {
+        if (s.type !== "candidate-pair") return;
+        const pair = s as RTCIceCandidatePairStats;
+        if (pair.state !== "succeeded") return;
+        const l = pair.localCandidateId ? report.get(pair.localCandidateId) : undefined;
+        const r = pair.remoteCandidateId ? report.get(pair.remoteCandidateId) : undefined;
+        const lc = l as { candidateType?: string; protocol?: string } | undefined;
+        const rc = r as { candidateType?: string; protocol?: string } | undefined;
+        if (lc) local = `${lc.candidateType}/${lc.protocol}`;
+        if (rc) remote = `${rc.candidateType}/${rc.protocol}`;
+      });
+      netLog(`${tag} selected path: local ${local} ← remote ${remote}`);
+      if (local.startsWith("relay") || remote.startsWith("relay")) netLog(`${tag} TURN relay is carrying this match`);
+    } catch (err) {
+      netLog(`${tag} getStats failed`, err);
+    }
   }
 
   close() {
@@ -395,6 +680,8 @@ export class NetSession {
     window.clearInterval(this.sendTimer);
     window.clearInterval(this.sweepTimer);
     window.clearInterval(this.pingTimer);
+    window.clearTimeout(this.dialTimer);
+    window.clearTimeout(this.retryTimer);
     this.peer?.destroy();
     this.peer = null;
     this.conns.clear();
@@ -412,7 +699,7 @@ export class NetSession {
           : type === "network" || type === "server-error" || type === "socket-error"
             ? "The connection broker is unreachable. Try again in a moment."
             : type === "negotiation-failed"
-              ? "The two browsers could not agree on a route to each other. On mobile data this needs a TURN relay."
+              ? "The two browsers could not agree on a route to each other."
               : type === "browser-incompatible"
               ? "This browser cannot do WebRTC, so online play is unavailable here."
               : err?.message || "Connection failed.";
@@ -420,7 +707,7 @@ export class NetSession {
   }
 
   private adopt(conn: DataConnection) {
-    this.watchTransport(conn, conn.peer);
+    this.watchTransport(conn, conn.peer, emptyTally());
     const register = () => {
       if (!this.conns.has(conn.peer)) this.conns.set(conn.peer, conn);
     };

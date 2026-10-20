@@ -95,24 +95,44 @@ true surprisingly often thanks to STUN. Two networks behind **symmetric NAT**
 all, and the only fix is a **TURN relay** to carry the traffic. That relay is the
 one piece of infrastructure this otherwise serverless game needs.
 
-Set one of the following, then reload (see [Environment](#environment)):
+The relay is configured **on the server**, not in the client bundle. A Convex
+HTTP action mints a short-lived credential per match
+(`src/convex/turn.ts`, `GET <deployment>.convex.site/turn`), so the relay's
+shared secret never ships to the browser and can be rotated without rebuilding
+the frontend. Any coturn-compatible relay that supports the TURN REST shared
+secret (`use-auth-secret`) works — a self-hosted coturn, or a managed relay that
+hands you a shared secret. Providers that only issue an API key (Cloudflare
+Realtime TURN, Metered) are still usable through `VITE_TURN_CREDENTIALS_URL`.
 
-1. **`VITE_TURN_CREDENTIALS_URL`** — an endpoint that returns an `RTCIceServer[]`.
-   Best option: the credentials expire and rotate without a redeploy.
-   [Metered Open Relay](https://www.metered.ca/tools/openrelay/) has a free tier
-   and serves exactly this. Cloudflare Realtime TURN and Twilio Network
-   Traversal also work, but expect to mint their credentials from a backend
-   rather than the browser.
+Set these on the **Convex deployment** (dashboard → Settings → Environment
+Variables, or `bunx convex env set`):
+
+| Variable | Example | Meaning |
+| --- | --- | --- |
+| `TURN_URLS` | `turn:relay.example.com:3478,turns:relay.example.com:443?transport=tcp` | The relay's URLs, comma separated. Include a `turns:` entry on 443 — it looks like ordinary HTTPS, which is what gets through a hostile firewall. |
+| `TURN_SECRET` | *long random string* | The relay's shared secret (`static-auth-secret` in coturn). Never exposed to the client. |
+| `TURN_TTL` | `3600` *(optional)* | Credential lifetime in seconds. Default 3600, capped at 86400. |
+| `TURN_ALLOWED_ORIGINS` | `https://yourgame.vercel.app` *(optional)* | Restricts which origins may mint credentials. Unset means any origin, which is fine for a deliberately public relay. |
+
+The client needs `VITE_CONVEX_SITE_URL` (`https://<deployment>.convex.site`) so
+it knows where to ask; it is derived from `VITE_CONVEX_URL` when absent.
+
+Still supported, for providers that only hand out a ready-made ICE list:
+
+1. **`VITE_TURN_CREDENTIALS_URL`** — an endpoint returning an `RTCIceServer[]`
+   or `{ iceServers }`. Explicit opt-in; it is checked before the built-in
+   endpoint.
 2. **`VITE_TURN_URLS` + `VITE_TURN_USERNAME` + `VITE_TURN_CREDENTIAL`** — a
-   static relay, fine for long-lived credentials. Prefer a `turns:` URL on port
-   443: it looks like ordinary HTTPS, which is what gets through a hostile
-   firewall.
+   static relay in the client bundle. Only for long-lived credentials, and it
+   publishes them to anyone who opens devtools.
 
-With none of these set the game is STUN-only: it logs a warning and the two
-browsers that cannot find a direct route will simply never connect. Open the
-console during a failed handshake — `net.ts` logs the gathering state, every
-candidate's type, and the final connection state, so a `TURN relay` candidate
-appearing (or never appearing) tells you whether the relay is in play.
+With no relay configured the game is STUN-only. The client logs one clear
+warning naming the missing server variables, and a failed handshake reports
+*why* it failed (no relay configured, relay credentials rejected, relay
+unreachable, relay gathered but unable to carry the session) instead of
+blaming the player's network. Set `VITE_NET_DEBUG=1` to also log gathering
+state, every candidate type, and the selected candidate pair — `net.ts` never
+logs a credential or a username.
 
 ### The studio theme
 
@@ -171,9 +191,14 @@ The app expects `VITE_CONVEX_URL` and a Convex deployment (see [Environment](#en
 | --- | --- | --- |
 | `VITE_CONVEX_URL` | Client | Convex backend URL used by the React client |
 | `CONVEX_DEPLOYMENT` | Client env | Ties the client to a specific Convex deployment |
-| `VITE_TURN_CREDENTIALS_URL` | Client | Preferred TURN setup: an endpoint returning an `RTCIceServer[]` (or `{ iceServers }`), e.g. Metered Open Relay. Expiring credentials, no redeploy to rotate |
-| `VITE_TURN_URLS` | Client | Static alternative: comma-separated `turn:` / `turns:` relay URLs |
-| `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` | Client | Credentials for `VITE_TURN_URLS` |
+| `VITE_CONVEX_SITE_URL` | Client | Convex HTTP-actions origin (`https://<deployment>.convex.site`), where `/turn` mints relay credentials. Derived from `VITE_CONVEX_URL` if omitted |
+| `TURN_URLS` | Convex dashboard | Relay URLs, comma separated. Include a `turns:` entry on port 443 |
+| `TURN_SECRET` | Convex dashboard | Relay shared secret used to mint ephemeral credentials. Server-side only |
+| `TURN_TTL`, `TURN_ALLOWED_ORIGINS` | Convex dashboard | Optional credential lifetime (seconds) and origin allow-list |
+| `VITE_NET_DEBUG` | Client | `1` enables verbose ICE diagnostics in production builds |
+| `VITE_TURN_CREDENTIALS_URL` | Client | Optional third-party ICE-service endpoint, checked before the built-in one |
+| `VITE_TURN_URLS` | Client | Static fallback: comma-separated `turn:` / `turns:` relay URLs |
+| `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` | Client | Credentials for `VITE_TURN_URLS` (visible to clients — prefer the server-side setup) |
 | `JWKS`, `JWT_PRIVATE_KEY`, `SITE_URL` | Convex dashboard | Convex Auth signing material |
 
 Never commit `.env` files — set client env in your host's dashboard, and backend env in the Convex dashboard (`npx convex env set`).
@@ -191,7 +216,7 @@ This is a single-page app — client-side routing needs a rewrite rule so deep l
 1. Push the repo to GitHub (already connected).
 2. In Vercel: **Add New → Project → Import** the repo.
 3. Framework preset **Vite**. Build command `bun run build` (or `npm run build`), output dir `dist`.
-4. Add the Environment Variables from the table above (`VITE_CONVEX_URL` is required).
+4. Add the Environment Variables from the table above (`VITE_CONVEX_URL` is required, `VITE_CONVEX_SITE_URL` is strongly recommended so online play can reach the relay endpoint).
 5. **Deploy.** Every push to `main` now ships a new build automatically.
 
 ### Backend (Convex production)
@@ -203,6 +228,26 @@ npx convex prod  # or: npx convex deploy --prod
 ```
 
 Then point the Vercel `VITE_CONVEX_URL` at the **production** deployment URL from `npx convex dashboard`.
+
+Online play across restrictive networks needs a relay, set on the production
+deployment — no frontend rebuild and no secret in the bundle:
+
+```bash
+npx convex env set TURN_URLS "turn:relay.example.com:3478,turns:relay.example.com:443?transport=tcp"
+npx convex env set TURN_SECRET "<the relay's static-auth-secret>"
+# optional: npx convex env set TURN_ALLOWED_ORIGINS "https://yourgame.vercel.app"
+```
+
+Verify it without a browser:
+
+```bash
+curl -s https://<deployment>.convex.site/turn
+# { "configured": true, "iceServers": [ … ], "ttl": 3600, "expiresAt": … }
+# or { "configured": false, "reason": "TURN_URLS is not set …" }
+```
+
+A `configured: false` answer is exactly what the game shows the player when a
+match cannot find a direct route.
 
 ### Custom domain
 

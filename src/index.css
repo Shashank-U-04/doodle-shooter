@@ -679,7 +679,15 @@
   color: #d02030;
   font-size: 20px;
   min-height: 24px;
+  /* the transport now explains itself (no relay / relay unreachable / …), so
+     this line can be a sentence rather than a word: wrap it, do not stretch */
+  max-width: 54ch;
+  margin-left: auto;
+  margin-right: auto;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
+.dd-killfeed .kf { max-width: 60ch; overflow-wrap: anywhere; }
 .dd-netstatus {
   font-size: 21px;
   opacity: 0.85;

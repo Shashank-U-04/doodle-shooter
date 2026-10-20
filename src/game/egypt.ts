@@ -390,52 +390,101 @@ function anubis(z: Zone, x: number, zz: number, s = 1, y = 0) {
   z.collide(x, y, zz, 2.2 * s, 3.6 * s, 2.2 * s);
 }
 
-function sphinx(z: Zone, x: number, zz: number) {
+/**
+ * The valley's guardian, authored in its own local space and turned as one
+ * assembly.
+ *
+ * Local +z is the face: chest, head, forelegs and paws all point that way, and
+ * the carved rear stair climbs its back. `yaw` rotates the whole lion about the
+ * plinth — head, body, paws, tail and decoration together — so it can face the
+ * processional way instead of the southern cliff. It was built facing +z, which
+ * put its face into the cliffs and its rump toward the plaza.
+ *
+ * `yaw` must be a multiple of π: the part colliders are axis-aligned boxes, so
+ * an arbitrary rotation would desynchronise them from the visible massing.
+ *
+ * Collision is no longer one 5.6 m block. That block was the reason it could not
+ * be climbed: the player's step-up allowance is 0.55 m, so a single box from
+ * sand to the shoulders is a wall, and every visible step of the plinth was
+ * decorative. The colliders now follow the actual massing — three plinth
+ * courses, the carved rear stair (0.55 m risers, all within the step limit), the
+ * back, the shoulders and the head — so the lion can be walked up from behind
+ * while its body stays solid from every other side.
+ */
+function sphinx(z: Zone, x: number, zz: number, yaw = Math.PI) {
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  const wx = (lx: number, lz: number) => x + lx * c + lz * s;
+  const wz = (lx: number, lz: number) => zz - lx * s + lz * c;
+  /** a dressed stone box; `solid` also gives it the collider that matches it */
+  const part = (lx: number, y: number, lz: number, w: number, h: number, d: number, ink: InkId, fill = false, solid = false) =>
+    z.box(wx(lx, lz), y, wz(lx, lz), w, h, d, ink, fill, solid);
+  const ball = (lx: number, y: number, lz: number, r: number, ink: InkId, fill = false, squash = 1, seg = 10) =>
+    z.sphere(wx(lx, lz), y, wz(lx, lz), r, ink, fill, squash, seg);
+
   // a stepped plinth gives the guardian weight and a clean contact shadow
-  z.box(x, 0, zz, 15.5, 0.5, 12.6, INK.STONE);
-  z.box(x, 0.5, zz, 14.2, 0.34, 11.4, INK.OCHRE, false, false);
-  z.box(x, 0.84, zz - 0.2, 12.6, 0.2, 10.2, INK.SAND, false, false);
+  part(0, 0, 0, 15.5, 0.5, 12.6, INK.STONE, false, true);
+  part(0, 0.5, 0, 14.2, 0.34, 11.4, INK.OCHRE, false, true);
+  part(0, 0.84, -0.2, 12.6, 0.2, 10.2, INK.SAND, false, true);
 
   // lion body: a long rear mass, a lifted chest and a stepped spine
-  z.box(x, 1.04, zz - 1.5, 8.8, 2.15, 3.9, INK.SAND, false, false);
-  z.box(x, 1.04, zz - 2.9, 6.2, 1.55, 2.2, INK.OCHRE, false, false);
-  z.box(x, 3.19, zz - 1.8, 7.1, 0.5, 2.9, INK.SAND, false, false);
-  z.box(x, 1.04, zz + 1.25, 5.6, 3.3, 3.4, INK.OCHRE, false, false);
-  z.box(x, 4.34, zz + 1.05, 5.2, 0.45, 3.0, INK.SAND, false, false);
-  // haunches and ribcage read as volume rather than a stack of slabs
-  z.sphere(x - 3.0, 1.75, zz - 1.9, 1.75, INK.SAND, false, 0.85, 10);
-  z.sphere(x + 3.0, 1.75, zz - 1.9, 1.75, INK.SAND, false, 0.85, 10);
+  part(0, 1.04, -1.5, 8.8, 2.15, 3.9, INK.SAND, false, true);
+  part(0, 3.19, -1.8, 7.1, 0.5, 2.9, INK.SAND, false, true);
+  part(0, 1.04, 1.25, 5.6, 3.3, 3.4, INK.OCHRE, false, true);
+  part(0, 4.34, 1.05, 5.2, 0.45, 3.0, INK.SAND, false, true);
+  // haunches read as volume rather than a stack of slabs. They go through the
+  // same local-space helper as the boxes: a 180° turn that moved only the
+  // boxes would leave the haunches sitting inside the chest.
+  ball(-3.0, 1.75, -1.9, 1.75, INK.SAND, false, 0.85, 10);
+  ball(3.0, 1.75, -1.9, 1.75, INK.SAND, false, 0.85, 10);
+
+  // Carved rear stair: three worn courses climbing from the plinth to the back.
+  // The riser is 0.54 m, just inside the movement system's 0.55 m step
+  // allowance. Exactly 0.55 is a float trap here: the difference between the
+  // second and third course evaluates to 0.5500000000000003, which the step-up
+  // test rejects, so the stair would stop the player halfway up. The 0.16 m of
+  // headroom keeps it walkable. The stair sits in the 1.6 m between the cap's
+  // rear edge and the body, where a fallen casing course would plausibly rest.
+  const RISE = 0.54;
+  for (let i = 0; i < 3; i++) {
+    const top = 1.04 + RISE * (i + 1);
+    const rear = -5.02 + i * 0.5;
+    part(-0.4, 1.04, rear + 0.25, 3.2, top - 1.04, 0.5, i === 1 ? INK.OCHRE : INK.SAND, false, true);
+    // a chipped riser on each course, so the stair reads as old stone. These sit
+    // proud of the vertical face — never coplanar with a tread top.
+    part(-1.55, 1.24, rear + 0.03, 0.34, 0.2, 0.06, INK.BONE);
+    part(0.9, top - 0.32, rear + 0.04, 0.22, 0.17, 0.06, INK.OCHRE);
+  }
 
   // forelegs stretched toward the approach, paws apart
   for (const side of [-1, 1] as const) {
-    z.box(x + side * 1.9, 1.04, zz + 2.4, 1.45, 1.25, 4.9, INK.SAND, false, false);
-    z.box(x + side * 1.9, 1.04, zz + 4.5, 1.7, 0.72, 1.9, INK.OCHRE, false, false);
-    for (let t = 0; t < 3; t++) z.box(x + side * (1.45 + t * 0.45), 1.04, zz + 5.36, 0.34, 0.42, 0.42, INK.BONE, false, false);
+    part(side * 1.9, 1.04, 2.4, 1.45, 1.25, 4.9, INK.SAND, false, true);
+    part(side * 1.9, 1.04, 4.5, 1.7, 0.72, 1.9, INK.OCHRE, false, true);
+    for (let t = 0; t < 3; t++) part(side * (1.45 + t * 0.45), 1.04, 5.36, 0.34, 0.42, 0.42, INK.BONE);
   }
   // tail curled along the right flank
-  z.box(x + 4.1, 1.6, zz - 1.8, 0.55, 0.55, 3.2, INK.OCHRE, false, false);
-  z.box(x + 3.6, 1.3, zz - 3.3, 1.5, 0.55, 0.55, INK.OCHRE, false, false);
+  part(4.1, 1.6, -1.8, 0.55, 0.55, 3.2, INK.OCHRE);
+  part(3.6, 1.3, -3.3, 1.5, 0.55, 0.55, INK.OCHRE);
 
   // head and nemes headdress with gold stripes
-  z.box(x, 4.35, zz + 2.0, 2.6, 2.55, 2.4, INK.OCHRE, false, false);
-  z.box(x, 4.3, zz + 3.05, 1.95, 2.35, 0.55, INK.SAND, false, false);
-  z.box(x - 1.5, 4.2, zz + 1.9, 0.62, 2.8, 2.6, INK.SAND, false, false);
-  z.box(x + 1.5, 4.2, zz + 1.9, 0.62, 2.8, 2.6, INK.SAND, false, false);
+  part(0, 4.35, 2.0, 2.6, 2.55, 2.4, INK.OCHRE, false, true);
+  part(0, 4.3, 3.05, 1.95, 2.35, 0.55, INK.SAND);
+  part(-1.5, 4.2, 1.9, 0.62, 2.8, 2.6, INK.SAND);
+  part(1.5, 4.2, 1.9, 0.62, 2.8, 2.6, INK.SAND);
   for (let i = 0; i < 4; i++) {
-    z.box(x - 1.5, 4.55 + i * 0.62, zz + 3.12, 0.64, 0.16, 0.1, INK.GOLD, true, false);
-    z.box(x + 1.5, 4.55 + i * 0.62, zz + 3.12, 0.64, 0.16, 0.1, INK.GOLD, true, false);
+    part(-1.5, 4.55 + i * 0.62, 3.12, 0.64, 0.16, 0.1, INK.GOLD, true);
+    part(1.5, 4.55 + i * 0.62, 3.12, 0.64, 0.16, 0.1, INK.GOLD, true);
   }
-  z.box(x, 4.75, zz + 3.28, 1.55, 0.3, 0.18, INK.TURQ, true, false);
-  z.box(x - 0.45, 5.35, zz + 3.3, 0.3, 0.1, 0.05, INK.GOLD, true, false);
-  z.box(x + 0.45, 5.35, zz + 3.3, 0.3, 0.1, 0.05, INK.GOLD, true, false);
-  z.box(x, 4.9, zz + 3.4, 0.75, 0.3, 0.12, INK.BONE, false, false);
-  z.box(x, 4.45, zz + 3.4, 0.35, 0.3, 0.1, INK.STONE, false, false);
-  z.box(x, 4.15, zz + 3.36, 0.4, 0.3, 0.08, INK.STONE, false, false);
-  z.box(x, 3.95, zz + 3.32, 0.3, 0.7, 0.14, INK.TURQ, true, false);
+  part(0, 4.75, 3.28, 1.55, 0.3, 0.18, INK.TURQ, true);
+  part(-0.45, 5.35, 3.3, 0.3, 0.1, 0.05, INK.GOLD, true);
+  part(0.45, 5.35, 3.3, 0.3, 0.1, 0.05, INK.GOLD, true);
+  part(0, 4.9, 3.4, 0.75, 0.3, 0.12, INK.BONE);
+  part(0, 4.45, 3.4, 0.35, 0.3, 0.1, INK.STONE);
+  part(0, 4.15, 3.36, 0.4, 0.3, 0.08, INK.STONE);
+  part(0, 3.95, 3.32, 0.3, 0.7, 0.14, INK.TURQ, true);
   // a collar of gold and turquoise across the chest
-  z.box(x, 3.55, zz + 2.9, 4.8, 0.24, 0.4, INK.GOLD, false, false);
-  z.box(x, 3.3, zz + 2.92, 4.0, 0.18, 0.34, INK.TURQ, false, false);
-  z.collide(x, 0, zz, 15.2, 5.6, 12.4);
+  part(0, 3.55, 2.9, 4.8, 0.24, 0.4, INK.GOLD);
+  part(0, 3.3, 2.92, 4.0, 0.18, 0.34, INK.TURQ);
 }
 
 function obelisk(z: Zone, x: number, zz: number) {
@@ -677,17 +726,22 @@ type MasonryFace = {
   half: number;
 };
 
+type DressOpts = {
+  /** stone courses per tier. Two reads as megalithic; three is a brick wall. */
+  rows?: number;
+  /** extra chance a block near a tier corner has fallen out, 0..1 */
+  erosion?: number;
+};
+
 /**
- * One calm course of large stone panels per tier.
+ * Dress one tier face with its stone courses.
  *
- * The previous pass cut every tier into three or four rows and outlined every
- * joint, which produced the dense horizontal striping in the screenshots.
- * Here each tier is a single megalithic course of wide, shallow panels: the
- * step between tiers (a 3 m architectural edge) supplies the horizontal
- * rhythm, while the panels supply tone and very slight relief. The panels sit
- * only 4–7 cm proud, so the ink pass ignores their seams at any real distance
- * and the eye reads the tint variation rather than a wireframe. Joints show the
- * structural sand face a few centimetres behind the stone, not a dark stripe.
+ * The colours are deliberately *not* the sand's. The sand field is one flat
+ * `INK.SAND` (#dbb570); a pyramid faced in the same ink reads as an absence, no
+ * matter how many joints are drawn on it. These panels are mostly warm ochre
+ * and golden sandstone, with pale blocks used sparingly as highlights, dark
+ * blocks as erosion and a little terracotta as an accent. The structural ring
+ * behind them is ochre too, so a joint shows warm shadow rather than paper.
  *
  * `blocked` keeps a doorway clear. Decoration only — collision stays with the
  * structural ring underneath.
@@ -700,37 +754,61 @@ function dressMasonry(
   seed: number,
   blockW: number,
   blocked?: (a0: number, a1: number, y0: number, y1: number) => boolean,
+  opts: DressOpts = {},
 ) {
   const a0 = face.center - face.half + 0.58;
   const a1 = face.center + face.half - 0.58;
   if (a1 - a0 < 1.2) return;
   const gap = 0.055;
-  const by = y + 0.05;
-  const bh = h - 0.1;
+  const rows = Math.max(1, Math.min(3, Math.round(opts.rows ?? 1)));
+  const rowH = h / rows;
+  const erosion = opts.erosion ?? 0.14;
 
-  let a = a0;
-  let i = 0;
-  while (a < a1 - 0.7) {
-    const f = hash01(seed, 0.5, a * 0.37);
-    let w = blockW * (0.78 + f * 0.48);
-    if (a + w > a1) w = a1 - a;
-    if (w < 0.7) break;
-    const bb = Math.min(a1, a + w);
-    const g = hash01(seed + 5.7, i, bb * 0.21);
-    if ((!blocked || !blocked(a, bb, by, by + bh)) && g > 0.025) {
-      const worn = g < 0.12 ? 0.05 + f * 0.24 : 0;
-      const depth = 0.038 + hash01(seed + 9.1, i, a) * 0.032;
-      const ink: InkId = f < 0.72 ? INK.SAND : f < 0.93 ? INK.BONE : INK.OCHRE;
-      const top = Math.max(by + 0.18, by + bh - worn);
-      // a worn panel keeps its bottom and loses a little height at the top
-      const at = face.plane + face.sign * (0.005 + depth / 2);
-      const hh = top - by;
-      const mid = (a + bb) / 2;
-      if (face.axis === "x") z.box(mid, by, at, bb - a - gap, hh, depth, ink, false, false);
-      else z.box(at, by, mid, depth, hh, bb - a - gap, ink, false, false);
+  for (let r = 0; r < rows; r++) {
+    const by = y + r * rowH + 0.05;
+    const bh = rowH - 0.1;
+    let a = a0;
+    let i = 0;
+    while (a < a1 - 0.7) {
+      const f = hash01(seed + r * 2.3, 0.5, a * 0.37);
+      // a running bond: every course after the first starts with a short block,
+      // which puts its joints out of line with the course below without leaving
+      // a gap at the tier edge
+      let w = r > 0 && i === 0
+        ? blockW * (0.3 + hash01(seed + r * 7.1, 1.7) * 0.5)
+        : blockW * (0.62 + f * 0.95);
+      if (a + w > a1) w = a1 - a;
+      if (w < 0.7) break;
+      const bb = Math.min(a1, a + w);
+      const g = hash01(seed + 5.7, i + r * 13, bb * 0.21);
+      const hInk = hash01(seed + 11.3, i + r * 7, a * 0.11);
+      const nearCorner = a - a0 < 1.7 || a1 - bb < 1.7;
+      const fallen = g > (nearCorner ? 1 - erosion : 0.985);
+      if (!fallen && (!blocked || !blocked(a, bb, by, by + bh))) {
+        // weathered blocks lose a little height at the top, never their footing
+        const worn = g > 0.86 ? 0.1 + f * 0.22 : 0;
+        const depth = 0.05 + hash01(seed + 9.1, i, a) * 0.055;
+        const ink: InkId =
+          hInk < 0.52 ? INK.OCHRE : hInk < 0.78 ? INK.SAND : hInk < 0.88 ? INK.GOLD : hInk < 0.97 ? INK.STONE : INK.ORANGE;
+        const top = Math.max(by + 0.18, by + bh - worn);
+        const at = face.plane + face.sign * (0.005 + depth / 2);
+        const hh = top - by;
+        const mid = (a + bb) / 2;
+        if (face.axis === "x") z.box(mid, by, at, bb - a - gap, hh, depth, ink, false, false);
+        else z.box(at, by, mid, depth, hh, bb - a - gap, ink, false, false);
+      } else if (fallen) {
+        // a missing block leaves a shallow dark pocket in the course, so the
+        // corner reads as eroded rather than as a hole through the monument
+        const mid = (a + bb) / 2;
+        const at = face.plane + face.sign * 0.014;
+        const pw = (bb - a - gap) * 0.84;
+        const ph = Math.min(bh * 0.8, 1.1);
+        if (face.axis === "x") z.box(mid, by + (bh - ph) * 0.5, at, pw, ph, 0.022, INK.STONE, false, false);
+        else z.box(at, by + (bh - ph) * 0.5, mid, 0.022, ph, pw, INK.STONE, false, false);
+      }
+      a = bb + gap;
+      i++;
     }
-    a = bb + gap;
-    i++;
   }
 }
 
@@ -773,12 +851,18 @@ function pyramidDoorFrame(z: Zone, cx: number, plane: number, upperPlane: number
   const s = scale;
   const jw = 0.55 * s;
   const px = cx;
+  // inner jambs (against the doorway) and a second, outer course set a step
+  // further out and back: the portal reads as cut through two depths of stone
   for (const side of [-1, 1] as const) {
     z.box(px + side * (doorWidth / 2 + jw / 2 - 0.02), 0, plane + 0.22, jw, doorH, 0.6 * s, INK.STONE, false, false);
     z.box(px + side * (doorWidth / 2 + 0.22), 0.1, plane + 0.34, 0.5 * s, doorH - 0.2, 0.14, INK.OCHRE, false, false);
+    z.box(px + side * (doorWidth / 2 + jw + 0.2 * s), 0, plane + 0.1, 0.42 * s, doorH - 0.6 * s, 0.26 * s, INK.OCHRE, false, false);
+    z.box(px + side * (doorWidth / 2 + jw + 0.2 * s), 0.55 * s, plane + 0.24, 0.2 * s, doorH - 1.5 * s, 0.08, INK.SAND, false, false);
   }
   z.box(px, doorH + 0.02, plane + 0.24, doorWidth + jw * 2, 0.3 * s, 0.62 * s, INK.STONE, false, false);
   z.box(px, doorH + 0.32 * s, plane + 0.24, doorWidth + jw * 2.2, 0.1 * s, 0.6 * s, INK.OCHRE, false, false);
+  // outer lintel course, one step wider and shallower than the inner one
+  z.box(px, doorH + 0.42 * s, plane + 0.1, doorWidth + jw * 2.6, 0.34 * s, 0.26 * s, INK.OCHRE, false, false);
   // The carved panel sits on the recessed second tier, in the step above the
   // door: it cannot float over the terrace, and it reads from the approach.
   const panelBottom = doorH + 0.55 * s;
@@ -817,7 +901,11 @@ function pyramid(
   let door: THREE.Mesh | null = null;
   let doorCol: Collider | null = null;
   let doorZ = 0;
-  const blockW = Math.max(2.2, Math.min(4.8, baseHalf * 0.3));
+  const blockW = Math.max(2.4, Math.min(4.2, baseHalf * 0.26));
+  // The great pyramid is tall enough for two stone courses per tier; the small
+  // tombs stay at one so they do not turn into striped wedding cakes.
+  const courses = baseHalf > 14 ? 2 : 1;
+  const erosion = baseHalf > 14 ? 0.22 : 0.14;
   for (let i = 0; i < tiers; i++) {
     const half = baseHalf - i * step;
     const y = i * tierH;
@@ -828,22 +916,26 @@ function pyramid(
     if (i === 0 && doorWidth > 0) {
       // south face split around the entrance, with a lintel over the gap
       const side = (half * 2 - doorWidth) / 2;
-      z.box(cx - half + side / 2, y, zS, side, tierH, thick, INK.SAND);
-      z.box(cx + half - side / 2, y, zS, side, tierH, thick, INK.SAND);
-      if (doorH < tierH) z.box(cx, y + doorH, zS, doorWidth, tierH - doorH, thick, INK.SAND);
+      // The structural ring is warm ochre, not sand: it is what shows through
+      // every joint and along the exposed top of each tier, so the monument
+      // stays a deeper, denser warm mass than the desert around it.
+      z.box(cx - half + side / 2, y, zS, side, tierH, thick, INK.OCHRE);
+      z.box(cx + half - side / 2, y, zS, side, tierH, thick, INK.OCHRE);
+      if (doorH < tierH) z.box(cx, y + doorH, zS, doorWidth, tierH - doorH, thick, INK.OCHRE);
     } else {
-      z.box(cx, y, zS, half * 2, tierH, thick, INK.SAND);
+      z.box(cx, y, zS, half * 2, tierH, thick, INK.OCHRE);
     }
-    z.box(cx, y, zN, half * 2, tierH, thick, INK.SAND);
-    z.box(xE, y, cz, thick, tierH, half * 2, INK.SAND);
-    z.box(xW, y, cz, thick, tierH, half * 2, INK.SAND);
-    // dressed faces: recessed joints and individual pale blocks over the ring
+    z.box(cx, y, zN, half * 2, tierH, thick, INK.OCHRE);
+    z.box(xE, y, cz, thick, tierH, half * 2, INK.OCHRE);
+    z.box(xW, y, cz, thick, tierH, half * 2, INK.OCHRE);
+    // dressed faces: stone courses with running joints, varied blocks, chips
+    // and a few fallen stones at the corners
     const faces = tierFaces(cx, cz, half);
     for (const face of faces) {
       const isDoorFace = i === 0 && doorWidth > 0 && face.axis === "x" && face.sign === 1;
       dressMasonry(z, face, y, tierH, i * 3.7 + face.plane * 0.11 + face.sign, blockW, isDoorFace
         ? (a0, a1, _y0, y1) => y1 < doorH + 0.35 && a1 > cx - doorWidth / 2 - 0.6 && a0 < cx + doorWidth / 2 + 0.6
-        : undefined);
+        : undefined, { rows: courses, erosion });
     }
   }
   pyramidPlinth(z, cx, cz, baseHalf);
@@ -1543,7 +1635,8 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
   S.spawns.push(new THREE.Vector3(TX, 0.2, TZ + 16), new THREE.Vector3(TX - 8, 0.2, TZ + 13), new THREE.Vector3(TX + 8, 0.2, TZ + 13));
 
   // --- sphinx, obelisks, ruins, market, camp, oasis ---
-  sphinx(S, 34, 36);
+  // facing -z: toward the plaza and the great pyramid, its back to the cliffs
+  sphinx(S, 34, 36, Math.PI);
   obelisk(S, -10, 28);
   obelisk(S, 20, -34);
   obelisk(S, TX + 15, TZ + 13);

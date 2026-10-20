@@ -90,6 +90,118 @@ for (const p of surface.spawnPoints) {
   check(`wave pad (${p.x.toFixed(0)}, ${p.z.toFixed(0)}) walkable`, stand(p.x, p.y, p.z));
 }
 
+/* ------------------------- the sphinx ------------------------- */
+// The lion used to be one 5.6 m collider sitting on sand: every visible plinth
+// step was decoration, and the only route onto it was blocked by the same box
+// that made its body solid. It was also authored facing +z, which pointed its
+// face at the southern cliffs. Both are checked from the built map.
+type Box = (typeof surface.colliders)[number];
+const LION = { x: 34, z: 36 };
+const insidePlinth = (c: Box) =>
+  c.minX >= 26.2 && c.maxX <= 41.8 && c.minZ >= 29.5 && c.maxZ <= 42.4 && c.minY <= 0.02 && c.maxY > 1.1;
+const lionBoxes = surface.colliders.filter(
+  (c) => c.maxX > 26.2 && c.minX < 41.8 && c.maxZ > 29.5 && c.minZ < 42.4 && c.minY < 6.5,
+);
+check("no collider runs from the sand straight to the lion's shoulders", !lionBoxes.some(insidePlinth), `${lionBoxes.length} boxes in the footprint`);
+const tallest = lionBoxes.reduce((a, b) => (b.maxY > a.maxY ? b : a), lionBoxes[0] ?? { minZ: 0, maxZ: 0, maxY: 0 });
+const headZ = (tallest.minZ + tallest.maxZ) / 2;
+check(
+  "lion faces away from the southern cliffs (head on the -z side)",
+  tallest.maxY > 6 && headZ < LION.z,
+  `tallest ${tallest.maxY.toFixed(1)} m at z ${headZ.toFixed(1)}`,
+);
+// the carved rear stair must be behind the body, i.e. on the +z side
+const stair = lionBoxes.filter((c) => c.minY > 1.0 && c.minY < 1.1 && c.maxY > 1.5 && c.maxY < 3.0 && c.minZ > 39);
+check("rear stair sits behind the lion", stair.length === 3, `${stair.length} treads`);
+check(
+  "rear stair risers stay within the step height",
+  stair.map((c) => c.maxY).sort((a, b) => a - b).every((y, i, all) => y - (i === 0 ? 1.04 : all[i - 1]) <= 0.545),
+  stair.map((c) => c.maxY.toFixed(2)).join(" → "),
+);
+
+// Walk it for real: sand → plinth → rear stair → the lion's back.
+const walk = (from: THREE.Vector3, dir: THREE.Vector3, frames = 700) => {
+  const p = from.clone();
+  const vel = new THREE.Vector3();
+  const dt = 1 / 60;
+  for (let i = 0; i < frames; i++) {
+    vel.x = dir.x * 3.2;
+    vel.z = dir.z * 3.2;
+    vel.y -= 18 * dt;
+    const r = resolveMove(p, vel, 0.42, 1.7, surface.colliders, dt);
+    if (r.onGround) vel.y = 0;
+  }
+  return p;
+};
+const climbed = walk(new THREE.Vector3(34.4, 0.2, 46), new THREE.Vector3(0, 0, -1));
+check(
+  "player can climb from the sand onto the lion's back",
+  climbed.y >= 3.65 && climbed.z < 39.3,
+  `ended at (${climbed.x.toFixed(2)}, ${climbed.y.toFixed(2)}, ${climbed.z.toFixed(2)})`,
+);
+const blocked = walk(new THREE.Vector3(46, 0.2, 36), new THREE.Vector3(-1, 0, 0));
+check(
+  "lion's body stays solid from the side",
+  blocked.x > 38.7 && blocked.y < 3.2,
+  `stopped at x ${blocked.x.toFixed(2)}, y ${blocked.y.toFixed(2)}`,
+);
+
+/* --------------------- pyramid palette and detail --------------------- */
+// The complaint was that the pyramid was pale and empty next to the sand. Read
+// the real merged geometry: every triangle of the upper pyramid shell, binned by
+// the ink its material draws. This is the actual rendered palette, not the
+// constants in a comment above it.
+const INK_NAMES = ["BLUE", "RED", "BLACK", "ORANGE", "GREEN", "PINK", "SAND", "OCHRE", "STONE", "TURQ", "GOLD", "BONE"];
+const shell: Record<string, number> = {};
+let shellTris = 0;
+surface.group.traverse((o) => {
+  if (!(o instanceof THREE.Mesh)) return;
+  const ink = (o.material as THREE.ShaderMaterial).uniforms?.uInk?.value;
+  if (typeof ink !== "number") return;
+  const g = o.geometry;
+  const pos = g.getAttribute("position");
+  const idx = g.index;
+  const count = (idx ? idx.count : pos.count) / 3;
+  for (let t = 0; t < count; t++) {
+    const a = idx ? idx.getX(t * 3) : t * 3;
+    const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+    const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+    const x = (pos.getX(a) + pos.getX(b) + pos.getX(c)) / 3;
+    const y = (pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3;
+    const z = (pos.getZ(a) + pos.getZ(b) + pos.getZ(c)) / 3;
+    const ring = Math.max(Math.abs(x), Math.abs(z));
+    // the upper shell: above the entrance dressing, below the cap, on the
+    // monument rather than the interior colonnade or the palms outside it
+    if (ring < 10 || ring > 19.6 || y < 6 || y > 27) continue;
+    const name = INK_NAMES[ink] ?? String(ink);
+    shell[name] = (shell[name] ?? 0) + 1;
+    shellTris++;
+  }
+});
+const share = (name: string) => (shell[name] ?? 0) / Math.max(1, shellTris);
+check("pyramid shell carries dressed stone detail", shellTris > 1200, `${shellTris} triangles`);
+check("pyramid reads ochre, not sand", (shell.OCHRE ?? 0) > (shell.SAND ?? 0), `ochre ${(share("OCHRE") * 100).toFixed(0)}% vs sand ${(share("SAND") * 100).toFixed(0)}%`);
+check(
+  "pyramid palette stays warm sandstone",
+  share("OCHRE") + share("SAND") + share("GOLD") > 0.75,
+  `${((share("OCHRE") + share("SAND") + share("GOLD")) * 100).toFixed(0)}% warm`,
+);
+check("block-to-block colour variation is visible", Object.keys(shell).length >= 4, Object.keys(shell).join(", "));
+check("pale bone is not the pyramid's face", share("BONE") < 0.02, `${(share("BONE") * 100).toFixed(1)}% bone`);
+
+// The approved coconut palms must not drift while the rest of the valley is
+// reworked. Their trunk and fronds are the only double-sided ink surfaces, so
+// their triangle count is a cheap fingerprint of that geometry.
+let palmTris = 0;
+surface.group.traverse((o) => {
+  if (!(o instanceof THREE.Mesh)) return;
+  const m = o.material;
+  if (!(m instanceof THREE.ShaderMaterial) || m.side !== THREE.DoubleSide) return;
+  const g = o.geometry;
+  palmTris += (g.index ? g.index.count : g.getAttribute("position").count) / 3;
+});
+check("coconut palms keep their approved geometry", Math.round(palmTris) === 10110, `${Math.round(palmTris)} double-sided triangles`);
+
 // the doorway is the one collider that must disappear: simulate the open
 const door = map.nearest(new THREE.Vector3(0, 1.2, 20.4));
 check("great door prompt reachable", door?.id === "main-door", door?.label ?? "none");
