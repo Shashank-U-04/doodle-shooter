@@ -1,8 +1,50 @@
 import { Room, ServerError, validate, type AuthContext, type Client } from "colyseus";
 import { z } from "zod";
 import { MatchState, Player } from "./schema/MatchState.js";
-import { drawRoomCode, freeInk, MAP_IDS, normalizeMatchOptions, RECONNECT_SECONDS, sanitizeName } from "../rules.js";
+import {
+  drawRoomCode,
+  freeInk,
+  MAP_IDS,
+  normalizeMatchOptions,
+  RECONNECT_SECONDS,
+  sanitizeName,
+  type MapId,
+} from "../rules.js";
 import { isOriginAllowed, originPolicy } from "../origins.js";
+import {
+  clampPitch,
+  COORD_LIMIT,
+  ENVELOPES,
+  newMotion,
+  PATCH_INTERVAL_MS,
+  stepMotion,
+  WEAPONS,
+  wrapAngle,
+  type Motion,
+} from "../movement.js";
+
+const coord = z.number().min(-COORD_LIMIT).max(COORD_LIMIT);
+const angle = z.number().min(-1000).max(1000);
+
+/**
+ * client → server, ~MOVE_RATE_HZ while playing: where the client's engine says
+ * its body is. Shape and magnitudes are checked here (a payload that fails is
+ * a broken or hostile client, and is disconnected); bounds, speed and
+ * teleports are decided by stepMotion().
+ */
+const moveMessage = z.object({
+  x: coord,
+  y: coord,
+  z: coord,
+  yaw: angle,
+  pitch: angle,
+  moving: z.boolean(),
+  alive: z.boolean(),
+  weapon: z.string().max(16),
+  /** the client's own body generation; a change asks for a teleport */
+  epoch: z.number().int().min(0).max(2 ** 31 - 1),
+});
+type MoveMessage = z.infer<typeof moveMessage>;
 
 /**
  * Codes held by live rooms in this process. A room's code is its roomId, so
@@ -34,8 +76,9 @@ const FORBIDDEN = 403;
  * One Doodle Shooter match.
  *
  * The server owns the roster, the player limit, the ready flags, the match
- * rules and the decision to start. Gameplay traffic (transforms, hits, deaths,
- * respawns) still runs over PeerJS for now.
+ * rules and the decision to start. While playing it also holds every body's
+ * position, facing and movement state, within the limits in movement.ts.
+ * Combat (hits, damage, deaths, scores) is not synchronized yet.
  *
  * Identity is the Colyseus session: a player who drops keeps their seat for
  * RECONNECT_SECONDS, and only the holder of that seat's reconnection token can
@@ -47,6 +90,8 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   maxMessagesPerSecond = 60;
   /** how long a dropped player's seat is held; tests shorten it */
   reconnectSeconds = RECONNECT_SECONDS;
+  /** per-player movement limiter; server-only, keyed by session id */
+  private motion = new Map<string, Motion>();
 
   /**
    * Matchmaking gate: refuse browsers on origins that are not allowed. The
@@ -83,10 +128,51 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     start: (client: Client): StartResult => {
       const refusal = this.startRefusal(client.sessionId);
       if (refusal) return { ok: false, reason: refusal };
+      // Every body starts unplaced: each client's first move is its spawn.
+      for (const p of this.state.players.values()) p.spawned = false;
+      this.motion.clear();
       this.state.phase = "playing";
       return { ok: true };
     },
+    move: validate(moveMessage, (client, message) => this.applyMove(client.sessionId, message)),
   };
+
+  /** Accept a client's proposed body, within the map's volume and the movement limits. */
+  private applyMove(sessionId: string, m: MoveMessage) {
+    if (this.state.phase !== "playing") return;
+    const p = this.state.players.get(sessionId);
+    if (!p || !p.connected) return;
+    const now = Date.now();
+    let motion = this.motion.get(sessionId);
+    if (!motion) {
+      motion = newMotion(now);
+      this.motion.set(sessionId, motion);
+    }
+    const wantsTeleport = motion.clientEpoch === null || m.epoch !== motion.clientEpoch;
+    const result = stepMotion(
+      motion,
+      p.spawned ? { x: p.x, y: p.y, z: p.z } : null,
+      { x: m.x, y: m.y, z: m.z },
+      wantsTeleport,
+      now,
+      ENVELOPES[this.state.map as MapId],
+    );
+    // A refused teleport keeps the old epoch on file, so the next packet asks
+    // again; meanwhile the body walks toward the claim at the speed limit.
+    if (result.teleported) {
+      motion.clientEpoch = m.epoch;
+      p.epoch += 1;
+    }
+    p.x = result.pos.x;
+    p.y = result.pos.y;
+    p.z = result.pos.z;
+    p.yaw = wrapAngle(m.yaw);
+    p.pitch = clampPitch(m.pitch);
+    p.moving = m.moving;
+    p.alive = m.alive;
+    if ((WEAPONS as readonly string[]).includes(m.weapon)) p.weapon = m.weapon;
+    p.spawned = true;
+  }
 
   /** The same rules the lobby's ENTER ARENA button shows, enforced here. */
   private startRefusal(sessionId: string): StartRefusal | null {
@@ -107,6 +193,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     this.state.map = opts.map;
     this.state.grapple = opts.grapple;
     this.state.maxPlayers = opts.maxPlayers;
+    this.setPatchRate(PATCH_INTERVAL_MS);
   }
 
   onJoin(client: Client, options: unknown) {
@@ -141,11 +228,16 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   onReconnect(client: Client) {
     const player = this.state.players.get(client.sessionId);
     if (player) player.connected = true;
+    // A reloaded page runs a fresh engine whose epochs restart; its first move
+    // is a re-spawn, not a step.
+    const motion = this.motion.get(client.sessionId);
+    if (motion) motion.clientEpoch = null;
   }
 
   /** Gone for good: left on purpose, or the reconnection window ran out. */
   onLeave(client: Client) {
     this.state.players.delete(client.sessionId);
+    this.motion.delete(client.sessionId);
     if (client.sessionId !== this.state.hostId) return;
     // The roster lives on the server, so the room outlives its host: the
     // longest-standing connected guest takes over and is ready by definition.

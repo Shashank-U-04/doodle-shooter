@@ -12,6 +12,23 @@ export const Player = schema({
   ready: t.boolean().default(false),
   /** false while the seat is held for a reconnection */
   connected: t.boolean().default(true),
+
+  // ---- body, while playing (server-validated; see src/movement.ts) ----
+  /** the body has a server-accepted position; nothing to draw until then */
+  spawned: t.boolean().default(false),
+  x: t.float32().default(0),
+  y: t.float32().default(0),
+  z: t.float32().default(0),
+  /** facing, radians in (−π, π] */
+  yaw: t.float32().default(0),
+  /** look angle, radians in [−π/2, π/2] */
+  pitch: t.float32().default(0),
+  moving: t.boolean().default(false),
+  /** standing, as the client's own engine reports (death is its call for now) */
+  alive: t.boolean().default(false),
+  weapon: t.string().default("RIFLE"),
+  /** bumped by the server each time it accepts a teleport; viewers snap on a change */
+  epoch: t.uint32().default(0),
 });
 export type Player = SchemaType<typeof Player>;
 

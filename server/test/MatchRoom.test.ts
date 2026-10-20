@@ -17,6 +17,22 @@ const ALLOWED = "http://localhost:5173"; // a development default
 const FOREIGN = "https://evil.example";
 
 type RosterRow = { id: string; name: string; ink: number; isHost: boolean; ready: boolean; connected: boolean };
+type BodyRow = RosterRow & {
+  spawned: boolean;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  pitch: number;
+  moving: boolean;
+  alive: boolean;
+  weapon: string;
+  epoch: number;
+};
+
+/** The lobby fields of a player row, without the body. */
+const roster = (row: RosterRow | undefined) =>
+  row && { id: row.id, name: row.name, ink: row.ink, isHost: row.isHost, ready: row.ready, connected: row.connected };
 type MatchJSON = {
   code: string;
   phase: string;
@@ -24,7 +40,7 @@ type MatchJSON = {
   grapple: boolean;
   maxPlayers: number;
   hostId: string;
-  players: Record<string, RosterRow>;
+  players: Record<string, BodyRow>;
 };
 
 /** The room as this client sees it; empty until the first state arrives. */
@@ -91,7 +107,7 @@ describe("match room", () => {
     assert.strictEqual(s.grapple, false);
     assert.strictEqual(s.maxPlayers, 4);
     assert.strictEqual(s.hostId, h.sessionId);
-    assert.deepStrictEqual(s.players[h.sessionId], { id: h.sessionId, name: "Ada", ink: 0, isHost: true, ready: true, connected: true });
+    assert.deepStrictEqual(roster(s.players[h.sessionId]), { id: h.sessionId, name: "Ada", ink: 0, isHost: true, ready: true, connected: true });
   });
 
   it("falls back to defaults for malformed options and clamps the player limit", async () => {
@@ -110,7 +126,7 @@ describe("match room", () => {
     await eventually(() => Object.keys(snapshot(g).players).length === 2, "guest sees host");
 
     const guest = snapshot(h).players[g.sessionId];
-    assert.deepStrictEqual(guest, { id: g.sessionId, name: "Grace", ink: 1, isHost: false, ready: false, connected: true });
+    assert.deepStrictEqual(roster(guest), { id: g.sessionId, name: "Grace", ink: 1, isHost: false, ready: false, connected: true });
     assert.deepStrictEqual(snapshot(g), snapshot(h));
   });
 
@@ -184,7 +200,7 @@ describe("match room", () => {
 
     await h.leave();
     await eventually(() => snapshot(g).hostId === g.sessionId, "guest promoted");
-    assert.deepStrictEqual(snapshot(g).players[g.sessionId], {
+    assert.deepStrictEqual(roster(snapshot(g).players[g.sessionId]), {
       id: g.sessionId,
       name: "Grace",
       ink: 1,
@@ -338,6 +354,188 @@ describe("match room", () => {
       assert.strictEqual(snapshot(g).hostId, hostId);
       await eventually(() => snapshot(g).hostId === g.sessionId, "guest promoted", 3000);
       assert.strictEqual(snapshot(g).players[g.sessionId].isHost, true);
+    });
+  });
+
+  describe("player movement", () => {
+    type MoveBody = {
+      x: number;
+      y: number;
+      z: number;
+      yaw: number;
+      pitch: number;
+      moving: boolean;
+      alive: boolean;
+      weapon: string;
+      epoch: number;
+    };
+    const body = (over: Partial<MoveBody> = {}): MoveBody => ({
+      x: 0,
+      y: 0.2,
+      z: 0,
+      yaw: 0,
+      pitch: 0,
+      moving: false,
+      alive: true,
+      weapon: "RIFLE",
+      epoch: 1,
+      ...over,
+    });
+    const move = (room: ClientRoom, over: Partial<MoveBody> = {}) => room.send("move", body(over));
+    const close = (a: number, b: number, eps = 1e-3) => Math.abs(a - b) < eps;
+    const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    /** Host and guest, guest ready, match started. */
+    async function playing() {
+      const h = await host();
+      const g = await guest(h);
+      g.send("ready", { ready: true });
+      await eventually(() => snapshot(h).players[g.sessionId].ready, "guest ready");
+      assert.deepStrictEqual(await requestStart(h), { ok: true });
+      await eventually(() => snapshot(g).phase === "playing", "playing");
+      return { h, g };
+    }
+
+    it("ignores bodies before the match starts", async () => {
+      const h = await host();
+      const g = await guest(h);
+      move(g, { x: 5 });
+      await pause(150);
+      assert.strictEqual(snapshot(h).players[g.sessionId].spawned, false);
+      assert.strictEqual(serverRoom(h.roomId).state.players.get(g.sessionId)?.x, 0);
+    });
+
+    it("places a body on its first move and shows it to the other player", async () => {
+      const { h, g } = await playing();
+      assert.strictEqual(snapshot(h).players[g.sessionId].spawned, false, "nothing to draw before the first move");
+      move(g, { x: 5, y: 1, z: -3, yaw: 1, pitch: 0.2, moving: true, weapon: "SNIPER" });
+      await eventually(() => snapshot(h).players[g.sessionId].spawned, "host sees the guest's body");
+      const b = snapshot(h).players[g.sessionId];
+      assert.ok(close(b.x, 5) && close(b.y, 1) && close(b.z, -3), `at ${b.x},${b.y},${b.z}`);
+      assert.ok(close(b.yaw, 1) && close(b.pitch, 0.2));
+      assert.strictEqual(b.moving, true);
+      assert.strictEqual(b.alive, true);
+      assert.strictEqual(b.weapon, "SNIPER");
+      assert.strictEqual(b.epoch, 1);
+    });
+
+    it("streams ordinary movement without changing the epoch", async () => {
+      const { h, g } = await playing();
+      move(g, { x: 0 });
+      for (let i = 1; i <= 10; i++) {
+        await pause(50);
+        move(g, { x: i * 0.5, yaw: i * 0.1, moving: true });
+      }
+      await eventually(() => close(snapshot(h).players[g.sessionId].x, 5), "host sees the walk end");
+      assert.ok(close(snapshot(h).players[g.sessionId].yaw, 1));
+      assert.strictEqual(snapshot(h).players[g.sessionId].epoch, 1);
+    });
+
+    it("speed-limits a step that is too long", async () => {
+      const { h, g } = await playing();
+      move(g, { x: -50 });
+      move(g, { x: 50 }); // 100 m in one packet, same epoch
+      await pause(200);
+      const x = snapshot(h).players[g.sessionId].x;
+      assert.ok(x > -50 && x < 0, `went to x=${x}, not the claimed 50`);
+    });
+
+    it("accepts a teleport when the client stamps a new epoch", async () => {
+      const { h, g } = await playing();
+      move(g, { x: -50 });
+      move(g, { x: 50, epoch: 2 });
+      await eventually(() => close(snapshot(h).players[g.sessionId].x, 50), "teleported");
+      assert.strictEqual(snapshot(h).players[g.sessionId].epoch, 2);
+    });
+
+    it("rate-limits teleports", async () => {
+      const { h, g } = await playing();
+      move(g, { x: -50 }); // placement: server epoch 1
+      for (let e = 2; e <= 5; e++) move(g, { x: e % 2 ? -50 : 50, epoch: e }); // 4 teleports, 3 in the bank
+      await pause(200);
+      const b = serverRoom(h.roomId).state.players.get(g.sessionId)!;
+      assert.strictEqual(b.epoch, 4, "three teleports accepted, the fourth refused");
+      assert.ok(b.x > 0, `the refused teleport (to -50) only walked from +50: x=${b.x}`);
+    });
+
+    it("clamps bodies to the map and tidies angles and weapons", async () => {
+      const { h, g } = await playing();
+      move(g, { x: 500, y: -500, z: 0, yaw: 7, pitch: 3, weapon: "BAZOOKA" });
+      await eventually(() => snapshot(h).players[g.sessionId].spawned, "placed");
+      const b = snapshot(h).players[g.sessionId];
+      assert.deepStrictEqual([b.x, b.y, b.z], [55, -8, 0]);
+      assert.ok(close(b.yaw, 7 - Math.PI * 2), `yaw ${b.yaw}`);
+      assert.ok(close(b.pitch, Math.PI / 2));
+      assert.strictEqual(b.weapon, "RIFLE", "unknown weapon ignored");
+      move(g, { x: 54, y: 0, z: 0, weapon: "KATANA" });
+      await eventually(() => snapshot(h).players[g.sessionId].weapon === "KATANA", "known weapon applied");
+    });
+
+    it("disconnects a client that sends a malformed body, leaving everyone else as they were", async () => {
+      const { h, g } = await playing();
+      move(g, { x: 7 });
+      await eventually(() => snapshot(h).players[g.sessionId].spawned, "guest placed");
+      serverRoom(h.roomId).reconnectSeconds = 0.05;
+      const bad: unknown[] = [
+        { ...body(), x: Number.NaN },
+        { ...body(), x: Number.POSITIVE_INFINITY },
+        { ...body(), x: "5" },
+        { ...body(), y: 1e9 },
+        { ...body(), epoch: -1 },
+        { ...body(), epoch: 1.5 },
+        { ...body(), weapon: "X".repeat(64) },
+        Object.fromEntries(Object.entries(body()).filter(([k]) => k !== "alive")),
+        "not an object",
+      ];
+      for (const payload of bad) {
+        const m = await guest(h, "Mallory");
+        m.reconnection.enabled = false;
+        let closed: number | undefined;
+        m.onLeave((code) => (closed = code));
+        sendUnchecked(m, "move", payload);
+        await eventually(() => closed !== undefined, `kicked for ${JSON.stringify(payload)}`);
+        await eventually(() => !snapshot(h).players[m.sessionId], "seat released");
+      }
+      const b = serverRoom(h.roomId).state.players.get(g.sessionId)!;
+      assert.strictEqual(b.x, 7);
+      assert.strictEqual(serverRoom(h.roomId).state.players.size, 2);
+    });
+
+    it("disconnects a client that floods the room", async () => {
+      const { h, g } = await playing();
+      g.reconnection.enabled = false;
+      let closed: number | undefined;
+      g.onLeave((code) => (closed = code));
+      for (let i = 0; i < 200; i++) move(g, { x: i * 0.01 });
+      await eventually(() => closed !== undefined, "flooder disconnected");
+      assert.ok(snapshot(h).players[h.sessionId].connected);
+    });
+
+    it("removes a body when its player leaves", async () => {
+      const { h, g } = await playing();
+      move(g, { x: 3 });
+      await eventually(() => snapshot(h).players[g.sessionId]?.spawned === true, "placed");
+      await g.leave();
+      await eventually(() => !snapshot(h).players[g.sessionId], "body gone");
+      assert.strictEqual(Object.keys(snapshot(h).players).length, 1);
+    });
+
+    it("keeps one body through a reconnect and re-spawns it under a new epoch", async () => {
+      const { h, g } = await playing();
+      move(g, { x: 10 });
+      await eventually(() => snapshot(h).players[g.sessionId]?.spawned === true, "placed");
+      const { sessionId, reconnectionToken } = g;
+
+      await drop(g);
+      await eventually(() => snapshot(h).players[sessionId]?.connected === false, "dropped");
+      move(h, { x: 1 }); // the room carries on meanwhile
+      const back = await colyseus.sdk.reconnect(reconnectionToken);
+      // a reloaded page runs a fresh engine: its epoch counter starts over
+      back.send("move", body({ x: -40, epoch: 1 }));
+      await eventually(() => close(snapshot(h).players[sessionId]?.x ?? 0, -40), "re-spawned where the new engine says");
+      assert.strictEqual(snapshot(h).players[sessionId].epoch, 2, "viewers snap instead of sliding");
+      assert.strictEqual(snapshot(h).players[sessionId].connected, true);
+      assert.strictEqual(Object.keys(snapshot(h).players).length, 2);
     });
   });
 

@@ -4,9 +4,10 @@ A [Colyseus](https://colyseus.io) 0.18 server for Doodle Shooter's online
 matches, part of the migration away from PeerJS (see
 [`../docs/colyseus-migration.md`](../docs/colyseus-migration.md)). It owns the
 lobby: roster, player limit, ready flags, match rules, the decision to start,
-and reconnection. The frontend uses it only when built with
-`VITE_NET_TRANSPORT=colyseus`; PeerJS is still the default. Gameplay traffic
-does not run through it yet.
+and reconnection — and, in the arena, every player's body (position, facing,
+movement state), within server-enforced limits. The frontend uses it only when
+built with `VITE_NET_TRANSPORT=colyseus`; PeerJS is still the default. Combat
+(hits, damage, deaths, scores) does not run through it yet.
 
 It is a standalone npm package with its own `package-lock.json`. The root
 frontend build, lint and Vercel deployment do not touch this folder.
@@ -43,9 +44,11 @@ To try it with the game, run the frontend with the flag (from the repo root):
 | `npm run serve` | Run the compiled server (`node build/index.js`) |
 | `npm run check` | typecheck, lint, test and build, in that order |
 
-`test/frontend-adapter.test.ts` imports the frontend's adapter and is excluded
-from this package's `tsc` (it would type-check the frontend with server
-settings); the root `tsc -b` type-checks the adapter itself.
+`test/frontend-adapter.test.ts` (the frontend's lobby adapter) and
+`test/geometry.test.ts` (the real map builders) import frontend code, so the
+root dependencies must be installed too (`bun install` in the repo root). They
+are excluded from this package's `tsc`, which would type-check the frontend with
+server settings; the root `tsc -b` type-checks that code.
 
 ## Environment variables
 
@@ -94,7 +97,8 @@ default 4).
 
 **State** (`MatchState`): `code`, `phase` (`lobby` → `playing`), `map`,
 `grapple`, `maxPlayers`, `hostId`, `players` (map of `id`, `name`, `ink`,
-`isHost`, `ready`, `connected`).
+`isHost`, `ready`, `connected`, and the body: `spawned`, `x`, `y`, `z`, `yaw`,
+`pitch`, `moving`, `alive`, `weapon`, `epoch`).
 
 **Messages**
 
@@ -103,6 +107,7 @@ default 4).
 | `ready` | `{ ready: boolean }` | guests | lobby only; the host is always ready |
 | `config` | `{ map?, grapple? }` | host | lobby only; unknown maps rejected |
 | `start` | — | host | send with `room.request("start")`; answers `{ ok: true }` or `{ ok: false, reason }` |
+| `move` | `{ x, y, z, yaw, pitch, moving, alive, weapon, epoch }` | everyone | playing only; see Movement |
 
 `start` is refused with `not-host`, `not-in-lobby`, `no-guests` (nobody to play),
 `guest-reconnecting` (a guest's seat is held for a reconnection) or
@@ -110,6 +115,38 @@ default 4).
 ignored from then on. Players can still join a running match, as with PeerJS.
 
 A payload that fails validation disconnects its sender.
+
+## Movement
+
+The game's physics stays in the browser; a client proposes where its body is
+and the server decides what everyone else sees (`src/movement.ts`).
+
+- **Rate:** clients send `move` 20 times a second; the room patches state at
+  the same rate (50 ms). More than 60 messages a second from one client
+  disconnects it.
+- **Shape:** every field is required; coordinates within ±10 000, angles within
+  ±1 000, `weapon` ≤ 16 characters, `epoch` a non-negative integer. Anything
+  else (NaN, Infinity, strings, missing fields) disconnects the sender.
+- **Volume:** positions are clamped into the map's playable boxes, measured
+  from the real map builders (`test/geometry.test.ts` rebuilds the maps and
+  checks every zone, start pad and spawn point fits). The three Egyptian maps
+  share one connected world, so each allows all three zones.
+- **Speed:** ordinary movement draws on an allowance that refills at 60 m/s
+  (sprint is 10.6, a dash briefly 36) with 30 m banked for packets that arrive
+  bunched; a longer step is cut short toward the claim.
+- **Teleports:** a change of the client's `epoch` (respawn, round restart,
+  focus dash, Egyptian doors, the fall rescue) skips the speed limit, up to 3
+  back to back and then 1 a second. Each accepted teleport bumps the synced
+  `epoch`, so viewers snap instead of sliding.
+- **Tidying:** yaw is wrapped to (−π, π], pitch clamped to ±π/2, unknown weapon
+  names ignored. Moves before the start, or from a dropped seat, are ignored.
+- **Spawn:** bodies start unplaced (`spawned: false`) when a match starts; a
+  client's first move places it. After a reconnect the next move re-places it,
+  because a reloaded page runs a fresh engine whose epochs restart.
+
+What this does not do: walls are not checked on the server, so inside those
+limits the client still chooses its path, and `alive` is the client's own
+report until combat moves to the server.
 
 ## Leaving and reconnecting
 

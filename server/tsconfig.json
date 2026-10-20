@@ -13,7 +13,7 @@
     "forceConsistentCasingInFileNames": true,
     "useDefineForClassFields": false
   },
-  "exclude": ["test/frontend-adapter.test.ts"],
+  "exclude": ["test/frontend-adapter.test.ts", "test/geometry.test.ts"],
   "include": [
     "src",
     "test"

@@ -223,8 +223,10 @@ The multiplayer migration to [Colyseus](server/README.md) is in progress (plan:
 default.** A build with `VITE_NET_TRANSPORT=colyseus` runs the lobby on the match
 server instead: the server draws the room code, owns the roster, ready flags,
 map and grapple rule, the four-player limit and the decision to start, and holds
-a dropped player's seat for 30 seconds so a reload resumes it. Gameplay sync is
-not on Colyseus yet — in that build the arena loads with no opponents and says so.
+a dropped player's seat for 30 seconds so a reload resumes it. In the arena,
+players see each other move (the server validates every position, speed and
+teleport); combat is not on Colyseus yet — shots and scores stay local, and the
+arena says so.
 
 Try it locally:
 

@@ -29,7 +29,8 @@ Authority is split:
 ## Behaviour → Colyseus mapping
 
 Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus behind
-`VITE_NET_TRANSPORT=colyseus` (`src/game/colyseus.ts`); **S3+** = later.
+`VITE_NET_TRANSPORT=colyseus` (`src/game/colyseus.ts`); **S3A** = player movement
+(`server/src/movement.ts`); **S3B+** = later.
 
 | Behaviour today (PeerJS) | Where | Colyseus replacement | Status |
 |---|---|---|---|
@@ -49,32 +50,34 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
 | Silent peer dropped after 12 s while playing | `sweepSilent` | WebSocket close / ping timeout; then `allowReconnection` window (30 s) | S2 ✓ |
 | **Host leaves → the room is dead**; guests retry twice, then error | `drop(hostId)`, `scheduleRejoin` | **Changed:** server owns the room, so the longest-standing guest becomes host. Needs review — see "Decisions" | S1 |
 | Guest lobby rejoin after dropped channel (2 tries) | `scheduleRejoin` | `allowReconnection(client, 30)` in `onDrop`; SDK auto-reconnect for transient drops; `client.reconnect(token)` after a reload | S2 ✓ |
-| `state` 20 Hz per player: x,y,z,yaw,pitch,hp,alive,moving,firing,weapon,epoch,seq | `tick`, `NetPlayerState` | `state` message → server stores latest per player, rate-limits, rejects non-finite, gates by epoch/seq (`shouldApplyState`), rebroadcasts | S3 |
-| Host folds every body into one `states` packet per tick | `tick` (host) | Server patch rate / one `states` broadcast per tick | S3 |
-| `hit {victim, dmg, epoch, origin}` routed to the victim only | `receive("hit")` | Server forwards to the victim's client only (`client.send`), after sanity checks (victim exists, alive, dmg bounds, epoch matches, shooter alive, range) | S3 |
+| `state` 20 Hz per player: x,y,z,yaw,pitch,hp,alive,moving,firing,weapon,epoch,seq | `tick`, `NetPlayerState` | `move` message, zod-validated; server clamps to the map volume, speed-limits, rate-limits teleports (epoch changes) and keeps its own epoch; body synced in `Player`. `hp` and `firing` not synced yet | S3A ✓ |
+| Host folds every body into one `states` packet per tick | `tick` (host) | Room state patches at 50 ms (20 Hz) carry every changed body | S3A ✓ |
+| `hit {victim, dmg, epoch, origin}` routed to the victim only | `receive("hit")` | Server forwards to the victim's client only (`client.send`), after sanity checks (victim exists, alive, dmg bounds, epoch matches, shooter alive, range) | S3B |
 | Victim validates hit against rewound pose + world raycast | `engine.takeNetHit` | **Stays on the client** for now (see below) | — |
-| `death {killer}` → everyone bumps kills/deaths, feed | `apply("death")`, `reportDeath` | Server owns `kills`/`deaths` in `Player`; client sends `death`, server validates killer and updates score | S3 |
-| First to 15 kills wins (derived per client) | `Online.tsx KILLS_TO_WIN` | Server declares `winnerId` and freezes the round | S3 |
-| `respawn {epoch}` after 3.2 s; spawn pad = ink at start | `Online.tsx` | Server enforces respawn delay and epoch monotonicity; spawn choice stays on the client | S3 |
-| `rematch` host-only: scores cleared, engine reset | `rematch`, `beginRematch` | `rematch` message, host-only; server clears scores and `winnerId` | S3 |
-| `ping`/`pong` every 2 s → half-RTT feeds aim lead/rewind | `startPinging`, `noteRtt` | SDK latency measurement (or `ping` message), capped at 250 ms as today | S3 |
+| `death {killer}` → everyone bumps kills/deaths, feed | `apply("death")`, `reportDeath` | Server owns `kills`/`deaths` in `Player`; client sends `death`, server validates killer and updates score | S3B |
+| First to 15 kills wins (derived per client) | `Online.tsx KILLS_TO_WIN` | Server declares `winnerId` and freezes the round | S3B |
+| `respawn {epoch}` after 3.2 s; spawn pad = ink at start | `Online.tsx` | Server enforces respawn delay and epoch monotonicity; spawn choice stays on the client | S3B |
+| `rematch` host-only: scores cleared, engine reset | `rematch`, `beginRematch` | `rematch` message, host-only; server clears scores and `winnerId` | S3B |
+| `ping`/`pong` every 2 s → half-RTT feeds aim lead/rewind | `startPinging`, `noteRtt` | SDK latency measurement (or `ping` message), capped at 250 ms as today | S3B |
 | TURN credentials, ICE plan, signaling diagnostics | `net.ts`, `signaling.ts`, `convex/turn.ts` | Not needed over WebSockets; retired with PeerJS | S5 |
 | Convex auth (`@convex-dev/auth`) | `src/convex/auth*`, `use-auth.ts` | Out of scope; keep until a persistence/auth decision (Supabase deferred) | later |
 
 ## What cannot move to the server yet
 
 - **Movement and collision.** Physics (`world.ts resolveMove`, grapple, focus
-  dash, crouch, depenetration) runs in the engine on the client. Server-side
-  movement validation needs the map colliders built headlessly. That looks
-  feasible: `scripts/check-valley.ts` already builds the real Egypt map and runs
-  `resolveMove` without a renderer. But it means extracting map collider
-  construction from Three.js scene building, and doing it for all four maps.
-  Until then the server can only bounds-check positions and speeds.
+  dash, crouch, depenetration) runs in the engine on the client. S3A keeps it
+  there: the server clamps each proposed position to the map's volume (boxes
+  measured from the real builders), limits speed and rate-limits teleports, but
+  does not check walls. Server-side collision needs the map colliders built
+  headlessly — feasible (`server/test/geometry.test.ts` and
+  `scripts/check-valley.ts` already build the real maps without a renderer) —
+  but it means a second physics step on the server and client-side
+  reconciliation, which would change movement feel.
 - **Hit registration.** Hit detection uses the shooter's raycast against
   Three.js meshes, and validation uses the victim's pose history and
   `raycastWorld`. Moving this to the server needs the same headless colliders
   and a server-side pose history. Plan: keep the shooter-reports/victim-validates
-  model, add server sanity checks (S3), and consider server-side lag-compensated
+  model, add server sanity checks (S3B), and consider server-side lag-compensated
   validation only after colliders are extracted.
 - **Health.** The victim's engine applies damage (`damagePlayer`, regen). A
   server-owned HP would fight the engine's regen and local damage (self-damage,
@@ -110,8 +113,9 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
   affected. Fix (not applied — it touches auth and the PeerJS default): pass
   `shouldHandleCode` to `ConvexAuthProvider` so `/online` is skipped, or rename
   the lobby's parameter (e.g. `room=`).
-- **Gameplay is not on Colyseus yet.** With the flag on, the arena loads with
-  no opponents and a "COLYSEUS PREVIEW" notice; scores stay at zero (S3).
+- **Combat is not on Colyseus yet.** With the flag on, players see and follow
+  each other (S3A), but shots, damage, deaths, respawn timing and scores are
+  local only; the arena shows a "COLYSEUS PREVIEW — MOVEMENT ONLY" notice (S3B).
 - **Bundle size.** The Colyseus SDK is loaded with a dynamic `import()` when a
   Colyseus session connects, so PeerJS builds do not download it. The `/online`
   chunk grows by about 2 KB gzipped for the adapter itself.
@@ -126,8 +130,11 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
   pages use from `NetSession` (`getPlayers`, `setReady`, `setConfig`,
   `beginMatch`, handlers). PeerJS stays the default. Adds the `start` message,
   reconnection and CORS origin allow-listing.
-- **S3 — gameplay relay:** state/hit/death/respawn/rematch through the server,
-  with server-owned scores and winner.
+- **S3A — player movement (done):** bodies in the room state; validated `move`
+  protocol (volume, speed, teleport rate); remote players drawn by the existing
+  engine through the session's `onRemoteState`/`onPeerGone`.
+- **S3B — combat:** hit/death/respawn/rematch through the server, with
+  server-owned scores and winner; `hp`/`firing` in the body.
 - **S4 — hosting:** pick a host for the Node service, set up a staging deploy
   and a Vercel preview pointing at it.
 - **S5 — retirement:** remove PeerJS, the TURN endpoint and the signaling code

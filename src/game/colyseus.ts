@@ -3,9 +3,14 @@
 //
 // The server owns the roster, ready flags, match rules and the decision to
 // start; this class only mirrors its state into the shape Online.tsx already
-// renders (NetPlayer rows, NetHandlers callbacks). Gameplay traffic does not
-// run here yet: the arena loads, but transforms, hits and scores are the next
-// milestone, so the gameplay methods are deliberate no-ops.
+// renders (NetPlayer rows, NetHandlers callbacks).
+//
+// In the arena, our engine's body goes up as a `move` message MOVE_RATE_HZ
+// times a second and every other body comes back in the room state, as the
+// server validated it (server/src/movement.ts), through the same
+// onRemoteState/onPeerGone callbacks the PeerJS transport uses — so the engine
+// draws remote players exactly as it does over WebRTC. Combat is not
+// synchronized yet: hits, deaths, respawns and rematches are still no-ops.
 //
 // Reloads: the server holds a dropped seat for a short window, and only the
 // holder of that seat's reconnection token can take it back. The token is kept
@@ -28,6 +33,9 @@ const SEAT_TTL_MS = 6 * 60 * 60 * 1000;
  */
 export const RESUME_WINDOW_MS = 28_000;
 
+/** How often our body is sent (Hz); the server patches at the same rate. */
+export const MOVE_RATE_HZ = 20;
+
 /** What the server answers to `start` (server/src/rooms/MatchRoom.ts). */
 type StartResult = { ok: true } | { ok: false; reason: string };
 
@@ -39,7 +47,26 @@ type RoomJSON = {
   grapple?: boolean;
   maxPlayers?: number;
   hostId?: string;
-  players?: Record<string, { id: string; name: string; ink: number; isHost: boolean; ready: boolean; connected: boolean }>;
+  players?: Record<string, PlayerJSON>;
+};
+
+type PlayerJSON = {
+  id: string;
+  name: string;
+  ink: number;
+  isHost: boolean;
+  ready: boolean;
+  connected: boolean;
+  spawned?: boolean;
+  x?: number;
+  y?: number;
+  z?: number;
+  yaw?: number;
+  pitch?: number;
+  moving?: boolean;
+  alive?: boolean;
+  weapon?: string;
+  epoch?: number;
 };
 
 type Seat = {
@@ -166,6 +193,15 @@ export class ColyseusSession implements MatchSession {
   /** onStart fires once per session, when the server says "playing" */
   private announcedStart = false;
   private previewNoted = false;
+  /** where our own body comes from while the arena runs */
+  private stateProvider: (() => NetPlayerState) | null = null;
+  private tickTimer: ReturnType<typeof setInterval> | null = null;
+  /** remote bodies currently handed to the arena, so each departure is reported once */
+  private drawn = new Set<string>();
+  /** counter for the remote states we hand on (the server already orders them) */
+  private remoteSeq = 0;
+  /** lobby-relevant fields last published, so onChange is not fired 20× a second */
+  private rosterKey = "";
 
   constructor(code: string, name: string, isHost: boolean, config: MatchConfig, deps: ColyseusSessionDeps = {}) {
     this.code = code.toUpperCase();
@@ -179,6 +215,14 @@ export class ColyseusSession implements MatchSession {
 
   setHandlers(patch: NetHandlers) {
     Object.assign(this.handlers, patch);
+    // State patches only carry changes, so a player standing still sends
+    // none. The arena installs its body handler after the match has started:
+    // hand it every body that is already there, or they stay invisible until
+    // they move.
+    if (patch.onRemoteState) {
+      this.drawn.clear();
+      this.sync();
+    }
   }
 
   get joined(): boolean {
@@ -290,6 +334,7 @@ export class ColyseusSession implements MatchSession {
   close() {
     if (this.phase === "closed") return;
     this.phase = "closed";
+    this.stopTicking();
     // Leaving on purpose gives the seat up at once, and this tab forgets it.
     clearSeat(this.storage);
     const room = this.room;
@@ -315,6 +360,7 @@ export class ColyseusSession implements MatchSession {
 
   private fail(text: string) {
     this.phase = "closed";
+    this.stopTicking();
     this.setSignal("lost", text);
     this.handlers.onError?.(text);
   }
@@ -338,7 +384,8 @@ export class ColyseusSession implements MatchSession {
       this.handlers.onConfig?.(config);
     }
 
-    this.snapshot = Object.values(s.players ?? {})
+    const players = Object.values(s.players ?? {});
+    this.snapshot = players
       .map(
         (p): NetPlayer => ({
           id: p.id,
@@ -348,12 +395,13 @@ export class ColyseusSession implements MatchSession {
           isHost: p.isHost,
           kills: 0,
           deaths: 0,
-          state: { ...IDLE },
+          state: p.spawned ? this.bodyOf(p) : { ...IDLE },
           online: p.connected,
           ready: p.isHost || p.ready,
         }),
       )
       .sort((a, b) => Number(b.isHost) - Number(a.isHost));
+    this.syncBodies(players);
 
     if (s.phase === "playing") {
       this.phase = "playing";
@@ -364,7 +412,52 @@ export class ColyseusSession implements MatchSession {
     } else if (this.phase !== "closed") {
       this.phase = "lobby";
     }
-    this.handlers.onChange?.();
+    // Bodies change every patch; the roster rarely does. Re-render only for the latter.
+    const key = JSON.stringify(this.snapshot.map((p) => [p.id, p.name, p.ink, p.isHost, p.ready, p.online]));
+    if (key !== this.rosterKey) {
+      this.rosterKey = key;
+      this.handlers.onChange?.();
+    }
+  }
+
+  /** A server-held body in the shape the engine draws. */
+  private bodyOf(p: PlayerJSON): NetPlayerState {
+    return {
+      x: p.x ?? 0,
+      y: p.y ?? 0,
+      z: p.z ?? 0,
+      yaw: p.yaw ?? 0,
+      pitch: p.pitch ?? 0,
+      // Health is not synchronized yet; a standing body reads as full.
+      hp: IDLE.hp,
+      alive: p.alive ?? false,
+      moving: p.moving ?? false,
+      firing: false,
+      weapon: p.weapon ?? IDLE.weapon,
+      epoch: p.epoch ?? 0,
+      seq: ++this.remoteSeq,
+    };
+  }
+
+  /**
+   * Hand every other connected, placed body to the arena, and report each one
+   * that stopped being drawable (left, dropped, not placed yet) exactly once.
+   */
+  private syncBodies(players: PlayerJSON[]) {
+    const visible = new Set<string>();
+    if (this.phase === "playing") {
+      for (const p of players) {
+        if (p.id === this.me || !p.connected || !p.spawned) continue;
+        visible.add(p.id);
+        this.drawn.add(p.id);
+        this.handlers.onRemoteState?.(p.id, this.bodyOf(p));
+      }
+    }
+    for (const id of [...this.drawn]) {
+      if (visible.has(id)) continue;
+      this.drawn.delete(id);
+      this.handlers.onPeerGone?.(id);
+    }
   }
 
   getPlayers(): NetPlayer[] {
@@ -406,16 +499,48 @@ export class ColyseusSession implements MatchSession {
     return this.snapshot.some((p) => p.isMe && p.isHost);
   }
 
-  /* -------------------------- gameplay (next milestone) -------------------------- */
+  /* -------------------------------- arena -------------------------------- */
 
-  setStateProvider() {}
+  setStateProvider(fn: (() => NetPlayerState) | null) {
+    this.stateProvider = fn;
+  }
 
+  /** Send our body MOVE_RATE_HZ times a second while the match runs. */
   startTicking() {
+    if (this.tickTimer) clearInterval(this.tickTimer);
+    this.tickTimer = setInterval(() => this.tick(), 1000 / MOVE_RATE_HZ);
     if (this.previewNoted) return;
     this.previewNoted = true;
     // Deferred so it lands after the arena has installed its feed handler.
-    globalThis.setTimeout(() => this.handlers.onFeed?.("COLYSEUS PREVIEW — PLAYER SYNC ARRIVES IN THE NEXT MILESTONE", true), 0);
+    globalThis.setTimeout(() => this.handlers.onFeed?.("COLYSEUS PREVIEW — MOVEMENT ONLY, COMBAT IS NOT SYNCED YET", true), 0);
   }
+
+  private stopTicking() {
+    if (this.tickTimer) clearInterval(this.tickTimer);
+    this.tickTimer = null;
+  }
+
+  private tick() {
+    const room = this.room;
+    if (!room || this.phase !== "playing" || !this.stateProvider) return;
+    const s = this.stateProvider();
+    // The server disconnects a client that sends a non-finite number; a
+    // broken frame is skipped instead.
+    if (![s.x, s.y, s.z, s.yaw, s.pitch, s.epoch].every(Number.isFinite)) return;
+    room.send("move", {
+      x: s.x,
+      y: s.y,
+      z: s.z,
+      yaw: s.yaw,
+      pitch: s.pitch,
+      moving: s.moving,
+      alive: s.alive,
+      weapon: s.weapon,
+      epoch: s.epoch,
+    });
+  }
+
+  /* -------------------------- combat (next milestone) -------------------------- */
 
   reportHit() {}
   reportDeath() {}
