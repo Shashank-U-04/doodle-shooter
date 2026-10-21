@@ -29,14 +29,22 @@ import {
 import { NetSession, type NetPlayer, type SignalState } from "@/game/net";
 import { ColyseusSession, resumableSeat } from "@/game/colyseus";
 import { matchWinner, NET_TRANSPORT, type MatchSession } from "@/game/transport";
-import { clearRoomLease, codeForCreate, isValidRoomCode, normalizeRoomCode, writeRoomLease } from "@/game/room";
+import {
+  clearRoomLease,
+  codeForCreate,
+  isValidRoomCode,
+  LEGACY_ROOM_PARAM,
+  normalizeRoomCode,
+  ROOM_PARAM,
+  writeRoomLease,
+} from "@/game/room";
 
 const KILLS_TO_WIN = 15;
 const INK_LIST = Object.values(INK_HEX).filter((v): v is string => typeof v === "string");
 
 export default function Online() {
   const navigate = useNavigate();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const setup = useMemo(() => readSetup(), []);
   const [session, setSession] = useState<MatchSession | null>(null);
   const [mode, setMode] = useState<"menu" | "host" | "join">("menu");
@@ -204,21 +212,31 @@ export default function Online() {
     };
   }, []);
 
-  // Arriving from /setup with ?create=1 or ?code=XXXX: open or join the room
+  // Arriving from /setup with ?create=1 or ?room=XXXX: open or join the room
   // once. The timer keeps React StrictMode's mount → cleanup → mount cycle from
   // opening a room that the cleanup has already torn down.
-  // With the Colyseus transport, a reload also resumes a held seat on its own:
-  // a guest's ?code= has been consumed by Convex Auth by then (see colyseus.ts).
+  // A guest's room code is read once and then taken off the URL, so a reload
+  // behaves as it always has (old ?code= links lose theirs to Convex Auth; see
+  // ROOM_PARAM). With the Colyseus transport a reload resumes the held seat
+  // on its own instead (see colyseus.ts).
   useEffect(() => {
     const wantsCreate = params.get("create") === "1";
-    const wantsCode = params.get("code");
+    const wantsCode = params.get(ROOM_PARAM) ?? params.get(LEGACY_ROOM_PARAM);
     const held =
       NET_TRANSPORT === "colyseus" && !wantsCreate && !wantsCode ? resumableSeat(sessionStorage, Date.now()) : null;
     if (!wantsCreate && !wantsCode && !held) return;
     const t = window.setTimeout(() => {
       if (wantsCreate) create();
-      else if (wantsCode) join(wantsCode);
-      else if (held) resume(held);
+      else if (wantsCode) {
+        join(wantsCode);
+        setParams(
+          (p) => {
+            p.delete(ROOM_PARAM);
+            return p;
+          },
+          { replace: true },
+        );
+      } else if (held) resume(held);
     }, 0);
     return () => window.clearTimeout(t);
     // mount-only: these are the initial URL choices

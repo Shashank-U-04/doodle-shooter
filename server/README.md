@@ -65,6 +65,11 @@ server settings; the root `tsc -b` type-checks that code.
 | `ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to use the server, exact `scheme://host[:port]` (e.g. `https://your-app.vercel.app`). No wildcards; invalid entries are logged and ignored |
 | `E2E_FIXTURES` | — | `1` mounts the browser smoke tests' fixture route (`src/e2e.ts`). Ignored when `NODE_ENV=production`. **Never set it on a deployed server** |
 
+Do **not** set `E2E_FIXTURES`, `COLYSEUS_CLOUD`, `NODE_APP_INSTANCE`,
+`REDIS_URI` or `COLYSEUS_LATENCY` on a deployed server: `@colyseus/tools` and
+Colyseus read them and change how the server listens or behaves (see
+[`../docs/preview-deployment.md`](../docs/preview-deployment.md)).
+
 No secrets are required. `@colyseus/tools` reads an optional `.env` or
 `.env.<NODE_ENV>` file; both are git-ignored.
 
@@ -114,7 +119,8 @@ docker run --rm -p 2567:2567 -e ALLOWED_ORIGINS=https://<your-frontend-origin> d
 ```
 
 > The Dockerfile has **not** been built or run yet: Docker was not available
-> where it was written. Its runtime stage (production-only `npm ci` from the
+> where it was written (later found installed in WSL, with its daemon
+> stopped; starting it needs `sudo`). Its runtime stage (production-only `npm ci` from the
 > lockfile, `NODE_ENV=production node build/index.js`) was reproduced natively
 > and checked: `/health`, origin refusals, `/monitor` and the test fixtures
 > absent, a two-client room. Build it once before relying on it.

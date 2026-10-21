@@ -108,6 +108,9 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
   S2 added `@colyseus/sdk` to `package.json` and `bun.lock` only. Whether
   Vercel runs `bun install` or `npm install` has not been checked in its
   dashboard; until it has, production readiness of this branch is not claimed.
+  *S4b:* a clean clone installs with `bun install --frozen-lockfile` and
+  builds; `npm ci` against `package-lock.json` fails (out of sync). Vercel's
+  build log still has to confirm which one it runs (`preview-deployment.md`).
 - **`?code=` collides with Convex Auth (all transports).** `ConvexAuthProvider`
   treats a `code` query parameter as its OAuth/magic-link callback: on every page
   load it deletes it from the URL and calls `signIn` with it. A guest's
@@ -118,6 +121,17 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
   affected. Fix (not applied — it touches auth and the PeerJS default): pass
   `shouldHandleCode` to `ConvexAuthProvider` so `/online` is skipped, or rename
   the lobby's parameter (e.g. `room=`).
+  *S4b — worse than described, and fixed without touching auth.* From the
+  installed `@convex-dev/auth` 0.0.90: the provider calls `signIn(undefined,
+  { code })`; the server's `verifyCodeAndSignIn` returns null for a room code,
+  the response carries `tokens: null`, and the client stores that — **joining a
+  room by link signed the player out** (any session, anonymous included). The
+  app's only providers are email OTP (typed in a form) and Anonymous, so no
+  legitimate sign-in arrives as `?code=`. Setup now sends guests to
+  `/online?room=XXXX` (`ROOM_PARAM` in `src/game/room.ts`); the lobby reads it
+  once and removes it from the URL, so reloads behave exactly as before on both
+  transports. Old `?code=` links still join (and still reach Convex Auth, as
+  before). `ConvexAuthProvider` is unchanged.
 - **Pre-existing quirks the server reproduces faithfully (S3B):** a chest-high
   katana cut at arm's length always counts as a head cut (the head cone
   contains the chest), so one slash erases; grenades bounce at the absolute
@@ -150,8 +164,8 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
 6. **Map interactions.** Doors, spike traps, chests, pickups, reserve ammo and
    grenade counts are per-client; chest healing does not apply under server
    authority.
-7. **`?code=` vs Convex Auth** (above) — needs `shouldHandleCode` or a renamed
-   parameter.
+7. **`?code=` vs Convex Auth** — fixed in S4b by the `?room=` parameter (above);
+   no auth change.
 8. **Identity.** Colyseus seats are anonymous; names are self-reported. Binding a
    seat to a Convex user is not designed yet (and not needed to replace PeerJS,
    which is also anonymous).
@@ -213,6 +227,11 @@ bun run test:e2e                      # or: npx playwright test
   locally, a SIGTERM shutdown test, CORS credentials only for allowed origins,
   exact-origin guidance for Vercel previews, `docs/preview-deployment.md`, and
   the Playwright smoke test.
+- **S4b — Preview readiness (done):** the `?room=` invite parameter (above),
+  an exact deployment checklist and host comparison
+  (`preview-deployment.md`), the Windows ↔ macOS acceptance checklist
+  (`acceptance-checklist.md`), and a browser test of an old `?code=` link plus
+  a guest reload resuming the same seat.
 - **S4 — hosting:** pick a host for the Node service, set up a staging deploy
   and a Vercel preview pointing at it.
 - **S5 — retirement:** remove PeerJS, the TURN endpoint and the signaling code

@@ -141,9 +141,9 @@ function writeSeat(storage: SeatStorage | null, seat: Seat) {
  * The seat this tab can take back right now without asking anyone: one whose
  * page unloaded (reload, tab restore) inside the server's hold window.
  *
- * The lobby cannot rely on the URL for this. Convex Auth consumes any `?code=`
- * query parameter on load (it is its OAuth callback name), so a guest's invite
- * link has lost its room code by the time the page is reloaded.
+ * The lobby cannot rely on the URL for this: it takes a guest's `?room=` off
+ * the URL once it has read it (and Convex Auth strips an old `?code=` link's),
+ * so the room code is gone by the time the page is reloaded.
  */
 export function resumableSeat(storage: SeatStorage | null, now: number): { code: string; isHost: boolean } | null {
   const seat = readSeat(storage, now);

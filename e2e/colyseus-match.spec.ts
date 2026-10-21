@@ -45,6 +45,38 @@ async function finishMatch(request: APIRequestContext, code: string, winner: str
     .toBe(200);
 }
 
+/** Open a room as HOST and return its code. */
+async function openRoom(host: Page): Promise<string> {
+  await host.goto("/online?create=1&map=district&grapple=1");
+  await expect(host.locator(".dd-netcode")).toHaveText(/^[A-Z0-9]{4}$/, { timeout: 20_000 });
+  return (await host.locator(".dd-netcode").textContent())!.trim();
+}
+
+test("an old ?code= link still joins, and a guest's reload takes back the same seat", async ({ browser }) => {
+  const offHost: string[] = [];
+  const hostContext = await browser.newContext();
+  const guestContext = await browser.newContext();
+  const host = await player(hostContext, HOST, offHost);
+  const guest = await player(guestContext, GUEST, offHost);
+  const code = await openRoom(host);
+
+  await guest.goto(`/online?code=${code}`);
+  for (const page of [host, guest]) {
+    await expect(page.locator(".dd-roster")).toContainText("IN THE ROOM (2)", { timeout: 20_000 });
+  }
+  await guest.getByRole("button", { name: /I'M READY/ }).click();
+  await expect(host.locator(".dd-roster")).toContainText(`${GUEST} · ready`);
+
+  await guest.reload();
+  await expect(guest.locator(".dd-roster")).toContainText(`${GUEST} (you) · ready`, { timeout: 20_000 });
+  // the same seat, not a second one; and the host never saw two GRACEs
+  for (const page of [host, guest]) await expect(page.locator(".dd-roster")).toContainText("IN THE ROOM (2)");
+  await expect(host.locator(".dd-roster .row", { hasText: GUEST })).toHaveCount(1);
+
+  await hostContext.close();
+  await guestContext.close();
+});
+
 test("lobby → arena → winner → host leaves → promoted host rematches", async ({ browser, request }) => {
   const offHost: string[] = [];
   const hostContext = await browser.newContext();
@@ -52,14 +84,12 @@ test("lobby → arena → winner → host leaves → promoted host rematches", a
   const host = await player(hostContext, HOST, offHost);
   const guest = await player(guestContext, GUEST, offHost);
 
-  await test.step("host opens a room and gets a code", async () => {
-    await host.goto("/online?create=1&map=district&grapple=1");
-    await expect(host.locator(".dd-netcode")).toHaveText(/^[A-Z0-9]{4}$/, { timeout: 20_000 });
-  });
-  const code = (await host.locator(".dd-netcode").textContent())!.trim();
+  const code = await test.step("host opens a room and gets a code", () => openRoom(host));
 
   await test.step("guest joins by code; both rosters show two players", async () => {
-    await guest.goto(`/online?code=${code}`);
+    await guest.goto(`/online?room=${code}&map=district&grapple=1`);
+    // read once, then off the URL (and never in `code`, which Convex Auth takes)
+    await expect(guest).toHaveURL(/\/online\?map=district&grapple=1$/);
     for (const page of [host, guest]) {
       await expect(page.locator(".dd-roster")).toContainText("IN THE ROOM (2)", { timeout: 20_000 });
     }
