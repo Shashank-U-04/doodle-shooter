@@ -9,7 +9,7 @@
 // room's own damage code. Everything after that — the server declaring the
 // winner, the state patch, the overlay, host migration and the rematch — is the
 // real thing.
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { finishMatch, GUEST, HOST, openRoom, overlay, player } from "./helpers";
 
 test("an old ?code= link still joins, and a guest's reload takes back the same seat", async ({ browser }) => {

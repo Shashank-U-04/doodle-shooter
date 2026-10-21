@@ -2,7 +2,7 @@
 // free-tier host misbehaves (a cold start after spinning down, a restart on
 // redeploy). Both must be explained on screen, not left as a silent hang or a
 // dead arena.
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { E2E_SERVER } from "./env";
 import { GUEST, HOST, intoArena, overlay, player } from "./helpers";
 

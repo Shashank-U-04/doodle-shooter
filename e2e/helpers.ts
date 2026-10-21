@@ -4,6 +4,9 @@ import { expect, type APIRequestContext, type BrowserContext, type Page } from "
 import { E2E_SERVER } from "./env";
 
 export const HOST = "ADA";
+
+/** Console output of every player page in the current test (e2e/fixtures.ts attaches it to a failure). */
+export const consoleLines: string[] = [];
 export const GUEST = "GRACE";
 
 /** A player's own browser: their name remembered, and no way off this machine. */
@@ -16,7 +19,11 @@ export async function player(context: BrowserContext, name: string, offHost: str
     return route.abort();
   });
   const page = await context.newPage();
-  page.on("pageerror", (err) => console.warn(`[${name} pageerror] ${err.message}`));
+  page.on("pageerror", (err) => {
+    console.warn(`[${name} pageerror] ${err.message}`);
+    consoleLines.push(`${new Date().toISOString()} ${name} pageerror ${err.message}`);
+  });
+  page.on("console", (msg) => consoleLines.push(`${new Date().toISOString()} ${name} ${msg.type()} ${msg.text()}`));
   return page;
 }
 

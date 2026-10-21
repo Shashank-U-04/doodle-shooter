@@ -55,6 +55,22 @@ export const JOIN_TIMEOUT_MS = 90_000;
 export const JOIN_TIMEOUT_TEXT = "The match server did not answer in time. It may still be waking up — press TRY AGAIN.";
 /** @colyseus/shared-types CloseCode.SERVER_SHUTDOWN (not imported: the SDK loads on demand) */
 const SERVER_SHUTDOWN = 4001;
+/**
+ * @colyseus/shared-types CloseCode, for the connection log only: what each code
+ * means, so a failure report reads "WITH_ERROR (server closed us)" rather than
+ * a bare number. Codes not listed are logged as the number alone.
+ */
+const CLOSE_CODES: Record<number, string> = {
+  1000: "NORMAL_CLOSURE",
+  1001: "GOING_AWAY (server or page went away; SDK retries)",
+  1005: "NO_STATUS_RECEIVED (SDK retries)",
+  1006: "ABNORMAL_CLOSURE (socket died without a close frame: network loss, or SDK reconnect refused)",
+  4000: "CONSENTED (a deliberate leave)",
+  4001: "SERVER_SHUTDOWN",
+  4002: "WITH_ERROR (the server closed us: e.g. rate limit or a rejected message)",
+  4003: "FAILED_TO_RECONNECT (SDK gave up after its retries)",
+  4010: "MAY_TRY_RECONNECT (SDK retries)",
+};
 
 /** How often the round trip is measured, ms. */
 const PING_EVERY_MS = 2000;
@@ -257,6 +273,10 @@ export class ColyseusSession implements MatchSession {
   private readonly resumeOnly: boolean;
   private readonly joinTimeoutMs: number;
   private joinTimer: ReturnType<typeof setTimeout> | null = null;
+  /** connection diagnostics (logConnection) */
+  private attachedAt = 0;
+  private drops = 0;
+  private lastDropAt = 0;
   private handlers: MatchHandlers = {};
   private room: Room | null = null;
   private config: MatchConfig;
@@ -419,23 +439,56 @@ export class ColyseusSession implements MatchSession {
     }
   }
 
+  /**
+   * Diagnostics: one console line per connection event, for the next time a
+   * match is lost. Session id and room code only; never the reconnection token
+   * or a player's name. Not every event has a code: the socket's `error` event
+   * carries none (browsers hide why a WebSocket failed), and is logged as such.
+   */
+  private logConnection(room: Room, event: string, code?: number, reason?: string) {
+    const r = room.reconnection;
+    // one JSON string, so it reads the same in devtools and in a test's captured console
+    const details = JSON.stringify({
+      code: code ?? "(none exposed)",
+      meaning: code === undefined ? undefined : (CLOSE_CODES[code] ?? "unlisted"),
+      reason: reason || "(none)",
+      session: room.sessionId,
+      phase: this.phase,
+      signal: this.signal,
+      reconnecting: r?.isReconnecting ?? false,
+      reconnectAttempts: r ? `${r.retryCount}/${r.maxRetries}` : "n/a",
+      dropsSinceJoin: this.drops,
+      msSinceJoin: Math.round(Date.now() - this.attachedAt),
+      msSinceLastDrop: this.lastDropAt ? Math.round(Date.now() - this.lastDropAt) : null,
+      online: typeof navigator === "undefined" ? undefined : navigator.onLine,
+    });
+    console.warn(`[colyseus ${this.code}] ${event} ${details}`);
+  }
+
   private attach(room: Room) {
     this.room = room;
     this.me = room.sessionId;
     this.code = room.roomId;
+    this.attachedAt = Date.now();
     this.rememberSeat();
 
     room.onStateChange(() => this.sync());
-    room.onDrop(() => {
+    room.onDrop((code, reason) => {
+      this.drops++;
+      this.lastDropAt = Date.now();
+      // the SDK calls this as it starts its own reconnection attempts
+      this.logConnection(room, "dropped; SDK reconnecting", code, reason);
       this.setSignal("retrying", "connection dropped — reconnecting");
       this.handlers.onStatus?.("CONNECTION DROPPED — RECONNECTING…");
     });
     room.onReconnect(() => {
+      this.logConnection(room, "reconnected");
       this.rememberSeat();
       this.setSignal("open");
       this.handlers.onStatus?.("RECONNECTED");
     });
-    room.onLeave((code) => {
+    room.onLeave((code, reason) => {
+      this.logConnection(room, this.phase === "closed" ? "left (we closed it)" : "left; match lost", code, reason);
       if (this.phase === "closed") return;
       if (code === SERVER_SHUTDOWN) {
         // a redeploy or restart: every room on the server has gone with it
@@ -447,7 +500,7 @@ export class ColyseusSession implements MatchSession {
       // again from this tab tries the token first (a dead one is then cleared).
       this.fail("Lost the connection to the match server and could not get back in. Join again.");
     });
-    room.onError((code, message) => console.warn(`[colyseus ${this.code}] error ${code}`, message ?? ""));
+    room.onError((code, message) => this.logConnection(room, "error", code, message));
     room.onMessage("hit", (e: HitEvent) => this.onHitEvent(e));
     room.onMessage("eliminated", (e: EliminatedEvent) => this.onEliminated(e));
     const ping = () => room.ping((ms) => (this.rtt = ms));

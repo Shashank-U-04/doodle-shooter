@@ -13,11 +13,12 @@
 // Setup: `bun install`, `npm ci` in server/, then `bunx playwright install chromium`.
 // Run: `bun run test:e2e`.
 import { defineConfig, devices } from "@playwright/test";
-import { E2E_SERVER, E2E_SERVER_PORT, E2E_WEB as WEB, E2E_WEB_PORT } from "./e2e/env";
+import { E2E_RESULTS, E2E_SERVER, E2E_SERVER_LOG, E2E_SERVER_PORT, E2E_WEB as WEB, E2E_WEB_PORT } from "./e2e/env";
 
 export default defineConfig({
   testDir: "e2e",
-  outputDir: "e2e/.results",
+  // a folder per run (E2E_RUN_ID): earlier runs' failures are kept, not overwritten
+  outputDir: E2E_RESULTS,
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,
@@ -41,7 +42,8 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "node --import tsx src/index.ts",
+      // the server, with its output also kept in E2E_SERVER_LOG (see e2e/fixtures.ts)
+      command: "node ../e2e/server-with-log.mjs",
       cwd: "server",
       url: `${E2E_SERVER}/health`,
       reuseExistingServer: false,
@@ -51,6 +53,10 @@ export default defineConfig({
         NODE_ENV: "test",
         E2E_FIXTURES: "1",
         ALLOWED_ORIGINS: WEB,
+        // seats, drops and leaves with close codes, rate-limit kicks: no payloads, tokens or names
+        DEBUG: "colyseus:matchmaking,colyseus:errors",
+        DEBUG_COLORS: "0",
+        E2E_SERVER_LOG,
       },
     },
     {
