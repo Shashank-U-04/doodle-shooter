@@ -28,7 +28,7 @@ import {
 } from "@/game/maps";
 import { NetSession, type NetPlayer, type SignalState } from "@/game/net";
 import { ColyseusSession, resumableSeat } from "@/game/colyseus";
-import { NET_TRANSPORT, type MatchSession } from "@/game/transport";
+import { matchWinner, NET_TRANSPORT, type MatchSession } from "@/game/transport";
 import { clearRoomLease, codeForCreate, isValidRoomCode, normalizeRoomCode, writeRoomLease } from "@/game/room";
 
 const KILLS_TO_WIN = 15;
@@ -725,20 +725,26 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, pushFeed, resetRound]);
 
-  // First to fifteen takes it. Every client builds the same scoreboard from the
-  // same death messages, so nobody has to be told who won — the result is read
-  // straight off the roster. The effect only freezes our own view behind it.
-  const winner = players.find((p) => p.kills >= KILLS_TO_WIN) ?? null;
+  // First to fifteen takes it. Over PeerJS every client builds the same
+  // scoreboard from the same death messages and reads the result straight off
+  // the roster; the match server declares it instead. The effect only freezes
+  // our own view behind it.
+  const winner = matchWinner(players, session.winnerId, KILLS_TO_WIN);
+  // a fresh object every render; the effect only cares whether the match is decided
+  const decided = winner !== null;
   useEffect(() => {
-    winnerRef.current = Boolean(winner);
-    if (winner) gameRef.current?.pause();
-  }, [winner]);
+    winnerRef.current = decided;
+    if (decided) gameRef.current?.pause();
+  }, [decided]);
 
   const resume = useCallback(() => gameRef.current?.resume(), []);
   const live = !paused && !down && !winner;
   const hpFrac = Math.max(0, hud.hp / hud.maxHp);
   const me = players.find((p) => p.isMe);
   const iWon = winner?.isMe ?? false;
+  // The match server hands the room to a guest when the host leaves for good,
+  // and only the current host's rematch counts; PeerJS never changes hosts.
+  const canRematch = session.serverCombat ? Boolean(me?.isHost) : session.isHost;
 
   return (
     <div className={`dd-root ${live ? "dd-live" : ""} ${hud.dark ? "dd-dark" : ""}`}>
@@ -911,7 +917,7 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
               ))}
             </div>
             <div className="mainbtns">
-              {session.isHost ? (
+              {canRematch ? (
                 <button type="button" className="start" onClick={() => session.rematch()}>
                   REMATCH<i>everyone back to a fresh corner</i>
                 </button>

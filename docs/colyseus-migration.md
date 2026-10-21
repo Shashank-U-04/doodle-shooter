@@ -56,9 +56,9 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
 | `hit {victim, dmg, epoch, origin}`: the shooter decides it hit | `fireWeapon`, `receive("hit")` | **Replaced:** clients send `fire`/`slash`/`dash`/`throw` intents; the server decides hits with the engine's rays, hitboxes and the real map walls, and applies damage | S3B ✓ |
 | Victim validates hit against rewound pose + world raycast | `engine.takeNetHit` | Server-side lag compensation (body history, ≤ 350 ms) | S3B ✓ |
 | `death {killer}` → everyone bumps kills/deaths, feed | `apply("death")`, `reportDeath` | Server owns health, `kills`/`deaths`; `eliminated` event drives the feed | S3B ✓ |
-| First to 15 kills wins (derived per client) | `Online.tsx KILLS_TO_WIN` | Server sets `winnerId` and stops combat; clients still show the overlay from the score | S3B ✓ |
+| First to 15 kills wins (derived per client) | `Online.tsx KILLS_TO_WIN` | Server sets `winnerId` and stops combat; the arena's overlay shows the server's winner (`matchWinner`), even if they have left | S3C ✓ |
 | `respawn {epoch}` after 3.2 s; spawn pad = ink at start | `Online.tsx` | Server revives after 3.2 s when the client re-places the body; spawn choice stays on the client | S3B ✓ |
-| `rematch` host-only: scores cleared, engine reset | `rematch`, `beginRematch` | `rematch` message, host-only; server resets and bumps `round` | S3B ✓ |
+| `rematch` host-only: scores cleared, engine reset | `rematch`, `beginRematch` | `rematch` message, host-only; server resets and bumps `round`; the button follows the current host, so a promoted guest can rematch | S3C ✓ |
 | `ping`/`pong` every 2 s → half-RTT feeds aim lead/rewind | `startPinging`, `noteRtt` | SDK `room.ping` every 2 s; sent as each attack's `lag` for server-side rewind (the engine no longer leads targets) | S3B ✓ |
 | TURN credentials, ICE plan, signaling diagnostics | `net.ts`, `signaling.ts`, `convex/turn.ts` | Not needed over WebSockets; retired with PeerJS | S5 |
 | Convex auth (`@convex-dev/auth`) | `src/convex/auth*`, `use-auth.ts` | Out of scope; keep until a persistence/auth decision (Supabase deferred) | later |
@@ -131,6 +131,33 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
   Colyseus session connects, so PeerJS builds do not download it. The `/online`
   chunk grows by about 2 KB gzipped for the adapter itself.
 
+## Remaining gaps (audit after S3B, ordered by dependency)
+
+1. **Deployment (S4).** No container/start config for a Node host, no staging
+   server, no Vercel Preview env (`VITE_NET_TRANSPORT`, `VITE_COLYSEUS_URL`), and
+   `ALLOWED_ORIGINS` needs every preview origin listed exactly. The Vercel
+   install command (bun vs npm) is still unverified.
+2. **Abuse limits.** Anyone on an allowed origin (or no origin) can create rooms
+   without limit; there is no per-IP cap on room creation or connections.
+3. **Browser regression tests.** The adapter is tested under Node; there is no
+   automated browser test of the lobby → arena → rematch flow on either
+   transport.
+4. **Runtime fallback.** The transport is a build flag, so a Colyseus preview
+   cannot fall back to PeerJS without a rebuild.
+5. **Movement collision.** The server clamps volume and speed but does not stop
+   a client walking through walls; the colliders it already has for shots could
+   check each step's segment (with tolerance for depenetration and doors).
+6. **Map interactions.** Doors, spike traps, chests, pickups, reserve ammo and
+   grenade counts are per-client; chest healing does not apply under server
+   authority.
+7. **`?code=` vs Convex Auth** (above) — needs `shouldHandleCode` or a renamed
+   parameter.
+8. **Identity.** Colyseus seats are anonymous; names are self-reported. Binding a
+   seat to a Convex user is not designed yet (and not needed to replace PeerJS,
+   which is also anonymous).
+9. **Retirement (S5)** — only after the above and the two-device, two-network
+   acceptance test.
+
 ## Milestones
 
 - **S1 (this change):** `server/` workspace: roster, join/leave, validated
@@ -148,6 +175,10 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
   walls, hitboxes, lag compensation), damage, health, regen, deaths, respawns,
   scores, winner and rematch; the engine predicts tracers, muzzle flashes and
   sound and shows hit feedback only when the server confirms it.
+- **S3C — match outcome (done):** the arena shows the server's `winnerId`
+  instead of re-deriving it from the score, and the REMATCH button follows the
+  roster's current host (it used the role the tab joined with, so after a host
+  migration nobody could start a rematch).
 - **S4 — hosting:** pick a host for the Node service, set up a staging deploy
   and a Vercel preview pointing at it.
 - **S5 — retirement:** remove PeerJS, the TURN endpoint and the signaling code

@@ -12,7 +12,7 @@ import type appConfig from "../src/app.config.js";
 import { testServer } from "./harness.js";
 import type { MatchRoom } from "../src/rooms/MatchRoom.js";
 import { ColyseusSession, RESUME_WINDOW_MS, resumableSeat, SEAT_KEY, type ColyseusSessionDeps } from "../../src/game/colyseus.js";
-import { readColyseusUrl, readNetTransport } from "../../src/game/transport.js";
+import { matchWinner, readColyseusUrl, readNetTransport } from "../../src/game/transport.js";
 import type { NetPlayerState, NetShotLanded } from "../../src/game/types.js";
 
 const URL = "http://localhost:2568";
@@ -101,6 +101,20 @@ describe("frontend Colyseus lobby adapter", () => {
     assert.strictEqual(readColyseusUrl({}), null, "a production build never guesses a server");
     assert.strictEqual(readColyseusUrl({ VITE_COLYSEUS_URL: "https://mp.example.com/" }), "https://mp.example.com");
     assert.strictEqual(readColyseusUrl({ VITE_COLYSEUS_URL: "mp.example.com" }), null);
+  });
+
+  it("takes the winner from the server when it names one, from the score otherwise", () => {
+    const row = (id: string, kills: number, isMe = false) =>
+      ({ id, name: id.toUpperCase(), ink: 0, isMe, isHost: false, kills, deaths: 0, state: {} as NetPlayerState, online: true, ready: true });
+    const players = [row("a", 15), row("b", 3, true)];
+    // PeerJS: no server verdict, every client counts the score itself
+    assert.deepStrictEqual(matchWinner(players, undefined, 15), { id: "a", name: "A", kills: 15, isMe: false });
+    assert.strictEqual(matchWinner([row("a", 14)], undefined, 15), null);
+    // the server's word, not the score: undecided, decided, decided for us
+    assert.strictEqual(matchWinner(players, "", 15), null);
+    assert.deepStrictEqual(matchWinner(players, "b", 15), { id: "b", name: "B", kills: 3, isMe: true });
+    // the winner has left, but combat stays stopped until a rematch: keep the overlay up
+    assert.deepStrictEqual(matchWinner(players, "gone", 15), { id: "gone", name: "A PLAYER WHO LEFT", kills: 15, isMe: false });
   });
 
   it("creates a room and lets a guest join it by code", async () => {
@@ -414,6 +428,35 @@ describe("frontend Colyseus lobby adapter", () => {
         h.session.rematch();
         await eventually(() => ha.rematches === 1 && ga.rematches === 1, "both restart");
         await eventually(() => h.session.getPlayers().every((p) => p.kills === 0 && p.deaths === 0), "score cleared");
+      });
+
+      it("shows both arenas the server's winner, and clears it on rematch", async () => {
+        const { h, g, ha, ga } = await armed();
+        const hid = h.session.me;
+        serverRoom(h.session.code).state.players.get(hid)!.kills = 14;
+        await eventually(() => g.session.getPlayers().find((p) => p.id === hid)?.kills === 14, "fourteen on the board");
+        assert.strictEqual(g.session.winnerId, "", "undecided");
+        let changes = 0;
+        g.session.setHandlers({ onChange: () => changes++ });
+        h.session.reportCombat({ kind: "fire", weapon: "SNIPER", origin: eye(A), dir: toward(eye(A), { x: B.x, y: B.y + 1.52, z: B.z }), ads: true, air: false });
+        await eventually(() => h.session.winnerId === hid && g.session.winnerId === hid, "both told who won");
+        assert.ok(changes > 0, "the arena re-renders for the result");
+        assert.deepStrictEqual(matchWinner(g.session.getPlayers(), g.session.winnerId, 15), { id: hid, name: "Ada", kills: 15, isMe: false });
+        assert.strictEqual(matchWinner(h.session.getPlayers(), h.session.winnerId, 15)?.isMe, true);
+        h.session.rematch();
+        await eventually(() => ha.rematches === 1 && ga.rematches === 1, "both restart");
+        await eventually(() => h.session.winnerId === "" && g.session.winnerId === "", "result cleared");
+      });
+
+      it("lets a guest promoted to host call the rematch", async () => {
+        const { h, g, ga } = await armed();
+        const gid = g.session.me;
+        h.session.close();
+        await eventually(() => g.session.getPlayers().find((p) => p.isMe)?.isHost === true, "guest promoted");
+        assert.strictEqual(g.session.isHost, false, "it joined as a guest; the roster says who hosts now");
+        g.session.rematch();
+        await eventually(() => ga.rematches === 1, "the promoted host's rematch runs");
+        assert.strictEqual(serverRoom(g.session.code).state.hostId, gid);
       });
     });
 

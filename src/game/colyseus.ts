@@ -236,6 +236,8 @@ export class ColyseusSession implements MatchSession {
   private killedBy: string | null = null;
   /** the rematch counter as last seen */
   private round: number | null = null;
+  /** the server's winner ("" while undecided) */
+  private winner = "";
 
   constructor(code: string, name: string, isHost: boolean, config: MatchConfig, deps: ColyseusSessionDeps = {}) {
     this.code = code.toUpperCase();
@@ -261,6 +263,11 @@ export class ColyseusSession implements MatchSession {
 
   get joined(): boolean {
     return this.me !== "" && this.snapshot.some((p) => p.isMe);
+  }
+
+  /** The server decides the match (first to 15); the arena shows its verdict. */
+  get winnerId(): string {
+    return this.winner;
   }
 
   /* ------------------------------- lifecycle ------------------------------- */
@@ -465,9 +472,13 @@ export class ColyseusSession implements MatchSession {
       this.handlers.onRematch?.();
     }
     this.round = round;
+    this.winner = s.winnerId ?? "";
     this.syncHealth(players.find((p) => p.id === this.me));
-    // Bodies change every patch; the roster and the score rarely do. Re-render only for those.
-    const key = JSON.stringify(this.snapshot.map((p) => [p.id, p.name, p.ink, p.isHost, p.ready, p.online, p.kills, p.deaths]));
+    // Bodies change every patch; the roster, the score and the result rarely do. Re-render only for those.
+    const key = JSON.stringify([
+      this.winner,
+      this.snapshot.map((p) => [p.id, p.name, p.ink, p.isHost, p.ready, p.online, p.kills, p.deaths]),
+    ]);
     if (key !== this.rosterKey) {
       this.rosterKey = key;
       this.handlers.onChange?.();

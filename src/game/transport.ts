@@ -39,6 +39,29 @@ export function readColyseusUrl(env: Env): string | null {
 
 export const NET_TRANSPORT: NetTransport = readNetTransport(viteEnv());
 
+/** Who took the match, as the arena's overlay shows it. */
+export type MatchWinner = { id: string; name: string; kills: number; isMe: boolean };
+
+/**
+ * The match's winner, or null while it is undecided.
+ *
+ * A server-refereed session names it (`winnerId`, "" while undecided), and its
+ * word stands even if the winner has since left: combat stays stopped until a
+ * rematch, so the overlay must stay up for the host. Otherwise (PeerJS) every
+ * client derives it from the score it counted itself.
+ */
+export function matchWinner(players: NetPlayer[], winnerId: string | undefined, killsToWin: number): MatchWinner | null {
+  if (winnerId === undefined) {
+    const p = players.find((x) => x.kills >= killsToWin);
+    return p ? { id: p.id, name: p.name, kills: p.kills, isMe: p.isMe } : null;
+  }
+  if (!winnerId) return null;
+  const p = players.find((x) => x.id === winnerId);
+  return p
+    ? { id: p.id, name: p.name, kills: p.kills, isMe: p.isMe }
+    : { id: winnerId, name: "A PLAYER WHO LEFT", kills: killsToWin, isMe: false };
+}
+
 /**
  * Callbacks a session may call. The PeerJS session only ever uses NetHandlers;
  * the server-authoritative ones are the Colyseus session's.
@@ -87,4 +110,6 @@ export interface MatchSession {
   readonly serverCombat?: boolean;
   /** server combat: hand an attack to the server */
   reportCombat?(intent: NetCombatIntent): void;
+  /** server combat: the winner the server declared ("" while undecided) */
+  readonly winnerId?: string;
 }
