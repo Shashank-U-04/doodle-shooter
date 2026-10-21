@@ -33,7 +33,7 @@ export const Player = schema({
   epoch: t.uint32().default(0),
 
   // ---- combat (server-authoritative; see src/combat.ts) ----
-  hp: t.float32().default(120),
+  hp: t.float32().default(100),
   kills: t.uint16().default(0),
   deaths: t.uint16().default(0),
 });

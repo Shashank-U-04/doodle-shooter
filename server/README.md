@@ -268,6 +268,13 @@ way" — never what it hit; there is no message that claims damage or a kill.
   hitboxes, range, spread, grenade physics, blast falloff, the focus dash,
   health, regen, the 3.2 s respawn and the 15-kill win from the engine and the
   lobby. `test/combat-parity.test.ts` fails if any of them drift.
+- **Damage and health are player-versus-player values** (`PVP` in
+  `src/game/arsenal.ts`), not the solo rack's, which is tuned against waves of
+  enemies: 100 hp; rifle 9 (×2 head) = 12 body shots; shotgun 8 per pellet
+  (×1.5), 80 point-blank; sniper 80 (×1.5) = 2 body shots or 1 headshot;
+  revolver 30 (×2) = 4 body or 2 head; katana 40 (×1.5); focus dash 60; grenade
+  60 centre (×1.5 for others). Fire rates, spread, magazines and reloads are
+  the rack's. `test/combat-room.test.ts` checks the shots-to-kill.
 - **Hits** are the engine's rays, ported line for line: per pellet, the server
   rolls the spread (hip or ADS, ×1.8 off the ground), stops the ray at the
   first wall of the shooter's zone (real map colliders, below), and tests the
@@ -287,11 +294,11 @@ way" — never what it hit; there is no message that claims damage or a kill.
   `lag` ms ago (the client's round trip + `100 ms, capped at 350 ms), and
   against where they are now.
 - **Katana:** the engine's reach/arc cones; three landed cuts fill the focus
-  meter, which opens a 2.6 s window for up to two dashes (95 damage).
+  meter, which opens a 2.6 s window for up to two dashes (60 damage).
 - **Grenades:** the server flies the grenade with the engine's integration and
   sets it off after the 1.6 s fuse; everyone in the blast is hurt (×1.5 for
   everyone but the thrower), credited to the thrower.
-- **Health and death:** 120 hp, regen 11 hp/s after 4.5 s without damage. At
+- **Health and death:** 100 hp, regen 11 hp/s after 4.5 s without damage. At
   0 the player is down: a death, a kill for the attacker (none for erasing
   yourself), an `eliminated` event, and a respawn once 3.2 s have passed and
   the client re-places the body (or 2 s after that regardless). First to 15

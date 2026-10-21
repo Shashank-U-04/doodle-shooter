@@ -241,7 +241,7 @@ export interface GameHandle {
   setServerCombat(on: boolean): void;
   /** The server says one of our attacks landed. */
   showNetHit(hit: NetShotLanded): void;
-  /** The server took `dmg` off us (`killerId` null: our own doing). */
+  /** The server took `dmg` off us (`killerId` null: our own doing): the hurt feedback only; health follows syncNetHealth. */
   netDamage(dmg: number, killerId: string | null): void;
   /** The server's word on our health; corrects drift and enforces its deaths. */
   syncNetHealth(hp: number, alive: boolean, killerId: string | null): void;

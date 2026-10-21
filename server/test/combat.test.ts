@@ -105,7 +105,7 @@ describe("combat rules", () => {
   it("regenerates 11 hp/s after 4.5 s without damage", () => {
     assert.strictEqual(regen(50, 4000, 1), 50);
     assert.strictEqual(regen(50, 5000, 1), 61);
-    assert.strictEqual(regen(115, 5000, 1), HEALTH.max);
+    assert.strictEqual(regen(HEALTH.max - 5, 5000, 1), HEALTH.max, "capped at full health");
   });
 
   it("budgets shots by time: one ready plus 150 ms worth", () => {

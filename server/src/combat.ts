@@ -3,8 +3,9 @@
 // Every number here is the game's own, mirrored from the engine (the weapon
 // rack in src/game/arsenal.ts, the katana in src/game/weapons.ts, and the
 // literals in src/game/engine.ts that settle hits, blasts, health and the focus
-// meter). test/combat-parity.test.ts imports the frontend and fails if a value
-// drifts. The geometry is the same too: the hitboxes and the ray-versus-box
+// meter), except damage and health: those are the player-versus-player values
+// in arsenal.ts's PVP table, since the rack's own are tuned for the solo waves.
+// test/combat-parity.test.ts imports the frontend and fails if a value drifts. The geometry is the same too: the hitboxes and the ray-versus-box
 // test are line-for-line ports of engine.ts, and the walls come from the real
 // map builders (src/maps/colliders.json, see scripts/export-colliders.ts).
 //
@@ -30,15 +31,15 @@ export type Gun = {
   reloadTime: number;
 };
 
-/** src/game/arsenal.ts, the guns (the katana is MELEE below). */
+/** src/game/arsenal.ts, the guns (the katana is MELEE below); damage and headMul from its PVP table. */
 export const GUNS: Record<string, Gun> = {
-  RIFLE: { name: "RIFLE", magSize: 35, interval: 1 / 11, damage: 24, headMul: 2.6, pellets: 1, spread: 0.016, adsSpread: 0.0034, reloadTime: 1.45 },
-  SHOTGUN: { name: "SHOTGUN", magSize: 6, interval: 0.78, damage: 19, headMul: 1.8, pellets: 10, spread: 0.062, adsSpread: 0.034, reloadTime: 2.0 },
-  SNIPER: { name: "SNIPER", magSize: 5, interval: 0.9, damage: 150, headMul: 3, pellets: 1, spread: 0.075, adsSpread: 0.0004, reloadTime: 2.1 },
-  REVOLVER: { name: "REVOLVER", magSize: 6, interval: 0.3, damage: 62, headMul: 3, pellets: 1, spread: 0.006, adsSpread: 0.002, reloadTime: 1.9 },
+  RIFLE: { name: "RIFLE", magSize: 35, interval: 1 / 11, damage: 9, headMul: 2, pellets: 1, spread: 0.016, adsSpread: 0.0034, reloadTime: 1.45 },
+  SHOTGUN: { name: "SHOTGUN", magSize: 6, interval: 0.78, damage: 8, headMul: 1.5, pellets: 10, spread: 0.062, adsSpread: 0.034, reloadTime: 2.0 },
+  SNIPER: { name: "SNIPER", magSize: 5, interval: 0.9, damage: 80, headMul: 1.5, pellets: 1, spread: 0.075, adsSpread: 0.0004, reloadTime: 2.1 },
+  REVOLVER: { name: "REVOLVER", magSize: 6, interval: 0.3, damage: 30, headMul: 2, pellets: 1, spread: 0.006, adsSpread: 0.002, reloadTime: 1.9 },
 };
 
-/** The katana: KATANA_MELEE in weapons.ts, its interval from arsenal.ts, the player-hit cones from katanaSlash(). */
+/** The katana: KATANA_MELEE in weapons.ts (damage and headMul from PVP), its interval from arsenal.ts, the player-hit cones from katanaSlash(). */
 export const MELEE = {
   name: "KATANA",
   interval: 0.27,
@@ -46,8 +47,8 @@ export const MELEE = {
   cosArc: 0.35,
   /** a slash catches the head inside this tighter cone (katanaSlash, against players) */
   headCos: 0.9,
-  damage: 75,
-  headMul: 1.6,
+  damage: 40,
+  headMul: 1.5,
   /** where the cones are aimed on a body, above its feet */
   chestY: 1.05,
   headY: 1.62,
@@ -65,7 +66,8 @@ export const FOCUS = {
   cos: 0.4,
   /** aimed at the body this far above its feet */
   aimY: 1,
-  damage: 95,
+  /** PVP.focusDash */
+  damage: 60,
 } as const;
 
 /** throwGrenade() / updateGrenades() / explode(). */
@@ -78,9 +80,10 @@ export const GRENADE = {
   bounceUp: 0.4,
   bounceSide: 0.7,
   fuse: 1.6,
-  /** explode(pos, 4.2, 120, true): everyone inside 0.8 × 4.2 */
+  /** explode(pos, 4.2, …, true): everyone inside 0.8 × 4.2 */
   radius: 4.2 * 0.8,
-  damage: 120,
+  /** PVP.grenade (the solo blast is 120) */
+  damage: 60,
   /** blastRemotes() multiplies by 1.5 for the other players, not the thrower */
   othersMul: 1.5,
   cooldown: 0.6,
@@ -95,8 +98,8 @@ export const MIN_WALL_TOP = 1.2;
 /** spread is 1.8× wider off the ground */
 export const AIR_SPREAD = 1.8;
 
-/** damagePlayer() and the player's regen in updatePlayer(). */
-export const HEALTH = { max: 120, regenDelay: 4.5, regenPerS: 11 } as const;
+/** PVP.health, and the regen of updatePlayer() / damagePlayer(). */
+export const HEALTH = { max: 100, regenDelay: 4.5, regenPerS: 11 } as const;
 /** egypt.hazard(): a raised spike costs 12, at most once per 850 ms, never on the surface. */
 export const SPIKE = { damage: 12, everyMs: 850 } as const;
 /** Online.tsx: the respawn wait and the winning score. */

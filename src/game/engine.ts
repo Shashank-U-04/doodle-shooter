@@ -22,6 +22,7 @@ import {
   resolveMove,
   segmentHitsBody,
   shared,
+  spreadSpawns,
   type Collider,
   type InkId,
   type PoseSample,
@@ -32,7 +33,7 @@ import type { MapId } from "./maps";
 import { makeBlobRig, makeMummyRig, makeRig, makeWaspRig, type Rig } from "./rig";
 import { KATANA_MELEE } from "./weapons";
 import type { NetCombatIntent, NetShotLanded } from "./types";
-import { WEAPONS } from "./arsenal";
+import { PVP, WEAPONS } from "./arsenal";
 import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
 import type { EngineCallbacks, GameHandle, HudState, NetPlayerState, NetRemotePlayer, NetShotOrigin } from "./types";
 
@@ -1753,8 +1754,11 @@ export function createGame(
     // fall the player never asked for. Lifted to drop height up front so the
     // clearance test runs at the exact y the body will occupy.
     const floor = world.floorY;
+    // In the district, the gate pads are where the solo waves walk in, at the
+    // rim; a match is played in the streets inside them, where solo play is.
+    const inDistrict = !egypt;
     const street = active.spawns
-      .filter((s) => s.y - floor <= 0.5)
+      .filter((s) => s.y - floor <= 0.5 && !(inDistrict && district.gateSpawns.includes(s)))
       .map((s) => s.clone().setY(floor + 0.2));
     const opts = { radius: player.radius, height: player.height, colliders: world.colliders, groundOnly: floor + 0.5 };
 
@@ -1763,8 +1767,11 @@ export function createGame(
       // players across the district instead of stacking them on the start line.
       // Walk forward from it so two players who draw the same number, or a pad
       // that fails its test, still land somewhere sane.
-      for (let i = 0; i < street.length; i++) {
-        const pad = street[(((preferIndex + i) % street.length) + street.length) % street.length];
+      // In the district the first pad is the one beside the solo start, and
+      // each next one the farthest from those before it.
+      const order = inDistrict ? spreadSpawns(street, active.start) : street;
+      for (let i = 0; i < order.length; i++) {
+        const pad = order[(((preferIndex + i) % order.length) + order.length) % order.length];
         if (isStandable(pad.x, pad.y, pad.z, player.radius, player.height, world.colliders)) return pad;
       }
     }
@@ -4363,6 +4370,10 @@ export function createGame(
     },
     setServerCombat(on: boolean) {
       serverCombat = on;
+      // The match server plays to its own health (PVP.health), not the solo 120;
+      // the bar has to measure the same thing the server does.
+      player.maxHp = on ? PVP.health : 120;
+      player.hp = Math.min(player.hp, player.maxHp);
     },
     showNetHit(hit: NetShotLanded) {
       if (!pvp.active) return;
@@ -4370,16 +4381,15 @@ export function createGame(
       cb.onHitmarker(hit.kill, hit.head);
       if (hit.focus) addFocus(KATANA_MELEE.focusGain);
     },
-    netDamage(dmg: number, killerId: string | null) {
+    netDamage(dmg: number) {
       if (!netAuthority() || !player.alive || !Number.isFinite(dmg) || dmg <= 0) return;
-      // The feel of being hit, without damagePlayer()'s local rules: the server
-      // has already applied it, paused or not.
-      player.hp = Math.max(0, player.hp - dmg);
+      // The feel of being hit, and nothing more: health and death come only
+      // from the server's state (syncNetHealth). Subtracting here as well would
+      // take a hit off twice whenever its state patch landed first, and could
+      // put us down on our own say-so while the server still had us standing.
       player.hurtFx = Math.min(1, player.hurtFx + 0.5);
       shakeT = Math.max(shakeT, 0.25);
       fx.hurt();
-      if (player.hp <= 0) netFall(killerId);
-      pushHud();
     },
     syncNetHealth(hp: number, alive: boolean, killerId: string | null) {
       if (!netAuthority() || !Number.isFinite(hp)) return;

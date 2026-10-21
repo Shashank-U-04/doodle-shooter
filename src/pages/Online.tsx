@@ -27,7 +27,7 @@ import {
   type MatchConfig,
 } from "@/game/maps";
 import { NetSession, type NetPlayer, type SignalState } from "@/game/net";
-import { ColyseusSession, resumableSeat } from "@/game/colyseus";
+import { ColyseusSession, resumableSeat, warmColyseus } from "@/game/colyseus";
 import { matchWinner, NET_TRANSPORT, type MatchSession } from "@/game/transport";
 import {
   clearRoomLease,
@@ -92,6 +92,9 @@ export default function Online() {
   }, []);
 
   const create = useCallback(() => {
+    // One room per click: a second CREATE (a double click, a held Enter) while
+    // a session is live would open a second room and orphan the first.
+    if (ref.current) return;
     const who = name.trim().slice(0, 16);
     if (!who) {
       setError("type a name first — your friends have to know who to blame");
@@ -123,6 +126,7 @@ export default function Online() {
 
   const join = useCallback(
     (codeArg?: string) => {
+      if (ref.current) return; // already joining (see create)
       const code = normalizeRoomCode(codeArg ?? codeInput);
       if (!isValidRoomCode(code)) {
         setError("Enter the 4-letter code your friend sent you.");
@@ -147,6 +151,7 @@ export default function Online() {
       setSession(s);
       setMode("join");
       setError(null);
+      setStatus(`JOINING MATCH ${code}…`);
     },
     [codeInput, match, name, wire],
   );
@@ -185,8 +190,24 @@ export default function Online() {
     setMode("menu");
   }, []);
 
+  /** After a failure: drop the dead session and ask again, for the same code when joining. */
+  const retry = useCallback(() => {
+    const s = ref.current;
+    if (!s) return;
+    s.close();
+    ref.current = null;
+    if (s.isHost) create();
+    else join(s.code);
+  }, [create, join]);
+
   // a session must never outlive the page that owns it
   useEffect(() => () => ref.current?.close(), []);
+
+  // Start fetching the multiplayer code and waking the match server while the
+  // player is still on the menu, rather than after they press CREATE / CONNECT.
+  useEffect(() => {
+    if (NET_TRANSPORT === "colyseus") warmColyseus();
+  }, []);
 
   // Tab visibility and the page lifecycle are not room lifecycles. Switching
   // tabs must not create a new room or destroy a working peer; coming back
@@ -435,7 +456,15 @@ export default function Online() {
                   <h2>send it to your friend, then start</h2>
                 </>
               )}
-              {!hosting && <h2>connecting to the host…</h2>}
+              {!hosting && (
+                <h2>
+                  {session.joined
+                    ? "you're in the room"
+                    : NET_TRANSPORT === "colyseus"
+                      ? "connecting to the match server…"
+                      : "connecting to the host…"}
+                </h2>
+              )}
 
               {/* the host sets the battlefield and the rule; guests read them */}
               {hosting ? (
@@ -533,6 +562,12 @@ export default function Online() {
                       WAITING FOR HOST<i>the room starts when they do</i>
                     </button>
                   </>
+                )}
+                {signal === "lost" && (
+                  <button type="button" className="start" onClick={retry}>
+                    TRY AGAIN
+                    <i>{hosting ? "open a new room" : `join ${session.code} again`}</i>
+                  </button>
                 )}
                 <button type="button" className="alt" onClick={leave}>
                   LEAVE ROOM

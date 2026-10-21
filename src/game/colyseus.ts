@@ -46,6 +46,13 @@ export const MOVE_RATE_HZ = 20;
  */
 export const WAKE_HINT_MS = 5000;
 export const WAKE_HINT = "WAKING THE MATCH SERVER — A SLEEPING SERVER CAN TAKE UP TO A MINUTE…";
+/**
+ * How long connecting may take in all before the lobby gives up and offers TRY
+ * AGAIN: room for a sleeping host to wake, with margin. Without it an
+ * unreachable server left the lobby on JOINING… for good.
+ */
+export const JOIN_TIMEOUT_MS = 90_000;
+export const JOIN_TIMEOUT_TEXT = "The match server did not answer in time. It may still be waking up — press TRY AGAIN.";
 /** @colyseus/shared-types CloseCode.SERVER_SHUTDOWN (not imported: the SDK loads on demand) */
 const SERVER_SHUTDOWN = 4001;
 
@@ -113,7 +120,7 @@ type SeatStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 const IDLE: NetPlayerState = {
   x: 0, y: 0.2, z: 38, yaw: Math.PI, pitch: 0,
-  hp: 120, alive: false, moving: false, firing: false, weapon: "RIFLE",
+  hp: 100, alive: false, moving: false, firing: false, weapon: "RIFLE",
   epoch: 0, seq: 0,
 };
 
@@ -192,6 +199,35 @@ export function describeJoinError(err: unknown, code: string, url: string): stri
   return `Could not reach the match server at ${url}. Check that it is running and that this site is in its ALLOWED_ORIGINS.`;
 }
 
+// The SDK chunk, loaded once per page, on demand: a PeerJS build never downloads it.
+let sdkLoad: Promise<typeof import("@colyseus/sdk")> | null = null;
+function loadSdk() {
+  sdkLoad ??= import("@colyseus/sdk").catch((err) => {
+    sdkLoad = null; // a failed chunk load may succeed on the next try
+    throw err;
+  });
+  return sdkLoad;
+}
+
+let warmed = false;
+/**
+ * The online lobby is open: fetch the SDK and knock on the server while the
+ * player is still typing a name or a code, so CREATE / CONNECT does not start
+ * from a cold chunk, a cold TLS connection, or a server only now beginning to
+ * wake. The knock is the public /health probe, fire-and-forget; its answer is
+ * not read, so it needs nothing from the server's CORS rules.
+ */
+export function warmColyseus(url: string | null = readColyseusUrl(viteEnv())) {
+  if (warmed || !url) return;
+  warmed = true;
+  void loadSdk().catch(() => {});
+  try {
+    void fetch(`${url.replace(/^ws/i, "http")}/health`, { mode: "no-cors", cache: "no-store" }).catch(() => {});
+  } catch {
+    // no fetch here (tests, old browsers): connecting works the same without it
+  }
+}
+
 export type ColyseusSessionDeps = {
   /** server URL; defaults to VITE_COLYSEUS_URL (or the local server in dev) */
   url?: string | null;
@@ -202,6 +238,8 @@ export type ColyseusSessionDeps = {
    * Used when the lobby resumes on its own after a reload.
    */
   resumeOnly?: boolean;
+  /** how long connecting may take before giving up; JOIN_TIMEOUT_MS by default */
+  joinTimeoutMs?: number;
 };
 
 export class ColyseusSession implements MatchSession {
@@ -217,6 +255,8 @@ export class ColyseusSession implements MatchSession {
   private readonly url: string | null;
   private readonly storage: SeatStorage | null;
   private readonly resumeOnly: boolean;
+  private readonly joinTimeoutMs: number;
+  private joinTimer: ReturnType<typeof setTimeout> | null = null;
   private handlers: MatchHandlers = {};
   private room: Room | null = null;
   private config: MatchConfig;
@@ -256,6 +296,7 @@ export class ColyseusSession implements MatchSession {
     this.url = deps.url !== undefined ? deps.url : readColyseusUrl(viteEnv());
     this.storage = deps.storage !== undefined ? deps.storage : defaultStorage();
     this.resumeOnly = deps.resumeOnly ?? false;
+    this.joinTimeoutMs = deps.joinTimeoutMs ?? JOIN_TIMEOUT_MS;
   }
 
   setHandlers(patch: MatchHandlers) {
@@ -298,25 +339,56 @@ export class ColyseusSession implements MatchSession {
     const hint = globalThis.setTimeout(() => {
       if (this.phase === "connecting") this.handlers.onStatus?.(WAKE_HINT);
     }, WAKE_HINT_MS);
-    // Loaded on demand: a PeerJS build (the default) never downloads the SDK.
-    const { Client } = await import("@colyseus/sdk");
-    const client = new Client(this.url);
+    this.joinTimer = globalThis.setTimeout(() => this.giveUp(), this.joinTimeoutMs);
+    let sdk: typeof import("@colyseus/sdk");
+    try {
+      sdk = await loadSdk();
+    } catch {
+      globalThis.clearTimeout(hint);
+      if (this.phase !== "closed") this.fail("Could not load the multiplayer code. Check your connection and press TRY AGAIN.");
+      return;
+    }
+    const client = new sdk.Client(this.url);
 
     let room = await this.resumeSeat(client);
     if (!room && this.resumeOnly) {
       globalThis.clearTimeout(hint);
-      this.fail(`Your seat in match ${this.code || "the match"} has expired. Create or join a match again.`);
+      if (this.phase !== "closed") this.fail(`Your seat in match ${this.code || "the match"} has expired. Create or join a match again.`);
+      return;
+    }
+    // LEAVE, or the join timeout, while the seat was being tried: ask for nothing new.
+    if (!room && this.phase === "closed") {
+      globalThis.clearTimeout(hint);
       return;
     }
     room ??= await this.freshSeat(client);
     globalThis.clearTimeout(hint);
     if (!room) return;
     if (this.phase === "closed") {
-      // LEAVE was pressed while we were still connecting.
+      // LEAVE was pressed, or we gave up waiting, while still connecting.
       void room.leave(true).catch(() => {});
       return;
     }
     this.attach(room);
+  }
+
+  /** Connecting took longer than joinTimeoutMs: say so and offer TRY AGAIN. */
+  private giveUp() {
+    this.joinTimer = null;
+    if (this.phase !== "connecting") return;
+    const room = this.room;
+    this.fail(JOIN_TIMEOUT_TEXT);
+    // A room that answered but never sent us in: let the seat go too.
+    if (room) {
+      this.room = null;
+      clearSeat(this.storage);
+      void room.leave(true).catch(() => {});
+    }
+  }
+
+  private clearJoinTimer() {
+    if (this.joinTimer) globalThis.clearTimeout(this.joinTimer);
+    this.joinTimer = null;
   }
 
   /** A reload: take this tab's held seat back with its token, if it is ours to take. */
@@ -398,6 +470,7 @@ export class ColyseusSession implements MatchSession {
   }
 
   close() {
+    this.clearJoinTimer();
     if (this.phase === "closed") return;
     this.phase = "closed";
     this.stopTicking();
@@ -431,6 +504,7 @@ export class ColyseusSession implements MatchSession {
   }
 
   private fail(text: string) {
+    this.clearJoinTimer();
     this.phase = "closed";
     this.stopTicking();
     this.stopPinging();
@@ -477,6 +551,7 @@ export class ColyseusSession implements MatchSession {
       .sort((a, b) => Number(b.isHost) - Number(a.isHost));
     this.syncBodies(players);
 
+    if (this.phase !== "closed") this.clearJoinTimer();
     if (s.phase === "playing") {
       this.phase = "playing";
       if (!this.announcedStart) {

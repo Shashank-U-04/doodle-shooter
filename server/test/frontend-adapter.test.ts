@@ -17,6 +17,7 @@ import {
   RESUME_WINDOW_MS,
   resumableSeat,
   SEAT_KEY,
+  JOIN_TIMEOUT_TEXT,
   WAKE_HINT,
   WAKE_HINT_MS,
   type ColyseusSessionDeps,
@@ -258,7 +259,7 @@ describe("frontend Colyseus lobby adapter", () => {
       z: 0,
       yaw: 0,
       pitch: 0,
-      hp: 120,
+      hp: 100,
       alive: true,
       moving: false,
       firing: false,
@@ -403,11 +404,11 @@ describe("frontend Colyseus lobby adapter", () => {
         shootAt(h, A, { x: B.x, y: B.y + 1, z: B.z });
         await eventually(() => ha.landed.length === 1 && ga.hurt.length === 1, "shooter's hitmarker and victim's hurt");
         assert.deepStrictEqual([ha.landed[0].head, ha.landed[0].kill, ha.landed[0].focus], [false, false, false]);
-        assert.deepStrictEqual(ga.hurt[0], { damage: 24, killer: h.session.me });
-        await eventually(() => ga.health.at(-1)?.hp === 96, "victim's health synced");
+        assert.deepStrictEqual(ga.hurt[0], { damage: 9, killer: h.session.me });
+        await eventually(() => ga.health.at(-1)?.hp === 91, "victim's health synced");
         assert.strictEqual(ga.health.at(-1)?.alive, true);
         assert.strictEqual(ha.hurt.length, 0, "the shooter is not hurt");
-        await eventually(() => ha.bodies.get(g.session.me)?.hp === 96, "the shooter sees the victim's health");
+        await eventually(() => ha.bodies.get(g.session.me)?.hp === 91, "the shooter sees the victim's health");
       });
 
       it("reports a kill: health, killer, score and feed agree", async () => {
@@ -498,6 +499,34 @@ describe("frontend Colyseus lobby adapter", () => {
       session.close();
       sleepy.closeAllConnections();
       await new Promise((r) => sleepy.close(r));
+    }
+  });
+
+  it("gives up on a server that never answers, says so, and asks for nothing more", async () => {
+    let requests = 0;
+    const silent: Server = createServer(() => void requests++);
+    await new Promise<void>((r) => silent.listen(0, "127.0.0.1", () => r()));
+    const { port } = silent.address() as { port: number };
+    const lost: string[] = [];
+    const session = new ColyseusSession("ABCD", "Ada", false, { map: "district", grapple: true }, {
+      url: `http://127.0.0.1:${port}`,
+      storage: new TabStorage(),
+      joinTimeoutMs: 400,
+    });
+    session.setHandlers({ onLost: (t) => lost.push(t) });
+    try {
+      session.connect();
+      await eventually(() => lost.length === 1, "timed out", 3000);
+      assert.strictEqual(lost[0], JOIN_TIMEOUT_TEXT);
+      assert.strictEqual(session.phase, "closed");
+      assert.strictEqual(session.joined, false);
+      await new Promise((r) => setTimeout(r, 300));
+      assert.strictEqual(requests, 1, "one join request, never repeated");
+      assert.strictEqual(lost.length, 1, "reported once");
+    } finally {
+      session.close();
+      silent.closeAllConnections();
+      await new Promise((r) => silent.close(r));
     }
   });
 

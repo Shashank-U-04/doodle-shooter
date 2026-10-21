@@ -127,8 +127,8 @@ describe("server-authoritative combat", () => {
         { attacker: a.id, victim: b.id, weapon: "RIFLE", damage: GUNS.RIFLE.damage, head: false, kill: false, x: 0, y: 0, z: 0 },
       );
       assert.strictEqual(body(b).hp, HEALTH.max - GUNS.RIFLE.damage);
-      await eventually(() => (a.room.state as { players: Map<string, Body> }).players.get(b.id)?.hp === HEALTH.max - 24, "shooter's view");
-      await eventually(() => (b.room.state as { players: Map<string, Body> }).players.get(b.id)?.hp === HEALTH.max - 24, "victim's view");
+      await eventually(() => (a.room.state as { players: Map<string, Body> }).players.get(b.id)?.hp === HEALTH.max - GUNS.RIFLE.damage, "shooter's view");
+      await eventually(() => (b.room.state as { players: Map<string, Body> }).players.get(b.id)?.hp === HEALTH.max - GUNS.RIFLE.damage, "victim's view");
     });
 
     it("multiplies a headshot", async () => {
@@ -165,12 +165,17 @@ describe("server-authoritative combat", () => {
 
     it("hits with as many shotgun pellets as land, in one event", async () => {
       const close = { x: 0, y: 0.2, z: 34 };
-      const { players: [a, b], body } = await match([A, close]);
+      const { clock, players: [a, b], body } = await match([A, close]);
       fire(a, "SHOTGUN", chestOf(close));
       await eventually(() => a.hits.length === 1, "one event for the shot");
-      // zero spread: all ten pellets take the same path, 190 in all, more than a body holds
-      assert.strictEqual(GUNS.SHOTGUN.damage * GUNS.SHOTGUN.pellets, 190);
-      assert.deepStrictEqual([a.hits[0].damage, a.hits[0].kill], [HEALTH.max, true], "the event reports health actually taken");
+      // zero spread: all ten pellets take the same path, 80 in all; a second pump finishes it
+      assert.strictEqual(GUNS.SHOTGUN.damage * GUNS.SHOTGUN.pellets, 80);
+      assert.deepStrictEqual([a.hits[0].damage, a.hits[0].kill], [80, false]);
+      assert.strictEqual(body(b).hp, HEALTH.max - 80);
+      clock.t += GUNS.SHOTGUN.interval * 1000;
+      fire(a, "SHOTGUN", chestOf(close));
+      await eventually(() => a.hits.length === 2, "second pump");
+      assert.deepStrictEqual([a.hits[1].damage, a.hits[1].kill], [HEALTH.max - 80, true], "the event reports health actually taken");
       assert.strictEqual(body(b).hp, 0);
     });
 
@@ -193,6 +198,40 @@ describe("server-authoritative combat", () => {
     });
   });
 
+  describe("time to kill (player-versus-player balance)", () => {
+    // shots each weapon needs on a full-health body, landed one interval apart
+    const cases: [weapon: string, part: "body" | "head", shots: number][] = [
+      ["RIFLE", "body", 12],
+      ["RIFLE", "head", 6],
+      ["REVOLVER", "body", 4],
+      ["REVOLVER", "head", 2],
+      ["SNIPER", "body", 2],
+      ["SNIPER", "head", 1],
+    ];
+    for (const [weapon, part, shots] of cases) {
+      it(`erases with ${shots} ${weapon} ${part} shot${shots > 1 ? "s" : ""}, each dealing exactly its damage`, async () => {
+        const { clock, players: [a, b], body } = await match([A, B]);
+        const gun = GUNS[weapon];
+        const each = gun.damage * (part === "head" ? gun.headMul : 1);
+        for (let i = 1; i <= shots; i++) {
+          if (i > 1) clock.t += gun.interval * 1000;
+          fire(a, weapon, part === "head" ? headOf(B) : chestOf(B));
+          await eventually(() => a.hits.length === i, `hit ${i}`);
+          const hit = a.hits[i - 1];
+          assert.strictEqual(hit.head, part === "head");
+          if (i < shots) {
+            assert.ok(Math.abs(hit.damage - each) < 1e-3, `hit ${i} took ${hit.damage}, not ${each}`);
+            assert.strictEqual(hit.kill, false, `still standing after ${i}`);
+          } else {
+            assert.strictEqual(hit.kill, true, `down on shot ${i}`);
+          }
+        }
+        assert.deepStrictEqual([body(b).alive, body(b).deaths, body(a).kills], [false, 1, 1]);
+        assert.strictEqual(b.hits.length, shots, "the victim heard each hit exactly once");
+      });
+    }
+  });
+
   describe("firing rules", () => {
     it("refuses a shot faster than the weapon fires", async () => {
       const { server, clock, players: [a, b], body } = await match([A, B]);
@@ -200,7 +239,7 @@ describe("server-authoritative combat", () => {
       fire(a, "SNIPER", chestOf(B));
       await eventually(() => refused(server, "too-fast") === 1, "second refused");
       assert.strictEqual(server.combat.stats.accepted, 1);
-      assert.strictEqual(body(b).deaths, 1, "the first shot (150) erased them; the second never fired");
+      assert.strictEqual(body(b).hp, HEALTH.max - GUNS.SNIPER.damage, "the first shot landed; the second never fired");
       clock.t += GUNS.SNIPER.interval * 1000 - 200;
       fire(a, "SNIPER", chestOf(B));
       await eventually(() => refused(server, "too-fast") === 2, "still too early");
@@ -249,7 +288,7 @@ describe("server-authoritative combat", () => {
       fire(a, "RIFLE", chestOf(B), { shot: 7 });
       fire(a, "RIFLE", chestOf(B), { shot: 3 });
       await eventually(() => refused(server, "duplicate-shot") === 2, "replays refused");
-      assert.strictEqual(body(b).hp, HEALTH.max - 24);
+      assert.strictEqual(body(b).hp, HEALTH.max - GUNS.RIFLE.damage);
     });
 
     it("refuses an unknown weapon, a shot from somewhere else, and a non-unit aim", async () => {
@@ -280,11 +319,11 @@ describe("server-authoritative combat", () => {
     it("kills, announces it to everyone, scores it, and stops the dead from firing", async () => {
       const C = { x: 4, y: 0.2, z: 30 };
       const { server, clock, players: [a, b, c], body } = await match([A, B, C]);
-      fire(a, "SNIPER", headOf(B)); // 450
+      fire(a, "SNIPER", headOf(B)); // 120
       await eventually(() => c.falls.length === 1 && b.falls.length === 1 && a.falls.length === 1, "everyone told");
       assert.deepStrictEqual(c.falls[0], { victim: b.id, killer: a.id, weapon: "SNIPER" });
       assert.strictEqual(a.hits[0].kill, true);
-      assert.strictEqual(a.hits[0].damage, HEALTH.max, "health taken, not the raw 450");
+      assert.strictEqual(a.hits[0].damage, HEALTH.max, "health taken, not the raw 120");
       assert.deepStrictEqual([body(b).alive, body(b).hp, body(b).deaths, body(a).kills], [false, 0, 1, 1]);
 
       clock.t += 1000;
@@ -398,15 +437,18 @@ describe("server-authoritative combat", () => {
 
     it("counts a chest-high slash at arm's length as a head cut, as the engine does", async () => {
       const near = { x: 0, y: 0.2, z: 36 };
-      const { players: [a, b], body } = await match([A, near]);
+      const { clock, players: [a, b], body } = await match([A, near]);
       a.room.send("slash", { shot: ++a.shot, ...aim(A, chestOf(near)), lag: 0 });
       await eventually(() => a.hits.length === 1, "slash landed");
       assert.strictEqual(a.hits[0].head, true);
-      assert.strictEqual(MELEE.damage * MELEE.headMul, HEALTH.max, "a head cut is 120: one slash erases");
-      assert.strictEqual(body(b).alive, false);
+      assert.strictEqual(body(b).hp, HEALTH.max - MELEE.damage * MELEE.headMul, "a head cut is 60");
+      assert.strictEqual(body(b).alive, true);
+      clock.t += MELEE.interval * 1000;
+      a.room.send("slash", { shot: ++a.shot, ...aim(A, chestOf(near)), lag: 0 });
+      await eventually(() => !body(b).alive, "two head cuts erase");
     });
 
-    it("opens the dash only after three landed slashes, and the dash hits for 95", async () => {
+    it("opens the dash only after three landed slashes, and the dash hits for 60", async () => {
       const near = { x: 0, y: 0.2, z: 36 };
       const C = { x: 0.5, y: 0.2, z: 35.5 };
       const { server, clock, players: [a, b, c], body } = await match([A, near, C]);
@@ -423,7 +465,10 @@ describe("server-authoritative combat", () => {
       await eventually(() => refused(server, "no-focus") === 2, "two charges are not enough");
       // slash 2 lands on the near body only: the third charge fills the meter
       a.room.send("slash", { shot: ++a.shot, ...aim(A, hipsOf(near)), lag: 0 });
-      await eventually(() => !body(b).alive, "near body erased");
+      await eventually(() => body(b).hp === HEALTH.max - 2 * MELEE.damage, "near body cut twice");
+      // it survives two cuts; out of the dash's cone it is, behind the attacker
+      place(b, { x: 0, y: 0.2, z: 44 });
+      await eventually(() => body(b).z === 44, "stepped behind");
       clock.t += 300;
       a.room.send("dash", { shot: ++a.shot, ...aim(A, chestOf(c.at)), lag: 0 });
       await eventually(() => !body(c).alive, "the dash finished the far body");
@@ -449,10 +494,10 @@ describe("server-authoritative combat", () => {
       await eventually(() => body(b).connected, "back");
       clock.t += 200;
       fire(a, "RIFLE", chestOf(B));
-      await eventually(() => body(b).hp === HEALTH.max - 24, "hit once back");
+      await eventually(() => body(b).hp === HEALTH.max - GUNS.RIFLE.damage, "hit once back");
       // its shot counter starts over after a reload, and is accepted
       back.send("fire", { shot: 1, weapon: "RIFLE", ...aim(B, chestOf(A)), ads: false, air: false, lag: 0 });
-      await eventually(() => body(a).hp === HEALTH.max - 24, "the reconnected player can fire");
+      await eventually(() => body(a).hp === HEALTH.max - GUNS.RIFLE.damage, "the reconnected player can fire");
     });
 
     it("disconnects a client that sends a malformed combat message", async () => {

@@ -14,7 +14,8 @@ import { ENVELOPES, WEAPONS, type Box } from "../src/movement.js";
 import { buildDistrict } from "../../src/game/district.js";
 import { buildEgypt } from "../../src/game/egypt.js";
 import { WEAPONS as GAME_WEAPONS } from "../../src/game/weapons.js";
-import { XN, XN_AIR } from "../../src/game/enemies-data.js";
+import { CI, XN, XN_AIR } from "../../src/game/enemies-data.js";
+import { isStandable, spreadSpawns } from "../../src/game/world.js";
 
 type Collider = { minY: number; maxY: number };
 type Zone = {
@@ -80,6 +81,33 @@ describe("movement volumes against the real maps", () => {
         });
       }
     }
+  });
+
+  it("start an online district match in its streets, spread out, on open ground", () => {
+    // what engine.ts safeRespawnPoint() hands out online in the district
+    const d = buildDistrict(new THREE.Group());
+    const start = new THREE.Vector3(0, 0.2, 38); // the solo start (engine.ts districtZone)
+    assert.strictEqual(d.gateSpawns.length, 10, "the ten boundary-wall gates");
+    assert.ok(d.gateSpawns.every((g) => d.spawnPoints.includes(g)));
+    const street = d.spawnPoints.filter((s) => s.y <= 0.5 && !d.gateSpawns.includes(s)).map((s) => s.clone().setY(0.2));
+    const order = spreadSpawns(street, start);
+    assert.strictEqual(order.length, street.length, "a reordering, nothing lost or invented");
+    const box = ENVELOPES.district[0];
+    for (const p of order) {
+      assert.ok(Math.max(Math.abs(p.x), Math.abs(p.z)) < 50, `${p.toArray()} is inside the gates`);
+      assert.ok(isStandable(p.x, p.y, p.z, 0.42, CI, d.colliders), `${p.toArray()} is open ground`);
+      assert.ok(inside(box, p.x, p.y, p.z), `${p.toArray()} is inside the server's envelope`);
+    }
+    assert.ok(order[0].distanceTo(start) < 15, `the first player starts by the solo start, not at ${order[0].toArray()}`);
+    // a full room of four: nobody starts on top of anybody else, nobody across the whole map from everyone
+    const four = order.slice(0, 4);
+    for (let i = 0; i < four.length; i++) {
+      for (let j = i + 1; j < four.length; j++) {
+        const dist = Math.hypot(four[i].x - four[j].x, four[i].z - four[j].z);
+        assert.ok(dist >= 20, `players ${i} and ${j} start ${dist.toFixed(1)} m apart`);
+      }
+    }
+    assert.ok(order[0].distanceTo(order[1]) < 90, "a 1v1 starts within the district, not gate to gate (~100 m)");
   });
 
   it("know every weapon a body can hold", () => {
