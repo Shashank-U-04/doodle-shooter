@@ -45,6 +45,11 @@ To try it with the game, run the frontend with the flag (from the repo root):
 | `npm run serve` | Run the compiled server (`node build/index.js`) |
 | `npm run check` | typecheck, lint, test and build, in that order |
 
+`test/shutdown.test.ts` starts the real server in a child process and stops it
+with SIGTERM. Windows cannot deliver a catchable SIGTERM to a child, so there
+the test raises the same signal event inside the process over IPC
+(`test/fixtures/shutdown-child.ts`); on Linux and macOS it sends a real one.
+
 `test/frontend-adapter.test.ts` (the frontend's lobby adapter) and
 `test/geometry.test.ts` (the real map builders) import frontend code, so the
 root dependencies must be installed too (`bun install` in the repo root). They
@@ -58,11 +63,75 @@ server settings; the root `tsc -b` type-checks that code.
 | `PORT` | `2567` | HTTP/WebSocket port |
 | `NODE_ENV` | — | `production` hides `/monitor`, drops the development origins, and loads `.env.production` if present |
 | `ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to use the server, exact `scheme://host[:port]` (e.g. `https://your-app.vercel.app`). No wildcards; invalid entries are logged and ignored |
+| `E2E_FIXTURES` | — | `1` mounts the browser smoke tests' fixture route (`src/e2e.ts`). Ignored when `NODE_ENV=production`. **Never set it on a deployed server** |
 
 No secrets are required. `@colyseus/tools` reads an optional `.env` or
 `.env.<NODE_ENV>` file; both are git-ignored.
 
+## Deploying
+
+The server is one long-lived Node.js process that holds a WebSocket per
+player. It **cannot run on Vercel** (serverless functions do not keep
+WebSockets open); the frontend stays on Vercel and points at it with
+`VITE_COLYSEUS_URL`. Step-by-step instructions for a Preview test are in
+[`../docs/preview-deployment.md`](../docs/preview-deployment.md).
+
+**What the host must provide**
+
+- Node.js 22+ (or a container runtime for the `Dockerfile`).
+- Long-lived WebSocket connections (HTTP Upgrade passed through), with TLS
+  terminated in front of the server so the browser connects with `https`/`wss`
+  — an `https` page cannot use a plain `http` server.
+- Exactly **one** instance, always on: room codes and live rooms are in process
+  memory, so a second instance would split the rooms and scale-to-zero would
+  end every match. (Scaling out needs Colyseus' Redis presence and driver.)
+- The port in `PORT` (the server listens on it; default 2567).
+- A health check on `GET /health` (200 `{"status":"ok",…}`).
+- A stop signal of SIGTERM with a few seconds' grace: the server then disposes
+  every room, tells every player it is shutting down (close code 4001) and
+  exits 0 (`test/shutdown.test.ts`). A deploy therefore ends running matches.
+
+**Native (no container)** — the path validated locally:
+
+```sh
+cd server
+npm ci
+npm run build
+NODE_ENV=production PORT=2567 ALLOWED_ORIGINS=https://<your-frontend-origin> npm run serve
+```
+
+`npm run serve` is `node build/index.js`. Production installs may use
+`npm ci --omit=dev` after the build; the compiled server needs only the runtime
+dependencies.
+
+**Container** — `Dockerfile` in this folder (Node 22, multi-stage, runs as the
+`node` user, `HEALTHCHECK` on `/health`, `node` as PID 1 so it receives
+SIGTERM directly):
+
+```sh
+docker build -t doodle-shooter-server server/
+docker run --rm -p 2567:2567 -e ALLOWED_ORIGINS=https://<your-frontend-origin> doodle-shooter-server
+```
+
+> The Dockerfile has **not** been built or run yet: Docker was not available
+> where it was written. Its runtime stage (production-only `npm ci` from the
+> lockfile, `NODE_ENV=production node build/index.js`) was reproduced natively
+> and checked: `/health`, origin refusals, `/monitor` and the test fixtures
+> absent, a two-client room. Build it once before relying on it.
+
+**After deploying, check:**
+
+```sh
+curl https://<your-server-host>/health                       # {"status":"ok",...}
+curl -i -X OPTIONS -H "Origin: https://<your-frontend-origin>"   https://<your-server-host>/matchmake/create/match           # names that origin
+curl -i -X OPTIONS -H "Origin: https://example.com"   https://<your-server-host>/matchmake/create/match           # no Access-Control-Allow-Origin
+```
+
 ## Origins
+
+CORS headers name the caller's exact origin, with
+`Access-Control-Allow-Credentials: true`, only when it is allowed; any other
+origin gets neither header (never `*`).
 
 Outside production, the Vite origins `http://localhost:5173`,
 `http://127.0.0.1:5173`, `http://localhost:4173` and `http://127.0.0.1:4173`
@@ -73,6 +142,15 @@ deployments get their own URLs, so each one you want to test must be listed.
 The list is enforced in three places: CORS headers name only an allowed origin,
 matchmaking (`onAuth`) refuses other origins, and the WebSocket upgrade answers
 them with 403 — the last one also covers reconnections, which skip matchmaking.
+
+**Vercel previews.** Every deployment gets its own URL, and a branch also gets
+a stable alias (`<project>-git-<branch>-<scope>.vercel.app`, shortened by
+Vercel when it is long — copy it from the deployment's page). List the alias
+of each branch you test, exactly. There is deliberately **no pattern support**
+(such as `https://<project>-*.vercel.app`): project names on `vercel.app` are
+first-come, so anyone can create a project whose URL matches a pattern built
+from your project's name. `test/origins.test.ts` checks that look-alikes and
+patterns are refused.
 
 An Origin header is what a *browser* reports. It keeps other websites from
 using the server through their visitors' browsers; it does not authenticate

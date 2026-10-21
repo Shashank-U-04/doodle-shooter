@@ -1,6 +1,7 @@
 import { defineServer, defineRoom, matchMaker, monitor, WebSocketTransport } from "colyseus";
 import { MatchRoom } from "./rooms/MatchRoom.js";
 import { isOriginAllowed, normalizeOrigin, originPolicy } from "./origins.js";
+import { e2eFixturesEnabled, mountE2eFixtures } from "./e2e.js";
 
 const startedAt = Date.now();
 
@@ -11,15 +12,18 @@ if (originPolicy.allowed.size === 0) {
   console.warn("[origins] ALLOWED_ORIGINS is empty: no browser origin can use this server");
 }
 
-// CORS: Colyseus answers every origin with `*` by default. Name the caller's
-// origin only when it is on the allow-list; otherwise send no allow-origin
-// header and let the browser refuse the response. This only governs browsers;
-// the matchmaker and the WebSocket upgrade enforce the same list themselves.
-delete (matchMaker.controller.DEFAULT_CORS_HEADERS as Record<string, string>)["Access-Control-Allow-Origin"];
+// CORS: Colyseus answers every origin with `*` (and allows credentials) by
+// default. Name the caller's origin, and allow credentials, only when it is on
+// the allow-list; otherwise send neither and let the browser refuse the
+// response. This only governs browsers; the matchmaker and the WebSocket
+// upgrade enforce the same list themselves.
+const defaultCors = matchMaker.controller.DEFAULT_CORS_HEADERS as Record<string, string>;
+delete defaultCors["Access-Control-Allow-Origin"];
+delete defaultCors["Access-Control-Allow-Credentials"];
 matchMaker.controller.getCorsHeaders = (headers: Headers): Record<string, string> => {
   const origin = normalizeOrigin(headers.get("origin"));
   if (!origin || !isOriginAllowed(origin, originPolicy)) return { Vary: "Origin" };
-  return { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
+  return { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true", Vary: "Origin" };
 };
 
 const server = defineServer({
@@ -46,6 +50,12 @@ const server = defineServer({
     // until it can be put behind a password.
     if (process.env.NODE_ENV !== "production") {
       app.use("/monitor", monitor());
+    }
+
+    // Browser smoke-test fixtures (src/e2e.ts); never in production.
+    if (e2eFixturesEnabled(process.env)) {
+      console.warn("[e2e] E2E_FIXTURES=1: test fixtures are mounted; never set this on a deployed server");
+      mountE2eFixtures(app);
     }
   },
 });

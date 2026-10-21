@@ -133,15 +133,15 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
 
 ## Remaining gaps (audit after S3B, ordered by dependency)
 
-1. **Deployment (S4).** No container/start config for a Node host, no staging
-   server, no Vercel Preview env (`VITE_NET_TRANSPORT`, `VITE_COLYSEUS_URL`), and
-   `ALLOWED_ORIGINS` needs every preview origin listed exactly. The Vercel
-   install command (bun vs npm) is still unverified.
+1. **Deployment (S4).** S4a prepared it (Dockerfile, native start path,
+   shutdown, docs in `preview-deployment.md`); still open: choosing a host,
+   deploying the server, the Preview env vars, building the Dockerfile once,
+   and checking Vercel's install command (bun vs npm).
 2. **Abuse limits.** Anyone on an allowed origin (or no origin) can create rooms
    without limit; there is no per-IP cap on room creation or connections.
-3. **Browser regression tests.** The adapter is tested under Node; there is no
-   automated browser test of the lobby → arena → rematch flow on either
-   transport.
+3. **Browser regression tests.** S4a added a Chromium smoke test for the
+   Colyseus flow (below). Still open: PeerJS in a browser, Firefox/WebKit, and
+   real aiming (the test's 15th kill comes from a server fixture).
 4. **Runtime fallback.** The transport is a build flag, so a Colyseus preview
    cannot fall back to PeerJS without a rebuild.
 5. **Movement collision.** The server clamps volume and speed but does not stop
@@ -157,6 +157,35 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
    which is also anonymous).
 9. **Retirement (S5)** — only after the above and the two-device, two-network
    acceptance test.
+
+## Browser smoke test
+
+`e2e/colyseus-match.spec.ts` (Playwright, Chromium) runs two players in
+separate browser contexts through create → join → ready → arena → winner →
+host leaves → promoted guest rematches, against a local match server
+(`server/src`, with `E2E_FIXTURES=1`) and a local production build of the
+frontend (`VITE_NET_TRANSPORT=colyseus`). `VITE_CONVEX_URL` points at a closed
+local port and every request leaving 127.0.0.1 is aborted, so it reaches no
+Convex deployment, PeerJS broker or other service.
+
+```sh
+bun install && (cd server && npm ci)
+bunx playwright install chromium     # or: npx playwright install chromium
+bun run test:e2e                      # or: npx playwright test
+```
+
+- Ports 2599 (server) and 5199 (frontend) must be free; the build goes to
+  `e2e/.dist`, traces and screenshots to `e2e/.results` (both git-ignored).
+- On Windows, run it from the repository path with its exact on-disk casing
+  (e.g. `…\GitHub\…`, not `…\Github\…`): a differently cased working
+  directory makes Playwright load twice and report "did not expect test() to be
+  called here".
+- The 15th kill is a fixture (`server/src/e2e.ts`): a browser cannot aim. The
+  fixture is mounted only with `E2E_FIXTURES=1` outside production.
+- **PeerJS is not covered**: a browser test of it needs a signaling broker, and
+  the default is the public PeerJS cloud. Covering it means running a local
+  PeerServer (`VITE_PEER_HOST`/`PORT`/…) — a new dev dependency, left for a
+  later change.
 
 ## Milestones
 
@@ -179,6 +208,11 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
   instead of re-deriving it from the score, and the REMATCH button follows the
   roster's current host (it used the role the tab joined with, so after a host
   migration nobody could start a rematch).
+- **S4a — deployment preparation (done):** `server/Dockerfile` (unbuilt: no
+  Docker where it was written), the native production start path validated
+  locally, a SIGTERM shutdown test, CORS credentials only for allowed origins,
+  exact-origin guidance for Vercel previews, `docs/preview-deployment.md`, and
+  the Playwright smoke test.
 - **S4 — hosting:** pick a host for the Node service, set up a staging deploy
   and a Vercel preview pointing at it.
 - **S5 — retirement:** remove PeerJS, the TURN endpoint and the signaling code

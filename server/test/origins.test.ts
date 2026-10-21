@@ -52,6 +52,27 @@ describe("origins", () => {
     assert.strictEqual(isOriginAllowed("null", policy), false);
   });
 
+  it("allows a listed Vercel preview exactly, and none of its look-alikes", () => {
+    // Placeholder names: a real list holds this project's own preview URLs.
+    const branch = "https://myapp-git-feat-colyseus-myteam.vercel.app";
+    const policy = readOriginPolicy({ NODE_ENV: "production", ALLOWED_ORIGINS: `https://myapp.vercel.app,${branch}` });
+    assert.strictEqual(isOriginAllowed(branch, policy), true);
+    assert.strictEqual(isOriginAllowed("https://myapp.vercel.app", policy), true);
+    for (const other of [
+      "https://myapp-git-main-myteam.vercel.app", // another branch: list it to allow it
+      "https://myapp-abc123-myteam.vercel.app", // a per-deployment URL
+      "https://myapp-git-feat-colyseus-myteam.vercel.app.evil.example",
+      "https://evil-myapp-git-feat-colyseus-myteam.vercel.app",
+      "http://myapp-git-feat-colyseus-myteam.vercel.app",
+    ]) {
+      assert.strictEqual(isOriginAllowed(other, policy), false, other);
+    }
+    // patterns are not a feature: they are reported, never stored
+    const patterned = readOriginPolicy({ NODE_ENV: "production", ALLOWED_ORIGINS: "https://*.vercel.app,https://myapp-*.vercel.app" });
+    assert.strictEqual(patterned.allowed.size, 0);
+    assert.deepStrictEqual(patterned.rejected, ["https://*.vercel.app", "https://myapp-*.vercel.app"]);
+  });
+
   it("lets requests without an Origin through (not a browser; origin is not auth)", () => {
     const policy = readOriginPolicy({ NODE_ENV: "production" });
     assert.strictEqual(isOriginAllowed(undefined, policy), true);

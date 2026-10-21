@@ -562,6 +562,8 @@ describe("match room", () => {
       const res = await matchmake(ALLOWED);
       assert.strictEqual(res.status, 200);
       assert.strictEqual(res.headers.get("access-control-allow-origin"), ALLOWED);
+      // credentials are allowed only alongside a named origin, never with `*`
+      assert.strictEqual(res.headers.get("access-control-allow-credentials"), "true");
       const body = (await res.json()) as { roomId?: string };
       assert.ok(body.roomId, "a seat was reserved");
     });
@@ -572,8 +574,16 @@ describe("match room", () => {
       const res = await matchmake(FOREIGN);
       assert.notStrictEqual(res.status, 200);
       assert.strictEqual(res.headers.get("access-control-allow-origin"), null);
+      assert.strictEqual(preflight.headers.get("access-control-allow-credentials"), null);
+      assert.strictEqual(res.headers.get("access-control-allow-credentials"), null);
       const body = (await res.json()) as { roomId?: string };
       assert.strictEqual(body.roomId, undefined);
+    });
+
+    it("does not mount the browser-test fixtures unless asked to", async () => {
+      // the suite runs without E2E_FIXTURES, as a deployed server must
+      const res = await fetch(`${BASE}/__e2e/rooms/ABCD/win`, { method: "POST" });
+      assert.strictEqual(res.status, 404);
     });
 
     it("refuses WebSocket upgrades from a foreign origin", async () => {

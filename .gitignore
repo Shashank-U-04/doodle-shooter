@@ -5,3 +5,8 @@ dist
 .env
 .env.*
 !.env.example
+
+# Playwright smoke tests: build output, traces and screenshots
+e2e/.dist
+e2e/.results
+playwright-report
