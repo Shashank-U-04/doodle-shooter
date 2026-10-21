@@ -40,6 +40,15 @@ export const RESUME_WINDOW_MS = 28_000;
 /** How often our body is sent (Hz); the server patches at the same rate. */
 export const MOVE_RATE_HZ = 20;
 
+/**
+ * How long matchmaking may take before the lobby says why: a free-tier host
+ * that has spun down takes about a minute to wake, and the SDK has no timeout.
+ */
+export const WAKE_HINT_MS = 5000;
+export const WAKE_HINT = "WAKING THE MATCH SERVER — A SLEEPING SERVER CAN TAKE UP TO A MINUTE…";
+/** @colyseus/shared-types CloseCode.SERVER_SHUTDOWN (not imported: the SDK loads on demand) */
+const SERVER_SHUTDOWN = 4001;
+
 /** How often the round trip is measured, ms. */
 const PING_EVERY_MS = 2000;
 /**
@@ -286,16 +295,21 @@ export class ColyseusSession implements MatchSession {
       return;
     }
     this.setSignal("connecting");
+    const hint = globalThis.setTimeout(() => {
+      if (this.phase === "connecting") this.handlers.onStatus?.(WAKE_HINT);
+    }, WAKE_HINT_MS);
     // Loaded on demand: a PeerJS build (the default) never downloads the SDK.
     const { Client } = await import("@colyseus/sdk");
     const client = new Client(this.url);
 
     let room = await this.resumeSeat(client);
     if (!room && this.resumeOnly) {
+      globalThis.clearTimeout(hint);
       this.fail(`Your seat in match ${this.code || "the match"} has expired. Create or join a match again.`);
       return;
     }
     room ??= await this.freshSeat(client);
+    globalThis.clearTimeout(hint);
     if (!room) return;
     if (this.phase === "closed") {
       // LEAVE was pressed while we were still connecting.
@@ -349,8 +363,14 @@ export class ColyseusSession implements MatchSession {
       this.setSignal("open");
       this.handlers.onStatus?.("RECONNECTED");
     });
-    room.onLeave(() => {
+    room.onLeave((code) => {
       if (this.phase === "closed") return;
+      if (code === SERVER_SHUTDOWN) {
+        // a redeploy or restart: every room on the server has gone with it
+        clearSeat(this.storage);
+        this.fail("The match server restarted, so this match has ended. Create or join a match again.");
+        return;
+      }
       // The seat is kept: the server may still be holding it, and joining
       // again from this tab tries the token first (a dead one is then cleared).
       this.fail("Lost the connection to the match server and could not get back in. Join again.");
@@ -416,6 +436,7 @@ export class ColyseusSession implements MatchSession {
     this.stopPinging();
     this.setSignal("lost", text);
     this.handlers.onError?.(text);
+    this.handlers.onLost?.(text);
   }
 
   private setSignal(state: SignalState, detail?: string) {

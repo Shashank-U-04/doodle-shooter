@@ -11,7 +11,16 @@ import type { ColyseusTestServer } from "@colyseus/testing";
 import type appConfig from "../src/app.config.js";
 import { testServer } from "./harness.js";
 import type { MatchRoom } from "../src/rooms/MatchRoom.js";
-import { ColyseusSession, RESUME_WINDOW_MS, resumableSeat, SEAT_KEY, type ColyseusSessionDeps } from "../../src/game/colyseus.js";
+import { createServer, type Server } from "http";
+import {
+  ColyseusSession,
+  RESUME_WINDOW_MS,
+  resumableSeat,
+  SEAT_KEY,
+  WAKE_HINT,
+  WAKE_HINT_MS,
+  type ColyseusSessionDeps,
+} from "../../src/game/colyseus.js";
 import { matchWinner, readColyseusUrl, readNetTransport } from "../../src/game/transport.js";
 import type { NetPlayerState, NetShotLanded } from "../../src/game/types.js";
 
@@ -469,6 +478,41 @@ describe("frontend Colyseus lobby adapter", () => {
       ga.body = engineBody({ x: 2 });
       await eventually(() => serverRoom(h.session.code).state.players.get(g.session.me)?.spawned === true, "placed");
     });
+  });
+
+  it("explains a slow matchmaker (a host waking up) instead of waiting in silence", async function () {
+    this.timeout(WAKE_HINT_MS + 10_000);
+    // accepts the request and never answers, like a free-tier host spinning up
+    const sleepy: Server = createServer(() => {});
+    await new Promise<void>((r) => sleepy.listen(0, "127.0.0.1", () => r()));
+    const { port } = sleepy.address() as { port: number };
+    const statuses: string[] = [];
+    const session = new ColyseusSession("", "Ada", true, { map: "district", grapple: true }, { url: `http://127.0.0.1:${port}`, storage: new TabStorage() });
+    session.setHandlers({ onStatus: (t) => statuses.push(t) });
+    try {
+      session.connect();
+      await new Promise((r) => setTimeout(r, WAKE_HINT_MS - 1000));
+      assert.ok(!statuses.includes(WAKE_HINT), "not before the grace period");
+      await eventually(() => statuses.includes(WAKE_HINT), "wake hint", 3000);
+    } finally {
+      session.close();
+      sleepy.closeAllConnections();
+      await new Promise((r) => sleepy.close(r));
+    }
+  });
+
+  it("ends the session for good, and says why, when the server restarts", async () => {
+    const { h, g } = await hostAndGuest();
+    const lost: string[] = [];
+    for (const t of [h, g]) t.session.setHandlers({ onLost: (text) => lost.push(text) });
+    // what SIGTERM does to every room (matchMaker.gracefullyShutdown)
+    await colyseus.getRoomById<MatchRoom>(h.session.code).disconnect(4001);
+    await eventually(() => lost.length === 2, "both sessions lost");
+    for (const text of lost) assert.match(text, /match server restarted/);
+    for (const t of [h, g]) {
+      assert.strictEqual(t.storage.getItem(SEAT_KEY), null, "no seat to resume on a server that no longer has it");
+      assert.strictEqual(t.session.phase, "closed");
+    }
   });
 
   it("says so when the build has no server URL", async () => {

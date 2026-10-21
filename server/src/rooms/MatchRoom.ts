@@ -266,7 +266,11 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   onDrop(client: Client) {
     const player = this.state.players.get(client.sessionId);
     if (player) player.connected = false;
-    this.allowReconnection(client, this.reconnectSeconds);
+    this.allowReconnection(client, this.reconnectSeconds).catch(() => {
+      // Refused while the room is being disposed (a server shutdown closes
+      // every client): there is no seat left to hold. An expired hold also
+      // rejects; Colyseus handles that itself and calls onLeave.
+    });
   }
 
   onReconnect(client: Client) {

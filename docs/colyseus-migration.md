@@ -232,6 +232,14 @@ bun run test:e2e                      # or: npx playwright test
   (`preview-deployment.md`), the Windows ↔ macOS acceptance checklist
   (`acceptance-checklist.md`), and a browser test of an old `?code=` link plus
   a guest reload resuming the same seat.
+- **S4c — hosted-preview preparation (done locally; hosting pending):**
+  `render.yaml` Blueprint (build needs `npm ci --include=dev`: Render sets
+  `NODE_ENV=production` during the build), `npm run check:hosted` for a
+  deployed server, Node 24 verified, a 5 s "waking the match server" hint, a
+  persistent CONNECTION LOST screen when the server restarts (it used to be a
+  4-second feed line over a dead arena), and room disposal without unhandled
+  `allowReconnection` rejections. Not done: the deployment itself, the
+  Preview variables, the Docker build, and the cross-device test.
 - **S4 — hosting:** pick a host for the Node service, set up a staging deploy
   and a Vercel preview pointing at it.
 - **S5 — retirement:** remove PeerJS, the TURN endpoint and the signaling code

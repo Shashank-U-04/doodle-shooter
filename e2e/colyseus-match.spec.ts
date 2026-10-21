@@ -9,48 +9,8 @@
 // room's own damage code. Everything after that — the server declaring the
 // winner, the state patch, the overlay, host migration and the rematch — is the
 // real thing.
-import { expect, test, type APIRequestContext, type BrowserContext, type Page } from "@playwright/test";
-import { E2E_SERVER } from "./env";
-
-const HOST = "ADA";
-const GUEST = "GRACE";
-
-/** A player's own browser: their name remembered, and no way off this machine. */
-async function player(context: BrowserContext, name: string, offHost: string[]): Promise<Page> {
-  await context.addInitScript(`localStorage.setItem("dd_name", ${JSON.stringify(name)})`);
-  await context.route("**/*", (route) => {
-    const { hostname } = new URL(route.request().url());
-    if (hostname === "127.0.0.1" || hostname === "localhost") return route.continue();
-    offHost.push(route.request().url());
-    return route.abort();
-  });
-  const page = await context.newPage();
-  page.on("pageerror", (err) => console.warn(`[${name} pageerror] ${err.message}`));
-  return page;
-}
-
-/** The match overlay (winner panel); the arena's other screens use the same class. */
-const overlay = (page: Page) => page.locator(".dd-screen .panel").filter({ has: page.locator("h1") });
-
-/** Ask the test server to finish the match for `winner`, once both bodies are placed. */
-async function finishMatch(request: APIRequestContext, code: string, winner: string) {
-  await expect
-    .poll(
-      async () => {
-        const res = await request.post(`${E2E_SERVER}/__e2e/rooms/${code}/win`, { data: { winner } });
-        return res.status();
-      },
-      { message: "both players placed in the arena", timeout: 20_000, intervals: [250] },
-    )
-    .toBe(200);
-}
-
-/** Open a room as HOST and return its code. */
-async function openRoom(host: Page): Promise<string> {
-  await host.goto("/online?create=1&map=district&grapple=1");
-  await expect(host.locator(".dd-netcode")).toHaveText(/^[A-Z0-9]{4}$/, { timeout: 20_000 });
-  return (await host.locator(".dd-netcode").textContent())!.trim();
-}
+import { expect, test } from "@playwright/test";
+import { finishMatch, GUEST, HOST, openRoom, overlay, player } from "./helpers";
 
 test("an old ?code= link still joins, and a guest's reload takes back the same seat", async ({ browser }) => {
   const offHost: string[] = [];

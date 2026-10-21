@@ -16,6 +16,7 @@
   "exclude": ["test/frontend-adapter.test.ts", "test/geometry.test.ts", "test/combat-parity.test.ts"],
   "include": [
     "src",
-    "test"
+    "test",
+    "scripts"
   ]
 }

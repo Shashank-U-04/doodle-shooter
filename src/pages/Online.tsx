@@ -568,6 +568,9 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
   const [ads, setAds] = useState(false);
   const [paused, setPaused] = useState(false);
   const [down, setDown] = useState(false);
+  // The match server is gone for good (restart, unreachable, seat expired).
+  // Only the Colyseus session reports this; the arena stops and says why.
+  const [lost, setLost] = useState<string | null>(null);
   // The host's rules, straight off the session: the map is fixed for the whole
   // match and the grapple rule is the one every client received.
   const config = session.getConfig();
@@ -724,6 +727,10 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
       onStart: () => resetRound(),
       onRematch: () => resetRound(),
       onError: (t) => pushFeed(t.toUpperCase(), true),
+      onLost: (t) => {
+        setLost(t);
+        handle.pause();
+      },
     });
     pushRemotes();
 
@@ -756,7 +763,7 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
   }, [decided]);
 
   const resume = useCallback(() => gameRef.current?.resume(), []);
-  const live = !paused && !down && !winner;
+  const live = !paused && !down && !winner && !lost;
   const hpFrac = Math.max(0, hud.hp / hud.maxHp);
   const me = players.find((p) => p.isMe);
   const iWon = winner?.isMe ?? false;
@@ -888,7 +895,21 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
         ← LEAVE MATCH (room {session.code})
       </button>
 
-      {down && !winner && (
+      {lost && (
+        <div className="dd-screen">
+          <div className="panel">
+            <h1>CONNECTION LOST</h1>
+            <h2>{lost}</h2>
+            <div className="mainbtns">
+              <button type="button" className="start" onClick={onLeave}>
+                LEAVE MATCH<i>back to the lobby menu</i>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {down && !winner && !lost && (
         <div className="dd-screen">
           <div className="panel">
             <h1>ERASED</h1>
@@ -900,7 +921,7 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
         </div>
       )}
 
-      {paused && !winner && (
+      {paused && !winner && !lost && (
         <div className="dd-screen">
           <div className="panel">
             <h1>PAUSED</h1>
@@ -917,7 +938,7 @@ function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => 
         </div>
       )}
 
-      {winner && (
+      {winner && !lost && (
         <div className="dd-screen">
           <div className="panel">
             <h1>{iWon ? "YOU WIN" : "MATCH OVER"}</h1>

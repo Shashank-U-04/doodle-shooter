@@ -100,14 +100,31 @@ WebSockets open); the frontend stays on Vercel and points at it with
 
 ```sh
 cd server
-npm ci
+npm ci --include=dev
 npm run build
 NODE_ENV=production PORT=2567 ALLOWED_ORIGINS=https://<your-frontend-origin> npm run serve
 ```
 
-`npm run serve` is `node build/index.js`. Production installs may use
-`npm ci --omit=dev` after the build; the compiled server needs only the runtime
-dependencies.
+`npm run serve` is `node build/index.js`. Keep `--include=dev` on hosts that
+set `NODE_ENV=production` during the build (Render does): npm then skips
+devDependencies, and the build needs TypeScript. The compiled server itself
+needs only the runtime dependencies. Validated on Node 22.15 and 24.22 (the
+whole test suite, and the compiled server in production mode).
+
+`render.yaml` in the repository root describes this as a Render Blueprint
+(free plan, `rootDir: server`, health check `/health`).
+
+**Check a deployment** from any machine:
+
+```sh
+cd server
+npm run check:hosted -- --server https://<server-host> --origin https://<preview-origin>
+```
+
+It checks `/health`, CORS for the Preview origin and for a foreign one, that
+matchmaking and WebSocket upgrades refuse a foreign origin and accept the
+Preview's, that `/monitor` and the test fixtures are absent, and that a room
+can be created and joined. It prints no tokens and exits 1 on any failure.
 
 **Container** — `Dockerfile` in this folder (Node 22, multi-stage, runs as the
 `node` user, `HEALTHCHECK` on `/health`, `node` as PID 1 so it receives

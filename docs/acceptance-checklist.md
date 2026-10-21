@@ -50,7 +50,11 @@ Do the whole table with W hosting, then again with M hosting.
 | 22 | Host leaves | Host: LEAVE MATCH mid-match (3rd player helps but is optional) | Guest stays in the room and becomes host; REMATCH available to them if the match was decided | | |
 | 23 | Host leaves after win | Finish a match, then the winner/host leaves | Guest sees "A PLAYER WHO LEFT took it" and a REMATCH button that works | | |
 | 24 | Tab switching | Alt-tab / switch tabs for 20 s, return | No disconnect; pause screen only on the switching side; the match continued | | |
-| 25 | Errors | Any red console error, error toast or stuck screen during the run | None, or each written down with its row | | |
+| 25 | Legacy link | Guest opens `<preview-origin>/online?code=<CODE>`, joins, then reloads | Joins; after the reload, back in the same seat (no duplicate) | | |
+| 26 | Server asleep | After ≥ 15 min with nobody connected (free host spun down), host creates a room | Within ~5 s "WAKING THE MATCH SERVER…"; the room opens within about a minute | | |
+| 27 | Server restart | Mid-match, the owner restarts the service in the Render dashboard | Both see CONNECTION LOST — "The match server restarted…"; LEAVE MATCH returns to the menu; a new room works afterwards | | |
+| 28 | Other origins | Run `npm run check:hosted` (server README) with the Preview origin | ALL PASSED | | |
+| 29 | Errors | Any red console error, error toast or stuck screen during the run | None, or each written down with its row | | |
 
 ## Report back
 

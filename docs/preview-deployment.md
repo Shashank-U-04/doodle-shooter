@@ -71,13 +71,34 @@ Must **not** be set on a deployed server:
 
 No secrets are needed.
 
-Native build on a Node host (e.g. Render): root directory `server`, build
-`npm ci && npm run build`, start `npm run serve`, health check path `/health`.
-Check in the build log that Node is 22 or newer (`server/package.json`
-`engines`). Container hosts: build `server/Dockerfile` with `server/` as the
-context.
+**Render (recommended first host): use the Blueprint.** `render.yaml` in the
+repository root defines the service: free plan, root directory `server`, build
+`npm ci --include=dev && npm run build`, start `npm run serve`, health check
+`/health`, `NODE_ENV=production`, and `ALLOWED_ORIGINS` prompted at creation.
+Check `region` (fixed after creation) before applying it.
 
-Check it: `curl https://<server-host>/health` → `{"status":"ok",…}`.
+> The build command needs `--include=dev`. Render passes `NODE_ENV=production`
+> to the build too, and npm then skips devDependencies; a plain
+> `npm ci && npm run build` fails (`rimraf` / `tsc` not found). Reproduced
+> locally, and the fixed command verified, including the start on Render's
+> default `PORT` 10000.
+
+Render's default Node for new services is 24; the server suite and the
+compiled server were also run on Node 24.22, so no `NODE_VERSION` is needed.
+Container hosts: build `server/Dockerfile` with `server/` as the context.
+
+Check it:
+
+```sh
+cd server
+npm run check:hosted -- --server https://<server-host> --origin <preview-origin>
+```
+
+Ten checks: health, CORS for the Preview and for a foreign origin, matchmaking
+and WebSocket refusals of a foreign origin, the Preview's WebSocket accepted,
+no `/monitor`, no test fixtures, and a room created and joined. Before the
+Preview origin is known, run it with any placeholder origin: only the three
+Preview-origin checks fail.
 
 ## 3. Vercel Preview environment
 
@@ -141,8 +162,30 @@ If the lobby says it cannot reach the match server: `/health`, then the exact
 origin in `ALLOWED_ORIGINS` (scheme, host, no trailing slash), then that
 `VITE_COLYSEUS_URL` is https and the Preview was rebuilt after setting it.
 
+What players see when the free host misbehaves (both covered by
+`e2e/colyseus-failures.spec.ts`):
+
+- **Asleep:** after 5 s the lobby shows "WAKING THE MATCH SERVER — A SLEEPING
+  SERVER CAN TAKE UP TO A MINUTE…", then opens the room when it answers.
+- **Restarted** (redeploy, Render recycling the instance): both arenas stop
+  and show CONNECTION LOST — "The match server restarted, so this match has
+  ended." — with a button back to the menu.
+
+**Confirm the Preview really uses Colyseus** (a build without the variables
+silently stays on PeerJS): on `/online` the lobby's note reads "the lobby runs
+on the match server" (PeerJS: "play is peer-to-peer…"); creating a room sends
+`POST https://<server-host>/matchmake/create/match` and opens a
+`wss://<server-host>/…` socket in the Network tab; in the arena the feed shows
+"COLYSEUS PREVIEW — THE MATCH SERVER REFEREES EVERY SHOT".
+
 ## What has and has not been verified
 
+- **Verified locally (S4c):** Render's build and start reproduced with
+  `NODE_ENV=production` (the original build command failed; fixed), the
+  server on Node 24, `check:hosted` against that simulated deployment (all
+  pass; a wrong origin fails exactly the three origin checks), the wake-up
+  hint and the restart screen in Chromium, and clean room disposal on
+  shutdown (no unhandled rejections).
 - **Verified locally:** the native production start path (production-only
   install, `NODE_ENV=production node build/index.js`: health, origin refusals,
   no `/monitor`, no test fixtures, a two-client room, memory use); graceful

@@ -277,6 +277,27 @@ describe("match room", () => {
   });
 
   describe("reconnection", () => {
+    it("closes a room cleanly on server shutdown: no seat is held, nothing goes unhandled", async () => {
+      const h = await host();
+      const g = await colyseus.sdk.joinById(h.roomId, { name: "Grace" });
+      await eventually(() => Object.keys(snapshot(h).players).length === 2, "guest joined");
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        const codes: number[] = [];
+        for (const r of [h, g]) r.onLeave((code) => codes.push(code));
+        // what SIGTERM does to every room (matchMaker.gracefullyShutdown)
+        await serverRoom(h.roomId).disconnect(4001);
+        await eventually(() => codes.length === 2, "both told");
+        await new Promise((r) => setTimeout(r, 100)); // let any rejection surface
+        assert.deepStrictEqual(codes, [4001, 4001]);
+        assert.deepStrictEqual(unhandled.map(String), []);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+      }
+    });
+
     it("gives a dropped guest the same seat back, with no duplicate", async () => {
       const h = await host();
       const g = await guest(h);

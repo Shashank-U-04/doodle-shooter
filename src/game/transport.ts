@@ -73,6 +73,8 @@ export type MatchHandlers = NetHandlers & {
   onHurt?: (damage: number, killerId: string | null) => void;
   /** the server's word on our health, whenever it changes */
   onHealth?: (hp: number, alive: boolean, killerId: string | null) => void;
+  /** the session is over for good (server restarted or unreachable, seat gone); the arena must stop */
+  onLost?: (text: string) => void;
 };
 
 /**

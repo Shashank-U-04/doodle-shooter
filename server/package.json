@@ -16,7 +16,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "mocha -r tsx \"test/**/*.test.ts\" --exit --timeout 15000",
-    "check": "npm run typecheck && npm run lint && npm test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "check:hosted": "tsx scripts/check-hosted.ts"
   },
   "author": "",
   "license": "UNLICENSED",
