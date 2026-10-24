@@ -22,6 +22,7 @@ import Peer, { type DataConnection } from "peerjs";
 import { shouldApplyState, type NetPlayerState, type NetShotOrigin } from "./types";
 import { normalizeMatchConfig, type MatchConfig } from "./maps";
 import { drawRoomCode } from "./room";
+import { MAX_PLAYERS } from "../../server/src/shared/rules.js";
 import {
   brokerConfigProblem,
   classifySignalError,
@@ -134,8 +135,8 @@ const BROKER: BrokerConfig = readBrokerConfig(import.meta.env as Record<string, 
  */
 const SILENCE_MS = 12000;
 
-/** Hard ceiling on the lobby. The star topology does not scale past this. */
-export const MAX_PLAYERS = 4;
+/** Hard ceiling on the lobby (shared with the match server). The star topology does not scale past this either. */
+export { MAX_PLAYERS };
 
 /**
  * How long one dial attempt gets before it is declared dead (ms).

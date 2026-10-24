@@ -18,9 +18,11 @@
 // decides its own path (walls are not checked here).
 
 import type { MapId } from "./rules.js";
+import { MOVE_RATE_HZ } from "./shared/rules.js";
+import { DEFAULT_WEAPON, WEAPON_NAMES } from "./shared/weapons.js";
 
-/** How often clients send their body (Hz). The room patches at the same rate. */
-export const MOVE_RATE_HZ = 20;
+/** How often clients send their body (Hz, shared/rules.ts). The room patches at the same rate. */
+export { MOVE_RATE_HZ };
 export const PATCH_INTERVAL_MS = 1000 / MOVE_RATE_HZ;
 
 /**
@@ -36,9 +38,9 @@ export const TELEPORT_REFILL_PER_S = 1;
 /** Ceiling on any coordinate a client may send; beyond it the payload is garbage. */
 export const COORD_LIMIT = 10_000;
 
-/** The weapons a body can be drawn holding (src/game/weapons.ts). */
-export const WEAPONS = ["RIFLE", "SHOTGUN", "SNIPER", "KATANA", "REVOLVER"] as const;
-export const DEFAULT_WEAPON = "RIFLE";
+/** The weapons a body can be drawn holding: the shared rack's names. */
+export const WEAPONS: readonly string[] = WEAPON_NAMES;
+export { DEFAULT_WEAPON };
 
 export type Vec3 = { x: number; y: number; z: number };
 export type Box = { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };

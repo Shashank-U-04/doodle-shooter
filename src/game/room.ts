@@ -10,6 +10,8 @@
 // The lease is stored in sessionStorage: it belongs to one tab, and two tabs
 // must be able to host two different rooms. No secret is stored here.
 
+import { drawRoomCode } from "../../server/src/shared/rules.js";
+
 export type RoomLease = {
   /** the 4-letter room code exactly as shown to the player */
   code: string;
@@ -31,7 +33,6 @@ export const ROOM_LEASE_KEY = "dd_room";
  */
 export const ROOM_PARAM = "room";
 export const LEGACY_ROOM_PARAM = "code";
-const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_SHAPE = /^[A-Z0-9]{3,8}$/;
 
 /** A room code the lobby will accept: uppercase letters/digits, 3–8 long. */
@@ -48,14 +49,11 @@ export function isValidRoomCode(code: string): boolean {
 }
 
 /**
- * Draw a new code from the unambiguous alphabet (no O/0, no I/1).
- * Kept in net.ts as `makeRoomCode` for compatibility; this is the same shape.
+ * Draw a new code from the unambiguous alphabet (no O/0, no I/1): the match
+ * server's own function (server/src/shared/rules.ts). `makeRoomCode` in net.ts
+ * calls this too.
  */
-export function drawRoomCode(random: () => number = Math.random): string {
-  let s = "";
-  for (let i = 0; i < 4; i++) s += CODE_ALPHABET[Math.floor(random() * CODE_ALPHABET.length) % CODE_ALPHABET.length];
-  return s;
-}
+export { drawRoomCode };
 
 /**
  * Parse a stored lease. Expired, malformed, or foreign-shaped values are

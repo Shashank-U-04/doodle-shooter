@@ -10,8 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { MAPS, gameHref, mapInfo, normalizeMapId, readSetup, writeSetup, type GameMode, type MapId } from "@/game/maps";
 import { ROOM_PARAM } from "@/game/room";
-
-const MAX_NAME = 16;
+import { NAME_MAX as MAX_NAME } from "../../server/src/shared/rules.js";
 
 export default function Setup() {
   const navigate = useNavigate();

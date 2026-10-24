@@ -31,9 +31,8 @@ import { buildDistrict, SAFE_SPAWNS, type District } from "./district";
 import { buildEgypt, type EgyptMap, type Mood, type Outcome as EgyptOutcome, type ZoneId as EgyptZoneId } from "./egypt";
 import type { MapId } from "./maps";
 import { makeBlobRig, makeMummyRig, makeRig, makeWaspRig, type Rig } from "./rig";
-import { KATANA_MELEE } from "./weapons";
 import type { NetCombatIntent, NetShotLanded } from "./types";
-import { PVP, WEAPONS } from "./arsenal";
+import { KATANA_MELEE, PVP, WEAPONS } from "./arsenal";
 import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
 import type { EngineCallbacks, GameHandle, HudState, NetPlayerState, NetRemotePlayer, NetShotOrigin } from "./types";
 

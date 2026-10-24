@@ -1,37 +1,30 @@
 // Match rules the server enforces.
 //
-// These mirror the browser's lobby (src/game/room.ts, src/game/maps.ts and the
-// limits in src/game/net.ts) so a player sees the same codes, maps and limits
-// whichever transport carries the match. The server is a separate package and
-// cannot import the frontend, so the values are repeated here; the map list is
-// checked against src/game/maps.ts by test/rules.test.ts.
+// The values both sides must agree on (limits, map ids, room codes) live in
+// shared/rules.ts, which the frontend imports too; this module adds what only
+// the server does with them: normalising a create request, sanitising names,
+// handing out inks.
 
-/** Hard ceiling on a match, the same as the PeerJS lobby's MAX_PLAYERS. */
-export const MAX_PLAYERS = 4;
-/** The smallest room a host may ask for: a match needs an opponent. */
-export const MIN_PLAYERS = 2;
-/** Player names are cut to this many characters, as in NetSession. */
-export const NAME_MAX = 16;
-/** Ink palette size; every player in a room gets a different index. */
-export const INK_COUNT = 6;
-/** How long a dropped player (reload, lost network) keeps their seat. */
-export const RECONNECT_SECONDS = 30;
+import { DEFAULT_MAP, INK_COUNT, isMapId, MAX_PLAYERS, MIN_PLAYERS, NAME_MAX, type MapId } from "./shared/rules.js";
 
-export const MAP_IDS = ["district", "valley", "sanctuary", "tomb"] as const;
-export type MapId = (typeof MAP_IDS)[number];
-export const DEFAULT_MAP: MapId = "district";
-
-/** Unambiguous alphabet (no O/0, no I/1), identical to src/game/room.ts. */
-export const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-export const CODE_LENGTH = 4;
+export {
+  CODE_ALPHABET,
+  CODE_LENGTH,
+  DEFAULT_MAP,
+  drawRoomCode,
+  INK_COUNT,
+  isMapId,
+  MAP_IDS,
+  MAX_PLAYERS,
+  MIN_PLAYERS,
+  NAME_MAX,
+  RECONNECT_SECONDS,
+  type MapId,
+} from "./shared/rules.js";
 
 export type MatchConfig = { map: MapId; grapple: boolean };
 
 export type MatchOptions = MatchConfig & { maxPlayers: number };
-
-export function isMapId(value: unknown): value is MapId {
-  return typeof value === "string" && (MAP_IDS as readonly string[]).includes(value);
-}
 
 /**
  * A display name that is safe to put in front of other players: no control
@@ -63,15 +56,6 @@ export function normalizeMatchOptions(value: unknown): MatchOptions {
     grapple: typeof v.grapple === "boolean" ? v.grapple : true,
     maxPlayers,
   };
-}
-
-/** A new room code in the same shape the lobby already shows. */
-export function drawRoomCode(random: () => number = Math.random): string {
-  let s = "";
-  for (let i = 0; i < CODE_LENGTH; i++) {
-    s += CODE_ALPHABET[Math.floor(random() * CODE_ALPHABET.length) % CODE_ALPHABET.length];
-  }
-  return s;
 }
 
 /** The lowest ink index nobody in `used` holds. */

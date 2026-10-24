@@ -26,6 +26,7 @@ import { normalizeMatchConfig, type MatchConfig } from "./maps";
 import type { NetPlayer, SignalState } from "./net";
 import type { NetCombatIntent, NetPlayerState, NetShotOrigin } from "./types";
 import { readColyseusUrl, viteEnv, type MatchHandlers, type MatchSession } from "./transport";
+import { MOVE_RATE_HZ, NAME_MAX, RECONNECT_SECONDS } from "../../server/src/shared/rules.js";
 
 /** sessionStorage key for this tab's seat; separate from the PeerJS lease. */
 export const SEAT_KEY = "dd_colyseus_seat";
@@ -33,12 +34,9 @@ export const SEAT_KEY = "dd_colyseus_seat";
 const SEAT_TTL_MS = 6 * 60 * 60 * 1000;
 /**
  * How long after the page unloads its seat is still held: the server's
- * RECONNECT_SECONDS (server/src/rules.ts), less a little for the round trip.
+ * RECONNECT_SECONDS (server/src/shared/rules.ts), less a little for the round trip.
  */
-export const RESUME_WINDOW_MS = 28_000;
-
-/** How often our body is sent (Hz); the server patches at the same rate. */
-export const MOVE_RATE_HZ = 20;
+export const RESUME_WINDOW_MS = RECONNECT_SECONDS * 1000 - 2000;
 
 /**
  * How long matchmaking may take before the lobby says why: a free-tier host
@@ -310,7 +308,7 @@ export class ColyseusSession implements MatchSession {
 
   constructor(code: string, name: string, isHost: boolean, config: MatchConfig, deps: ColyseusSessionDeps = {}) {
     this.code = code.toUpperCase();
-    this.name = name.trim().slice(0, 16) || (isHost ? "HOST" : "GUEST");
+    this.name = name.trim().slice(0, NAME_MAX) || (isHost ? "HOST" : "GUEST");
     this.isHost = isHost;
     this.config = normalizeMatchConfig(config);
     this.url = deps.url !== undefined ? deps.url : readColyseusUrl(viteEnv());
