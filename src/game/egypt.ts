@@ -1264,6 +1264,12 @@ export type EgyptMap = {
   hazard: (p: THREE.Vector3, now: number) => number;
   travelAt: (p: THREE.Vector3) => Outcome["travel"] | null;
   floorY: () => number;
+  /**
+   * Colliders that open at run time (stone doors, gates, the temple secret).
+   * Each player opens them in their own world, so the match server, which
+   * cannot know who opened what, leaves them out of its line-of-sight checks.
+   */
+  doorColliders: () => Collider[];
 };
 
 export function buildEgypt(scene: THREE.Scene): EgyptMap {
@@ -2047,6 +2053,9 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
     },
     floorY() {
       return zones[map.active].floorY;
+    },
+    doorColliders() {
+      return sliders.flatMap((s) => (s.collider ? [s.collider] : []));
     },
     nearest(p) {
       let best: Interaction | null = null;

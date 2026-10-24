@@ -21,6 +21,16 @@ export type RoomLease = {
 /** How long a lease may be resumed before the room is treated as expired. */
 export const ROOM_LEASE_TTL_MS = 6 * 60 * 60 * 1000;
 export const ROOM_LEASE_KEY = "dd_room";
+/**
+ * The query parameter that carries a room code to /online (`/online?room=K7QM`).
+ *
+ * Not `code`: Convex Auth treats `?code=` on any page as its sign-in callback.
+ * It strips the parameter, sends the value to the Convex deployment as a
+ * sign-in code and, when that fails (a room code always does), clears the
+ * player's session, signing them out. `code` is still read for old links.
+ */
+export const ROOM_PARAM = "room";
+export const LEGACY_ROOM_PARAM = "code";
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_SHAPE = /^[A-Z0-9]{3,8}$/;
 

@@ -1,0 +1,30 @@
+# Render Blueprint for the Colyseus match server only (server/). The frontend
+# stays on Vercel; nothing here deploys it. See docs/preview-deployment.md.
+#
+# Creating a Blueprint from this file is a manual step in the Render dashboard
+# (New → Blueprint, pick this repo and branch). Render then asks for every
+# `sync: false` value; nothing secret or deployment-specific is committed here.
+services:
+  - type: web
+    name: doodle-shooter-match
+    runtime: node
+    rootDir: server
+    # --include=dev: NODE_ENV=production (below) is also set during the build,
+    # and npm then skips devDependencies — including the TypeScript compiler.
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run serve
+    healthCheckPath: /health
+    # Free instances spin down after 15 minutes without traffic and take about
+    # a minute to wake (the lobby says so after 5 s); Render may also restart
+    # them, which ends running matches. Fine for a supervised Preview test.
+    plan: free
+    # Cannot be changed after creation: set it to the Render region nearest
+    # the testers before applying (oregon, ohio, virginia, frankfurt, singapore).
+    region: singapore
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # The exact Vercel Preview origin(s), comma-separated:
+      # https://<…>.vercel.app — no path, no trailing slash, no wildcards.
+      - key: ALLOWED_ORIGINS
+        sync: false
