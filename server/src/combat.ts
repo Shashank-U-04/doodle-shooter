@@ -1,11 +1,10 @@
 // Combat rules for the match server.
 //
-// Every number here is the game's own, mirrored from the engine (the weapon
-// rack in src/game/arsenal.ts, the katana in src/game/weapons.ts, and the
-// literals in src/game/engine.ts that settle hits, blasts, health and the focus
-// meter), except damage and health: those are the player-versus-player values
-// in arsenal.ts's PVP table, since the rack's own are tuned for the solo waves.
-// test/combat-parity.test.ts imports the frontend and fails if a value drifts. The geometry is the same too: the hitboxes and the ray-versus-box
+// The weapons, the katana, the PvP damage table and the match rules come from
+// shared/ (the same modules the engine imports), so they cannot drift. The rest
+// mirrors literals in src/game/engine.ts that settle hits, blasts, health and the
+// focus meter; test/combat-parity.test.ts reads the engine's source and fails if
+// one drifts. The geometry is the same too: the hitboxes and the ray-versus-box
 // test are line-for-line ports of engine.ts, and the walls come from the real
 // map builders (src/maps/colliders.json, see scripts/export-colliders.ts).
 //
@@ -16,6 +15,9 @@
 import collidersJson from "./maps/colliders.json" with { type: "json" };
 import type { MapId } from "./rules.js";
 import { ENVELOPES, type Box, type Vec3 } from "./movement.js";
+import { KATANA_MELEE, PVP, WEAPONS } from "./shared/weapons.js";
+
+export { KILLS_TO_WIN, RESPAWN_MS } from "./shared/rules.js";
 
 /* ------------------------------- the numbers ------------------------------- */
 
@@ -31,28 +33,33 @@ export type Gun = {
   reloadTime: number;
 };
 
-/** src/game/arsenal.ts, the guns (the katana is MELEE below); damage and headMul from its PVP table. */
-export const GUNS: Record<string, Gun> = {
-  RIFLE: { name: "RIFLE", magSize: 35, interval: 1 / 11, damage: 9, headMul: 2, pellets: 1, spread: 0.016, adsSpread: 0.0034, reloadTime: 1.45 },
-  SHOTGUN: { name: "SHOTGUN", magSize: 6, interval: 0.78, damage: 8, headMul: 1.5, pellets: 10, spread: 0.062, adsSpread: 0.034, reloadTime: 2.0 },
-  SNIPER: { name: "SNIPER", magSize: 5, interval: 0.9, damage: 80, headMul: 1.5, pellets: 1, spread: 0.075, adsSpread: 0.0004, reloadTime: 2.1 },
-  REVOLVER: { name: "REVOLVER", magSize: 6, interval: 0.3, damage: 30, headMul: 2, pellets: 1, spread: 0.006, adsSpread: 0.002, reloadTime: 1.9 },
-};
+/** The guns of the shared rack (the katana is MELEE below), with the PvP table's damage and headMul. */
+export const GUNS: Record<string, Gun> = Object.fromEntries(
+  WEAPONS.filter((w) => !w.katana).map((w) => {
+    const pvp = PVP.weapons[w.name];
+    if (!pvp) throw new Error(`no PVP damage for ${w.name}`);
+    const { name, magSize, interval, pellets, spread, adsSpread, reloadTime } = w;
+    return [name, { name, magSize, interval, pellets, spread, adsSpread, reloadTime, damage: pvp.damage, headMul: pvp.headMul }];
+  }),
+);
 
-/** The katana: KATANA_MELEE in weapons.ts (damage and headMul from PVP), its interval from arsenal.ts, the player-hit cones from katanaSlash(). */
+const KATANA = WEAPONS.find((w) => w.katana);
+if (!KATANA || !PVP.weapons[KATANA.name]) throw new Error("the rack has no katana with PVP damage");
+
+/** The katana: KATANA_MELEE (damage and headMul from PVP), its interval from the rack, the player-hit cones from katanaSlash(). */
 export const MELEE = {
-  name: "KATANA",
-  interval: 0.27,
-  reach: 2.9,
-  cosArc: 0.35,
+  name: KATANA.name,
+  interval: KATANA.interval,
+  reach: KATANA_MELEE.reach,
+  cosArc: KATANA_MELEE.cosArc,
   /** a slash catches the head inside this tighter cone (katanaSlash, against players) */
   headCos: 0.9,
-  damage: 40,
-  headMul: 1.5,
+  damage: PVP.weapons[KATANA.name].damage,
+  headMul: PVP.weapons[KATANA.name].headMul,
   /** where the cones are aimed on a body, above its feet */
   chestY: 1.05,
   headY: 1.62,
-  focusGain: 0.34,
+  focusGain: KATANA_MELEE.focusGain,
 } as const;
 
 /** tryFocusDash() / addFocus(). */
@@ -66,8 +73,7 @@ export const FOCUS = {
   cos: 0.4,
   /** aimed at the body this far above its feet */
   aimY: 1,
-  /** PVP.focusDash */
-  damage: 60,
+  damage: PVP.focusDash,
 } as const;
 
 /** throwGrenade() / updateGrenades() / explode(). */
@@ -82,8 +88,8 @@ export const GRENADE = {
   fuse: 1.6,
   /** explode(pos, 4.2, …, true): everyone inside 0.8 × 4.2 */
   radius: 4.2 * 0.8,
-  /** PVP.grenade (the solo blast is 120) */
-  damage: 60,
+  /** the solo blast is 120 */
+  damage: PVP.grenade,
   /** blastRemotes() multiplies by 1.5 for the other players, not the thrower */
   othersMul: 1.5,
   cooldown: 0.6,
@@ -99,12 +105,9 @@ export const MIN_WALL_TOP = 1.2;
 export const AIR_SPREAD = 1.8;
 
 /** PVP.health, and the regen of updatePlayer() / damagePlayer(). */
-export const HEALTH = { max: 100, regenDelay: 4.5, regenPerS: 11 } as const;
+export const HEALTH = { max: PVP.health, regenDelay: 4.5, regenPerS: 11 } as const;
 /** egypt.hazard(): a raised spike costs 12, at most once per 850 ms, never on the surface. */
 export const SPIKE = { damage: 12, everyMs: 850 } as const;
-/** Online.tsx: the respawn wait and the winning score. */
-export const RESPAWN_MS = 3200;
-export const KILLS_TO_WIN = 15;
 
 /* --------------------------- server-side tolerances --------------------------- */
 

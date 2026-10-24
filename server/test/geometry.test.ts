@@ -13,7 +13,7 @@ import * as THREE from "three";
 import { ENVELOPES, WEAPONS, type Box } from "../src/movement.js";
 import { buildDistrict } from "../../src/game/district.js";
 import { buildEgypt } from "../../src/game/egypt.js";
-import { WEAPONS as GAME_WEAPONS } from "../../src/game/weapons.js";
+import { WEAPONS as GAME_WEAPONS } from "../../src/game/arsenal.js";
 import { CI, XN, XN_AIR } from "../../src/game/enemies-data.js";
 import { isStandable, spreadSpawns } from "../../src/game/world.js";
 

@@ -1,27 +1,23 @@
 import assert from "assert";
-import { readFileSync } from "fs";
 
 import {
-  CODE_ALPHABET,
+  DEFAULT_MAP,
   drawRoomCode,
   freeInk,
+  isMapId,
   MAP_IDS,
   normalizeMatchOptions,
   sanitizeName,
 } from "../src/rules.js";
 
+// The frontend uses these same functions and lists (src/shared/); the
+// frontend side of that is checked in shared-parity.test.ts.
 describe("rules", () => {
-  it("keeps the map list in step with the frontend", () => {
-    // The server cannot import the browser bundle, so read its source instead.
-    const source = readFileSync(new URL("../../src/game/maps.ts", import.meta.url), "utf8");
-    const declared = source.match(/export type MapId = ([^;]+);/)?.[1] ?? "";
-    const frontend = [...declared.matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
-    assert.deepStrictEqual([...MAP_IDS], frontend);
-  });
-
-  it("uses the same code alphabet as the frontend", () => {
-    const source = readFileSync(new URL("../../src/game/room.ts", import.meta.url), "utf8");
-    assert.ok(source.includes(`const CODE_ALPHABET = "${CODE_ALPHABET}"`));
+  it("knows the maps, and nothing else is one", () => {
+    assert.deepStrictEqual([...MAP_IDS], ["district", "valley", "sanctuary", "tomb"]);
+    assert.ok(MAP_IDS.every(isMapId));
+    assert.ok(isMapId(DEFAULT_MAP));
+    for (const bad of ["", "District", "moon", null, undefined, 3, {}]) assert.strictEqual(isMapId(bad), false, String(bad));
   });
 
   it("draws codes from the unambiguous alphabet", () => {

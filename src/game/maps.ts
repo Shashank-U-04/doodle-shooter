@@ -9,8 +9,10 @@
 // starts in, not a doorway the player has to walk through.
 
 import type { ZoneId } from "./egypt";
+import { DEFAULT_MAP, isMapId, MAP_IDS, type MapId } from "../../server/src/shared/rules.js";
 
-export type MapId = "district" | "valley" | "sanctuary" | "tomb";
+// The ids themselves are the match server's (server/src/shared/rules.ts).
+export { DEFAULT_MAP, isMapId, MAP_IDS, type MapId };
 
 export type MapInfo = {
   id: MapId;
@@ -64,12 +66,6 @@ export const MAPS: MapInfo[] = [
     zone: "tomb",
   },
 ];
-
-export const DEFAULT_MAP: MapId = "district";
-
-export function isMapId(value: unknown): value is MapId {
-  return value === "district" || value === "valley" || value === "sanctuary" || value === "tomb";
-}
 
 export function mapInfo(id: MapId): MapInfo {
   return MAPS.find((m) => m.id === id) ?? MAPS[0];

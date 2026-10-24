@@ -1,17 +1,17 @@
 // The server's combat numbers against the game's.
 //
-// The server cannot import the browser engine, so src/combat.ts repeats its
-// numbers; this test imports what it can (the weapon rack, the katana, the
-// collider export) and reads the rest straight out of the engine's source, so
-// a balance change in the game that is not made on the server fails here.
+// The weapon rack, the katana, the PvP table and the match rules are shared
+// (src/shared/), and src/combat.ts derives its guns from them; this checks that
+// derivation. The rest of combat.ts mirrors literals in the engine, which this
+// reads straight out of the engine's source, so a balance change in the game
+// that is not made on the server fails here.
 //
 // Excluded from this package's `tsc` (it imports frontend code).
 import assert from "assert";
 import { readFileSync } from "fs";
 
 import { FOCUS, GRENADE, GUNS, HEALTH, HITBOX, KILLS_TO_WIN, MELEE, MIN_WALL_TOP, RANGE, RESPAWN_MS, SPIKE, AIR_SPREAD } from "../src/combat.js";
-import { PVP, WEAPONS } from "../../src/game/arsenal.js";
-import { KATANA_MELEE } from "../../src/game/weapons.js";
+import { KATANA_MELEE, PVP, WEAPONS } from "../../src/game/arsenal.js";
 import { exportColliders } from "../../scripts/export-colliders.js";
 
 const source = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
@@ -96,8 +96,11 @@ describe("combat parity with the game", () => {
   it("uses the engine's health, the lobby's respawn and win, and the traps' spikes", () => {
     contains(engine, `player.regenDelay = ${HEALTH.regenDelay};`, "regen delay");
     contains(engine, `p.hp = Math.min(p.maxHp, p.hp + ${HEALTH.regenPerS} * dt);`, "regen rate");
-    contains(online, `const KILLS_TO_WIN = ${KILLS_TO_WIN};`, "win");
-    contains(online, `}, ${RESPAWN_MS});`, "respawn wait");
+    // the lobby reads both from src/shared/rules.ts (shared-parity.test.ts bans local copies)
+    assert.strictEqual(KILLS_TO_WIN, 15);
+    assert.strictEqual(RESPAWN_MS, 3200);
+    contains(online, "matchWinner(players, session.winnerId, KILLS_TO_WIN)", "win");
+    contains(online, "}, RESPAWN_MS);", "respawn wait");
     contains(egypt, `return ${SPIKE.damage};`, "spike damage");
     contains(egypt, `hurtUntil = now + ${SPIKE.everyMs};`, "spike rate");
   });
