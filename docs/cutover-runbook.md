@@ -14,13 +14,28 @@ State on 2026-10-24 (see `baseline-2026-10-24.md`):
 | Vercel Preview of `feat/multiplayer-gameplay-polish` | `4109ee0` | depends on the Preview variables' branch scope (unverified) |
 | Render `doodle-shooter-match` | `dc14d7a` (branch `feat/colyseus-hosted-preview`) | — |
 
-Open PRs, in merge order:
-1. #1 `feat/multiplayer-gameplay-polish` → `main`
-2. #2 `chore/ci-and-lockfile` → #1
-3. #3 `chore/remove-startup-coupling` → #2
-4. this runbook (`chore/cutover-runbook`) → #3
+Open PRs (each targets the one before it, so it shows only its own change):
 
-The server code is the same on all four branches except `scripts/check-hosted.ts`.
+| PR | Branch | What |
+|---|---|---|
+| #1 | `feat/multiplayer-gameplay-polish` → `main` | the Colyseus migration S1–S4d |
+| #2 | `chore/ci-and-lockfile` → #1 | CI, one frontend lockfile, baseline record |
+| #3 | `chore/remove-startup-coupling` → #2 | no Convex/VLY at startup |
+| #4 | `chore/cutover-runbook` → #3 | this runbook, bounded `check:hosted` |
+| #5 | `refactor/shared-rules` → #3 | one shared copy of the rules |
+| #6 | `fix/room-access-and-limits` → #5 | **security**: codeless joins; room-creation limits |
+| #7 | `feat/server-metrics` → #6 | one JSON metrics line a minute |
+| #8 | `fix/teleport-destinations` → #7 | **security**: teleports only to arrival points |
+| #9 | `feat/perf-benchmark` → #8 | frame-time benchmark and baseline |
+
+**The live Render server (`dc14d7a`) has both security holes that #6 and #8
+fix.**
+- Anyone who can reach it can join a stranger's room without its code (`POST
+  /matchmake/join/match`).
+- A modified client can teleport anywhere.
+
+Deploy a branch that contains them, `feat/perf-benchmark` (the top of the
+stack) or anything above #8, rather than `feat/multiplayer-gameplay-polish`.
 
 ## 1. Align the Preview server with the client (manual, Render dashboard)
 
@@ -29,7 +44,12 @@ The `4109ee0` client expects 100 HP and the PvP damage table (S4d). Render runs
 any Preview match is a mismatched pair.
 
 1. Render → `doodle-shooter-match` → **Settings → Build & Deploy → Branch**:
-   `feat/multiplayer-gameplay-polish`.
+   `feat/perf-benchmark` (the top of the stack: the migration plus both
+   security fixes). The Vercel Preview the testers use must be a build of the
+   same branch, so client and server match.
+   - Optional server variables: `MAX_ROOMS`, `ROOM_CREATES_PER_MINUTE`,
+     `ROOM_CREATES_PER_IP_PER_MINUTE` and `METRICS_INTERVAL_S` (see
+     `server/README.md`). The defaults suit a playtest.
    - Root directory stays `server`.
    - Build `npm ci --include=dev && npm run build`.
    - Start `npm run serve`.
