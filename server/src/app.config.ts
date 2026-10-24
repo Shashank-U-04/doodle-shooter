@@ -1,6 +1,7 @@
 import { defineServer, defineRoom, matchMaker, monitor, WebSocketTransport } from "colyseus";
 import { MatchRoom } from "./rooms/MatchRoom.js";
 import { isOriginAllowed, normalizeOrigin, originPolicy } from "./origins.js";
+import { roomLimitsFromEnv } from "./limits.js";
 import { e2eFixturesEnabled, mountE2eFixtures } from "./e2e.js";
 
 const startedAt = Date.now();
@@ -11,6 +12,16 @@ if (originPolicy.rejected.length > 0) {
 if (originPolicy.allowed.size === 0) {
   console.warn("[origins] ALLOWED_ORIGINS is empty: no browser origin can use this server");
 }
+if (roomLimitsFromEnv.rejected.length > 0) {
+  console.warn(`[limits] ignoring invalid values (positive integers only): ${roomLimitsFromEnv.rejected.join(", ")}`);
+}
+
+// A room's code is its only lock, so the only ways in are a new room of your
+// own (`create`), a code you were given (`joinById`) and your own seat back
+// (`reconnect`). Colyseus also exposes `join` and `joinOrCreate` by default,
+// which seat the caller in any open room: a stranger could join a match
+// without its code. (Rooms are private as well; see MatchRoom.onCreate.)
+matchMaker.controller.exposedMethods = ["create", "joinById", "reconnect"];
 
 // CORS: Colyseus answers every origin with `*` (and allows credentials) by
 // default. Name the caller's origin, and allow credentials, only when it is on

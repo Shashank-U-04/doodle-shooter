@@ -11,6 +11,7 @@ import {
   type MapId,
 } from "../rules.js";
 import { isOriginAllowed, originPolicy } from "../origins.js";
+import { isCreateRequest, REFUSAL_TEXT, RoomCreationLimiter, roomLimitsFromEnv } from "../limits.js";
 import { Combat, type EliminatedEvent, type HitEvent } from "./Combat.js";
 import {
   clampPitch,
@@ -92,6 +93,14 @@ export type StartResult = { ok: true } | { ok: false; reason: StartRefusal };
 
 /** HTTP-style status for a matchmaking request from a disallowed origin. */
 const FORBIDDEN = 403;
+/** HTTP-style status for a create refused by the room-creation limits. */
+const TOO_MANY_REQUESTS = 429;
+
+/**
+ * Room-creation limits for this process (src/limits.ts), from MAX_ROOMS,
+ * ROOM_CREATES_PER_MINUTE and ROOM_CREATES_PER_IP_PER_MINUTE.
+ */
+export const roomLimiter = new RoomCreationLimiter(roomLimitsFromEnv.limits);
 
 /**
  * One Doodle Shooter match.
@@ -127,6 +136,14 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   static async onAuth(_token: string, _options: unknown, context: AuthContext) {
     if (!isOriginAllowed(context.headers.get("origin"), originPolicy)) {
       throw new ServerError(FORBIDDEN, "origin not allowed");
+    }
+    if (isCreateRequest(context.req)) {
+      const refusal = roomLimiter.tryCreate(context.ip, liveCodes.size);
+      if (refusal) {
+        // no address in the log: the reason and the room count are enough to see an abuse pattern
+        console.warn(JSON.stringify({ event: "create-refused", reason: refusal, liveRooms: liveCodes.size }));
+        throw new ServerError(TOO_MANY_REQUESTS, REFUSAL_TEXT[refusal]);
+      }
     }
     return true;
   }
@@ -229,6 +246,9 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   onCreate(options: unknown) {
     const opts = normalizeMatchOptions(options);
     this.roomId = reserveCode();
+    // Only `joinById` (the code) gets anyone in; private rooms are also invisible
+    // to `join`/`joinOrCreate`, which app.config.ts does not expose anyway.
+    void this.setPrivate(true);
     this.maxClients = opts.maxPlayers;
     this.state.code = this.roomId;
     this.state.map = opts.map;

@@ -53,6 +53,10 @@ export default defineConfig({
         NODE_ENV: "test",
         E2E_FIXTURES: "1",
         ALLOWED_ORIGINS: WEB,
+        // every test creates rooms from the same (unnamed) address; the limits
+        // themselves are tested in server/test/access.test.ts
+        ROOM_CREATES_PER_IP_PER_MINUTE: "1000",
+        ROOM_CREATES_PER_MINUTE: "1000",
         // seats, drops and leaves with close codes, rate-limit kicks: no payloads, tokens or names
         DEBUG: "colyseus:matchmaking,colyseus:errors",
         DEBUG_COLORS: "0",
