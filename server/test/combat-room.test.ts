@@ -76,6 +76,9 @@ describe("server-authoritative combat", () => {
     const clock = { t: 1_000_000 };
     server.combat.clock = () => clock.t;
     server.combat.random = () => 0.5; // no spread noise
+    // These tests set up shots by placing bodies at exact spots; where a client
+    // may teleport is movement's business (movement.test.ts, MatchRoom.test.ts).
+    server.trustTeleports = true;
 
     const players: Player[] = rooms.map((room, i) => {
       const p: Player = { room, id: room.sessionId, hits: [], falls: [], shot: 0, epoch: 1, at: spots[i] };

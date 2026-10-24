@@ -42,6 +42,17 @@ export function mountE2eFixtures(app: Application) {
   });
 
   /**
+   * GET /__e2e/rooms/:code/motion — how many teleports the room refused. The
+   * real client's jumps (spawns, respawns, rematches, doorways, dashes) must
+   * all be ones the server recognises, so a browser test expects zero.
+   */
+  app.get("/__e2e/rooms/:code/motion", (req, res) => {
+    const room = matchMaker.getLocalRoomById(String(req.params.code).toUpperCase()) as MatchRoom | undefined;
+    if (!room) return void res.status(404).json({ error: "no such room" });
+    res.json(room.motionStats);
+  });
+
+  /**
    * POST /__e2e/rooms/:code/shutdown — what a host's SIGTERM does to each room
    * (matchMaker.gracefullyShutdown → disconnect with SERVER_SHUTDOWN), for one
    * room, so a browser test can watch the players' side of a server restart.

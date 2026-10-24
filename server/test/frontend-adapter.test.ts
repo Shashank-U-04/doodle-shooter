@@ -11,6 +11,7 @@ import type { ColyseusTestServer } from "@colyseus/testing";
 import type appConfig from "../src/app.config.js";
 import { testServer } from "./harness.js";
 import type { MatchRoom } from "../src/rooms/MatchRoom.js";
+import { ARRIVALS } from "../src/movement.js";
 import { createServer, type Server } from "http";
 import {
   ColyseusSession,
@@ -356,8 +357,12 @@ describe("frontend Colyseus lobby adapter", () => {
 
     it("hides a dropped player and brings back one body after a reload", async () => {
       const { h, g } = await started();
+      // a real engine spawns on pads (the server accepts jumps only to those)
+      const pad = (x: number) => ARRIVALS.district.find((a) => Math.abs(a.x - x) < 1e-6 && Math.abs(a.z) < 1e-6)!;
+      const east = pad(50.8);
+      const west = pad(-50.8);
       const ha = enterArena(h, engineBody());
-      enterArena(g, engineBody({ x: 4 }));
+      enterArena(g, engineBody({ ...east }));
       const gid = g.session.me;
       await eventually(() => ha.bodies.has(gid), "guest drawn");
 
@@ -370,8 +375,8 @@ describe("frontend Colyseus lobby adapter", () => {
       tabs.push(back);
       await eventually(() => back.session.joined, "resumed");
       assert.strictEqual(back.session.me, gid);
-      enterArena(back, engineBody({ x: -20, epoch: 1 }));
-      await eventually(() => close(ha.bodies.get(gid)?.x, -20), "back where the new engine put it");
+      enterArena(back, engineBody({ ...west, epoch: 1 }));
+      await eventually(() => close(ha.bodies.get(gid)?.x, west.x), "back where the new engine put it");
       assert.ok((ha.bodies.get(gid)?.epoch ?? 0) >= 2, "a new epoch, so the arena snaps instead of sliding");
       assert.strictEqual(ha.bodies.size, 1);
       assert.strictEqual(count(h), 2);

@@ -10,6 +10,7 @@
 // winner, the state patch, the overlay, host migration and the rematch — is the
 // real thing.
 import { expect, test } from "./fixtures";
+import { E2E_SERVER } from "./env";
 import { finishMatch, GUEST, HOST, openRoom, overlay, player } from "./helpers";
 
 test("an old ?code= link still joins, and a guest's reload takes back the same seat", async ({ browser }) => {
@@ -110,6 +111,14 @@ test("lobby → arena → winner → host leaves → promoted host rematches", a
     await expect(guest.locator(".dd-exit")).toHaveText(`← LEAVE MATCH (room ${code})`);
     await guest.waitForTimeout(1500);
     await expect(overlay(guest)).toHaveCount(0);
+  });
+
+  await test.step("every jump the real client made was one the server recognises", async () => {
+    // arena entry, the fixture's kill and the rematch all teleport bodies; the
+    // server accepts jumps only to spawn pads, starts and doorways
+    const res = await request.get(`${E2E_SERVER}/__e2e/rooms/${code}/motion`);
+    expect(res.status()).toBe(200);
+    expect(await res.json()).toEqual({ teleportsRefused: 0 });
   });
 
   // Nothing tried to leave this machine except what the route blocked (logged

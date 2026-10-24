@@ -27,7 +27,7 @@ import {
   type InkId,
   type PoseSample,
 } from "./world";
-import { buildDistrict, SAFE_SPAWNS, type District } from "./district";
+import { buildDistrict, DISTRICT_START, SAFE_SPAWNS, type District } from "./district";
 import { buildEgypt, type EgyptMap, type Mood, type Outcome as EgyptOutcome, type ZoneId as EgyptZoneId } from "./egypt";
 import type { MapId } from "./maps";
 import { makeBlobRig, makeMummyRig, makeRig, makeWaspRig, type Rig } from "./rig";
@@ -276,7 +276,7 @@ export function createGame(
     bounds: district.bounds,
     floorY: 0,
     spawns: district.spawnPoints,
-    start: new THREE.Vector3(0, 0.2, 38),
+    start: DISTRICT_START.clone(),
     startYaw: Math.PI,
   };
   const zoneFor = (id: EgyptZoneId): ActiveZone => {

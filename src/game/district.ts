@@ -43,6 +43,9 @@ export type District = {
  * the nearest ceiling happens to be. Every point here was checked against the
  * built colliders at the player's body size — re-check them if the map moves.
  */
+/** Where a fresh body starts in the district (the solo start, and online's first pad sits beside it). */
+export const DISTRICT_START = new THREE.Vector3(0, 0.2, 38);
+
 export const SAFE_SPAWNS: THREE.Vector3[] = [
   new THREE.Vector3(0, 0.2, -48),
   new THREE.Vector3(0, 0.2, 48),

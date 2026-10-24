@@ -12,7 +12,7 @@ import { readFileSync } from "fs";
 
 import { FOCUS, GRENADE, GUNS, HEALTH, HITBOX, KILLS_TO_WIN, MELEE, MIN_WALL_TOP, RANGE, RESPAWN_MS, SPIKE, AIR_SPREAD } from "../src/combat.js";
 import { KATANA_MELEE, PVP, WEAPONS } from "../../src/game/arsenal.js";
-import { exportColliders } from "../../scripts/export-colliders.js";
+import { exportArrivals, exportColliders, serializeArrivals } from "../../scripts/export-colliders.js";
 
 const source = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
 const engine = source("src/game/engine.ts");
@@ -109,5 +109,10 @@ describe("combat parity with the game", () => {
     const fresh = exportColliders();
     const shipped = JSON.parse(readFileSync(new URL("../src/maps/colliders.json", import.meta.url), "utf8"));
     assert.deepStrictEqual(shipped, JSON.parse(JSON.stringify(fresh)), "run `npx tsx scripts/export-colliders.ts`");
+  });
+
+  it("has the current arrival points (where the game puts bodies without walking)", () => {
+    const shipped = readFileSync(new URL("../src/maps/arrivals.json", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    assert.strictEqual(shipped, serializeArrivals(exportArrivals()), "run `npx tsx scripts/export-colliders.ts`");
   });
 });
