@@ -15,9 +15,11 @@ import { isCreateRequest, REFUSAL_TEXT, RoomCreationLimiter, roomLimitsFromEnv }
 import { metrics } from "../metrics.js";
 import { Combat, type EliminatedEvent, type HitEvent } from "./Combat.js";
 import {
+  ARRIVALS,
   clampPitch,
   COORD_LIMIT,
   ENVELOPES,
+  grantDash,
   newMotion,
   PATCH_INTERVAL_MS,
   stepMotion,
@@ -134,6 +136,13 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   reconnectSeconds = RECONNECT_SECONDS;
   /** per-player movement limiter; server-only, keyed by session id */
   private motion = new Map<string, Motion>();
+  /** teleports refused because they were not to a place the game puts bodies (tests, the e2e fixture) */
+  motionStats = { teleportsRefused: 0 };
+  /**
+   * Tests only: accept a teleport to any point. Combat tests place bodies at
+   * exact spots to set up a shot; movement trust has its own tests.
+   */
+  trustTeleports = false;
   /** health, deaths and scores; public so tests can read its counters */
   combat = new Combat(this.state, (type: "hit" | "eliminated", message: HitEvent | EliminatedEvent) =>
     this.broadcast(type, message),
@@ -193,7 +202,11 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     move: validate(moveMessage, (client, message) => this.applyMove(client.sessionId, message)),
     fire: validate(fireMessage, (client, m) => this.combat.fire(client.sessionId, m)),
     slash: validate(meleeMessage, (client, m) => this.combat.slash(client.sessionId, m)),
-    dash: validate(meleeMessage, (client, m) => this.combat.dash(client.sessionId, m)),
+    dash: validate(meleeMessage, (client, m) => {
+      // an accepted dash carries the body to its target: allow that one jump
+      const motion = this.motion.get(client.sessionId);
+      if (this.combat.dash(client.sessionId, m) && motion) grantDash(motion, Date.now());
+    }),
     throw: validate(throwMessage, (client, m) => this.combat.throwGrenade(client.sessionId, m)),
     reload: validate(reloadMessage, (client, m) => this.combat.reload(client.sessionId, m.weapon)),
     hazard: validate(hazardMessage, (client, m) => this.combat.hazard(client.sessionId, m.damage)),
@@ -217,20 +230,21 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       this.motion.set(sessionId, motion);
     }
     const wantsTeleport = motion.clientEpoch === null || m.epoch !== motion.clientEpoch;
+    const claim = { x: m.x, y: m.y, z: m.z };
     const result = stepMotion(
       motion,
       p.spawned ? { x: p.x, y: p.y, z: p.z } : null,
-      { x: m.x, y: m.y, z: m.z },
+      claim,
       wantsTeleport,
       now,
       ENVELOPES[this.state.map as MapId],
+      this.trustTeleports ? [claim] : ARRIVALS[this.state.map as MapId],
     );
     // A refused teleport keeps the old epoch on file, so the next packet asks
     // again; meanwhile the body walks toward the claim at the speed limit.
-    if (result.teleported) {
-      motion.clientEpoch = m.epoch;
-      p.epoch += 1;
-    }
+    if (result.adoptEpoch) motion.clientEpoch = m.epoch;
+    if (result.teleported) p.epoch += 1;
+    if (result.refusedTeleport) this.motionStats.teleportsRefused++;
     p.x = result.pos.x;
     p.y = result.pos.y;
     p.z = result.pos.z;

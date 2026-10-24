@@ -247,14 +247,34 @@ and the server decides what everyone else sees (`src/movement.ts`).
   (sprint is 10.6, a dash briefly 36) with 30 m banked for packets that arrive
   bunched; a longer step is cut short toward the claim.
 - **Teleports:** a change of the client's `epoch` (respawn, round restart,
-  focus dash, Egyptian doors, the fall rescue) skips the speed limit, up to 3
-  back to back and then 1 a second. Each accepted teleport bumps the synced
-  `epoch`, so viewers snap instead of sliding.
+  focus dash, Egyptian doors, the fall rescue) asks to skip the speed limit.
+  - It is granted only to a place the game itself puts bodies: within 2 m
+    (2.5 m vertically) of a spawn pad, a zone's start, a district safe spawn or
+    a doorway's arrival. These come from `src/maps/arrivals.json`, which
+    `scripts/export-colliders.ts` writes from the real map builders and the
+    parity test keeps current.
+  - It is also granted for one hop of up to 18 m within 1 s of a focus dash the
+    server accepted.
+  - Up to 3 teleports back to back, then 1 a second.
+  - Each accepted teleport bumps the synced `epoch`, so viewers snap instead of
+    sliding.
+  - A request for any other jump is not a teleport. Within the movement
+    allowance it is taken as a step: the epoch is settled with no snap, which
+    is what a reconnected client restarting its epochs needs. Further away, the
+    body walks toward it at the speed limit.
+  - Refusals are counted in `motionStats.teleportsRefused`. The browser test
+    asserts the real client never causes one.
+  - Before 2026-10-24, any epoch change put the body anywhere in the map.
 - **Tidying:** yaw is wrapped to (−π, π], pitch clamped to ±π/2, unknown weapon
   names ignored. Moves before the start, or from a dropped seat, are ignored.
 - **Spawn:** bodies start unplaced (`spawned: false`) when a match starts; a
-  client's first move places it. After a reconnect the next move re-places it,
+  client's first move places it, on an arrival point. A first move anywhere
+  else is put on the nearest one. After a reconnect the next move re-places it,
   because a reloaded page runs a fresh engine whose epochs restart.
+- **Known gap:** if no pad is standable, the client's respawn falls back to an
+  open spot 16–34 m away. The server does not recognise that as a jump, so
+  other players see the body walk there at the speed limit (about half a
+  second) instead of snapping.
 
 What this does not do: walls are not checked for movement, so inside those
 limits the client still chooses its path. `firing` is cosmetic (other players

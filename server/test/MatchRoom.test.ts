@@ -10,6 +10,7 @@ import type appConfig from "../src/app.config.js";
 import { testServer } from "./harness.js";
 import { CODE_ALPHABET, CODE_LENGTH } from "../src/rules.js";
 import type { MatchRoom, StartResult } from "../src/rooms/MatchRoom.js";
+import { ARRIVALS, DASH_REACH, isArrival } from "../src/movement.js";
 
 const PORT = 2568; // @colyseus/testing default
 const BASE = `http://localhost:${PORT}`;
@@ -404,6 +405,11 @@ describe("match room", () => {
       ...over,
     });
     const move = (room: ClientRoom, over: Partial<MoveBody> = {}) => room.send("move", body(over));
+    /** Real district arrivals (maps/arrivals.json): the start, and the gate pads at the east and west rims. */
+    const START = ARRIVALS.district[0];
+    const pad = (x: number) => ARRIVALS.district.find((a) => Math.abs(a.x - x) < 1e-6 && Math.abs(a.z) < 1e-6)!;
+    const EAST_GATE = pad(50.8);
+    const WEST_GATE = pad(-50.8);
     const close = (a: number, b: number, eps = 1e-3) => Math.abs(a - b) < eps;
     const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -430,15 +436,72 @@ describe("match room", () => {
     it("places a body on its first move and shows it to the other player", async () => {
       const { h, g } = await playing();
       assert.strictEqual(snapshot(h).players[g.sessionId].spawned, false, "nothing to draw before the first move");
-      move(g, { x: 5, y: 1, z: -3, yaw: 1, pitch: 0.2, moving: true, weapon: "SNIPER" });
+      // a respawn lands on a pad, nudged out of any geometry
+      move(g, { x: START.x + 0.5, y: START.y, z: START.z - 0.3, yaw: 1, pitch: 0.2, moving: true, weapon: "SNIPER" });
       await eventually(() => snapshot(h).players[g.sessionId].spawned, "host sees the guest's body");
       const b = snapshot(h).players[g.sessionId];
-      assert.ok(close(b.x, 5) && close(b.y, 1) && close(b.z, -3), `at ${b.x},${b.y},${b.z}`);
+      assert.ok(close(b.x, START.x + 0.5) && close(b.y, START.y) && close(b.z, START.z - 0.3), `at ${b.x},${b.y},${b.z}`);
       assert.ok(close(b.yaw, 1) && close(b.pitch, 0.2));
       assert.strictEqual(b.moving, true);
       assert.strictEqual(b.alive, true);
       assert.strictEqual(b.weapon, "SNIPER");
       assert.strictEqual(b.epoch, 1);
+    });
+
+    it("puts a first move that is nowhere the game spawns anyone on the nearest pad", async () => {
+      const { h, g } = await playing();
+      move(g, { x: 30, y: 25, z: 30 }); // a rooftop
+      await eventually(() => snapshot(h).players[g.sessionId].spawned, "placed");
+      const b = snapshot(h).players[g.sessionId];
+      assert.ok(isArrival(b, ARRIVALS.district), `on a pad: ${b.x},${b.y},${b.z}`);
+      assert.strictEqual(serverRoom(h.roomId).motionStats.teleportsRefused, 1);
+    });
+
+    it("refuses a teleport to anywhere but a pad or doorway: the body walks instead", async () => {
+      const { h, g } = await playing();
+      move(g, { ...START });
+      await eventually(() => snapshot(h).players[g.sessionId].spawned, "placed");
+      move(g, { x: -40, y: 20, z: -40, epoch: 2 }); // a rooftop across the map
+      await pause(200);
+      const b = serverRoom(h.roomId).state.players.get(g.sessionId)!;
+      assert.strictEqual(b.epoch, 1, "no jump");
+      assert.ok(Math.hypot(b.x - START.x, b.z - START.z) < 35, `walked, not jumped: ${b.x},${b.z}`);
+      assert.ok(serverRoom(h.roomId).motionStats.teleportsRefused >= 1);
+    });
+
+    it("lets an accepted focus dash carry the body to its target", async () => {
+      const { h, g } = await playing();
+      const server = serverRoom(h.roomId);
+      move(g, { ...START });
+      await eventually(() => snapshot(h).players[g.sessionId].spawned, "placed");
+      const hop = { x: START.x, y: START.y, z: START.z - (DASH_REACH - 2) }; // nowhere special
+      assert.strictEqual(isArrival(hop, ARRIVALS.district), false);
+      // the dash rules are combat's (combat-room.test.ts); here only the room's wiring
+      let accept = false;
+      server.combat.dash = () => accept;
+      const dash = { shot: 1, origin: { x: 0, y: 1.6, z: 0 }, dir: { x: 0, y: 0, z: -1 }, lag: 0 };
+      const body = () => server.state.players.get(g.sessionId)!;
+
+      // A refused dash grants no jump. The hop is shorter than the movement
+      // burst, so the body still gets there, but as a step: no new epoch, and
+      // viewers slide rather than snap.
+      g.send("dash", dash);
+      move(g, { ...hop, epoch: 2 });
+      await eventually(() => close(body().z, hop.z), "walked to the hop");
+      assert.strictEqual(body().epoch, 1, "no jump without an accepted dash");
+
+      // back to the start (one message, so let the allowance refill first), and refill again
+      await pause(600);
+      move(g, { ...START, epoch: 2 });
+      await eventually(() => close(body().z, START.z), "back at the start");
+      await pause(600);
+
+      // an accepted dash: a real jump, so viewers snap to the arrival
+      accept = true;
+      g.send("dash", { ...dash, shot: 2 });
+      move(g, { ...hop, epoch: 3 });
+      await eventually(() => body().epoch === 2, "the dash's jump");
+      assert.ok(close(body().z, hop.z));
     });
 
     it("streams ordinary movement without changing the epoch", async () => {
@@ -482,8 +545,10 @@ describe("match room", () => {
 
     it("clamps bodies to the map and tidies angles and weapons", async () => {
       const { h, g } = await playing();
-      move(g, { x: 500, y: -500, z: 0, yaw: 7, pitch: 3, weapon: "BAZOOKA" });
+      move(g, { ...EAST_GATE }); // spawn on the gate pad nearest the edge
       await eventually(() => snapshot(h).players[g.sessionId].spawned, "placed");
+      move(g, { x: 500, y: -500, z: 0, yaw: 7, pitch: 3, weapon: "BAZOOKA" });
+      await eventually(() => snapshot(h).players[g.sessionId].x === 55, "clamped");
       const b = snapshot(h).players[g.sessionId];
       assert.deepStrictEqual([b.x, b.y, b.z], [55, -8, 0]);
       assert.ok(close(b.yaw, 7 - Math.PI * 2), `yaw ${b.yaw}`);
@@ -503,7 +568,7 @@ describe("match room", () => {
 
     it("disconnects a client that sends a malformed body, leaving everyone else as they were", async () => {
       const { h, g } = await playing();
-      move(g, { x: 7 });
+      move(g, { ...START });
       await eventually(() => snapshot(h).players[g.sessionId].spawned, "guest placed");
       serverRoom(h.roomId).reconnectSeconds = 0.05;
       const bad: unknown[] = [
@@ -527,7 +592,7 @@ describe("match room", () => {
         await eventually(() => !snapshot(h).players[m.sessionId], "seat released");
       }
       const b = serverRoom(h.roomId).state.players.get(g.sessionId)!;
-      assert.strictEqual(b.x, 7);
+      assert.ok(close(b.x, START.x) && close(b.z, START.z), "untouched by the malformed bodies");
       assert.strictEqual(serverRoom(h.roomId).state.players.size, 2);
     });
 
@@ -552,7 +617,7 @@ describe("match room", () => {
 
     it("keeps one body through a reconnect and re-spawns it under a new epoch", async () => {
       const { h, g } = await playing();
-      move(g, { x: 10 });
+      move(g, { ...START });
       await eventually(() => snapshot(h).players[g.sessionId]?.spawned === true, "placed");
       const { sessionId, reconnectionToken } = g;
 
@@ -560,9 +625,9 @@ describe("match room", () => {
       await eventually(() => snapshot(h).players[sessionId]?.connected === false, "dropped");
       move(h, { x: 1 }); // the room carries on meanwhile
       const back = await colyseus.sdk.reconnect(reconnectionToken);
-      // a reloaded page runs a fresh engine: its epoch counter starts over
-      back.send("move", body({ x: -40, epoch: 1 }));
-      await eventually(() => close(snapshot(h).players[sessionId]?.x ?? 0, -40), "re-spawned where the new engine says");
+      // a reloaded page runs a fresh engine: its epoch counter starts over, and it spawns on a pad
+      back.send("move", body({ ...WEST_GATE, epoch: 1 }));
+      await eventually(() => close(snapshot(h).players[sessionId]?.x ?? 0, WEST_GATE.x), "re-spawned where the new engine says");
       assert.strictEqual(snapshot(h).players[sessionId].epoch, 2, "viewers snap instead of sliding");
       assert.strictEqual(snapshot(h).players[sessionId].connected, true);
       assert.strictEqual(Object.keys(snapshot(h).players).length, 2);

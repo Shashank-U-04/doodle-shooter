@@ -58,6 +58,25 @@ export type EgyptZone = {
 
 export type Loot = { health?: number; ammo?: number; grenades?: number; score?: number };
 
+/**
+ * Every place a doorway puts a body, in one table: the interactions and the
+ * walk-through thresholds below use these, and the match server accepts a
+ * client's teleport only to one of them or to a spawn pad
+ * (scripts/export-colliders.ts writes them to server/src/maps/arrivals.json).
+ */
+export const DOORWAY_ARRIVALS = {
+  /** the sanctuary's inner door, out to the valley */
+  sanctuaryDoorToValley: { zone: "surface", x: 0, y: 0.2, z: 22, yaw: Math.PI },
+  /** down the hidden stair */
+  hatchToTomb: { zone: "tomb", x: 0, y: -299.8, z: 34, yaw: 0 },
+  /** the tomb's way back up */
+  tombExitToSanctuary: { zone: "interior", x: 0, y: -139.8, z: 5, yaw: Math.PI },
+  /** walking in through the great door's vestibule */
+  greatDoorToSanctuary: { zone: "interior", x: 0, y: -139.8, z: 13, yaw: 0 },
+  /** walking out through the inner door's threshold */
+  innerThresholdToValley: { zone: "surface", x: 0, y: 0.2, z: 21.5, yaw: Math.PI },
+} as const satisfies Record<string, { zone: ZoneId; x: number; y: number; z: number; yaw: number }>;
+
 export type Outcome = {
   tip?: string;
   loot?: Loot;
@@ -1795,7 +1814,7 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
         innerDoorOpen = true;
         return { tip: "outside, the valley glares", sound: "stone" };
       }
-      return { travel: { zone: "surface", x: 0, y: 0.2, z: 22, yaw: Math.PI } };
+      return { travel: DOORWAY_ARRIVALS.sanctuaryDoorToValley };
     },
   });
   add({
@@ -1808,7 +1827,7 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
         hatchOpen = true;
         return { tip: "<b>THE FLOOR GRINDS ASIDE</b> · a stair descends into the dark", sound: "stone" };
       }
-      return { travel: { zone: "tomb", x: 0, y: -299.8, z: 34, yaw: 0 } };
+      return { travel: DOORWAY_ARRIVALS.hatchToTomb };
     },
   });
   F.flush();
@@ -2012,7 +2031,7 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
     pos: new THREE.Vector3(0, -298.4, 40.5),
     radius: 4.4,
     label: () => "CLIMB BACK TO THE SANCTUARY",
-    run: () => ({ travel: { zone: "interior", x: 0, y: -139.8, z: 5, yaw: Math.PI } }),
+    run: () => ({ travel: DOORWAY_ARRIVALS.tombExitToSanctuary }),
   });
 
   // drifting dust — folded into one ink mesh, because the post pass reads the
@@ -2081,12 +2100,12 @@ export function buildEgypt(scene: THREE.Scene): EgyptMap {
         if (!mainDoorOpen) return null;
         // the vestibule behind the great door: step through the threshold
         if (Math.abs(p.x) < 2.0 && p.z < 14.0 && p.z > 10.5) {
-          return { zone: "interior", x: 0, y: -139.8, z: 13, yaw: 0 };
+          return DOORWAY_ARRIVALS.greatDoorToSanctuary;
         }
       } else if (active.id === "interior") {
         if (!innerDoorOpen) return null;
         if (Math.abs(p.x) < 1.9 && p.z > 15.1) {
-          return { zone: "surface", x: 0, y: 0.2, z: 21.5, yaw: Math.PI };
+          return DOORWAY_ARRIVALS.innerThresholdToValley;
         }
       }
       return null;

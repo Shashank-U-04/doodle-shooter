@@ -268,11 +268,12 @@ export class Combat {
     for (let i = 0; i < landed.length; i++) addFocus(a, MELEE.focusGain, now);
   }
 
-  dash(id: string, m: MeleeIntent) {
+  /** A focus dash; true when the server accepted it (the room then allows its teleport). */
+  dash(id: string, m: MeleeIntent): boolean {
     const ctx = this.gate(id, m.shot, m);
-    if (!ctx) return;
+    if (!ctx) return false;
     const { a, now } = ctx;
-    if (!canDash(a, now)) return this.refuse("no-focus");
+    if (!canDash(a, now)) return this.refused("no-focus");
     // tryFocusDash(): the nearest body within range inside the forward cone.
     const zone = this.zoneOf(ctx.p);
     let best: { id: string; feet: Vec3; d: number } | null = null;
@@ -287,13 +288,14 @@ export class Combat {
       }
       if (best) break;
     }
-    if (!best) return this.refuse("no-target");
+    if (!best) return this.refused("no-target");
     a.lastShot = m.shot;
     a.chain += 1;
     a.slowmoUntil = 0;
     this.stats.accepted++;
     this.land(id, MELEE.name, [{ victim: best.id, head: false, point: up(best.feet, MELEE.chestY), damage: FOCUS.damage }]);
     addFocus(a, MELEE.focusGain, now);
+    return true;
   }
 
   throwGrenade(id: string, m: ThrowIntent) {
@@ -474,6 +476,11 @@ export class Combat {
   private refuse(why: Refusal): null {
     this.stats.refused[why] = (this.stats.refused[why] ?? 0) + 1;
     return null;
+  }
+
+  private refused(why: Refusal): false {
+    this.refuse(why);
+    return false;
   }
 }
 
