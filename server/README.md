@@ -63,6 +63,9 @@ server settings; the root `tsc -b` type-checks that code.
 | `PORT` | `2567` | HTTP/WebSocket port |
 | `NODE_ENV` | — | `production` hides `/monitor`, drops the development origins, and loads `.env.production` if present |
 | `ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to use the server, exact `scheme://host[:port]` (e.g. `https://your-app.vercel.app`). No wildcards; invalid entries are logged and ignored |
+| `MAX_ROOMS` | `100` | Live rooms this process holds; a create beyond it is refused (HTTP 429) |
+| `ROOM_CREATES_PER_MINUTE` | `60` | Room creates per minute for the whole process (burst: one minute's worth) |
+| `ROOM_CREATES_PER_IP_PER_MINUTE` | `6` | Room creates per minute per client address. Defence in depth only: the address comes from the first `X-Real-IP`/`X-Forwarded-For` entry, which a client can forge unless the host's proxy overwrites it |
 | `E2E_FIXTURES` | — | `1` mounts the browser smoke tests' fixture route (`src/e2e.ts`). Ignored when `NODE_ENV=production`. **Never set it on a deployed server** |
 
 Do **not** set `E2E_FIXTURES`, `COLYSEUS_CLOUD`, `NODE_APP_INSTANCE`,
@@ -343,3 +346,16 @@ is `""` for no credit).
 
 Room-code uniqueness is tracked in process memory, so run a single process. To
 scale out you would need Colyseus' Redis presence and driver.
+
+**Who can get in.** A room's code is its only lock. Matchmaking exposes only
+`create`, `joinById` and `reconnect` (`app.config.ts`); Colyseus' default `join`
+and `joinOrCreate`, which seat the caller in *any* open room, are switched
+off, and every room is private as well. Before 2026-10-24 both were open, so
+anyone who could reach the server could join a stranger's match without its
+code (`test/access.test.ts`).
+
+**Creating rooms** is limited in three layers (`src/limits.ts`): the live-room
+ceiling, a per-process budget and a per-address budget (see the variables
+above). Refusals answer HTTP 429 with a reason the lobby shows, and are logged
+as `{"event":"create-refused","reason":…,"liveRooms":…}` without the address.
+The defaults are provisional until a load test measures one instance.
