@@ -111,14 +111,15 @@ In the Vercel project → Settings → Environment Variables, add for the
 | `VITE_COLYSEUS_URL` | `https://<server-host>` (https, no trailing path) | `src/game/transport.ts` |
 
 Leave everything else as it is. For reference, the frontend also reads
-`VITE_CONVEX_URL` (`src/main.tsx`, required for the app to boot),
-`VITE_CONVEX_SITE_URL`, `VITE_TURN_URLS`, `VITE_TURN_USERNAME`,
-`VITE_TURN_CREDENTIAL`, `VITE_TURN_CREDENTIALS_URL`, `VITE_NET_DEBUG`
-(`src/game/net.ts`) and `VITE_PEER_HOST`, `VITE_PEER_PORT`, `VITE_PEER_PATH`,
-`VITE_PEER_KEY`, `VITE_PEER_SECURE` (`src/game/signaling.ts`) — all for the
-PeerJS path or Convex, none needed by Colyseus. `VITE_VLY_APP_ID` and
-`VITE_VLY_MONITORING_URL` appear only in `src/instrumentation.tsx`, which
-nothing imports.
+`VITE_CONVEX_URL`, `VITE_CONVEX_SITE_URL`, `VITE_TURN_URLS`,
+`VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL`, `VITE_TURN_CREDENTIALS_URL`,
+`VITE_NET_DEBUG` (`src/game/net.ts`) and `VITE_PEER_HOST`, `VITE_PEER_PORT`,
+`VITE_PEER_PATH`, `VITE_PEER_KEY`, `VITE_PEER_SECURE`
+(`src/game/signaling.ts`) — all for the PeerJS path and its TURN relay, none
+needed by Colyseus. The game itself starts without any of them (since
+2026-10-24 the client no longer initialises Convex at startup).
+`VITE_VLY_APP_ID` and `VITE_VLY_MONITORING_URL` are no longer read by anything
+and can be deleted from Vercel.
 
 These are build-time variables: **redeploy** the Preview after adding them.
 Production keeps none of them, so Production stays on PeerJS.

@@ -254,9 +254,10 @@ The chrome around the game uses a **Studio theme** — gallery-clean, warm off-w
 
 - **Vite + React 19 + TypeScript** — app shell and routing
 - **Three.js** — custom hand-drawn rendering engine (`src/game/`)
-- **PeerJS / WebRTC** — peer-to-peer online play (data channels, no game server)
-- **Tailwind CSS v4 + shadcn/ui** — Studio-themed UI (dashboard, auth, landing chrome)
-- **Convex + Convex Auth** — backend & database (email OTP + guest sign-in)
+- **Colyseus 0.18** — authoritative match server in `server/` (opt-in today via `VITE_NET_TRANSPORT=colyseus`)
+- **PeerJS / WebRTC** — legacy peer-to-peer online play, still the default transport
+- **Tailwind CSS v4 + shadcn/ui** — Studio-themed UI (landing chrome)
+- **Convex** — legacy backend; only its `/turn` route (TURN credentials for PeerJS) is still used. The game starts without it
 - **Framer Motion** — page transitions and UI animation
 
 ## Project Structure
@@ -276,11 +277,9 @@ src/
 ├── pages/
 │   ├── Landing.tsx  # Title screen — START, PLAY ONLINE, settings, controls
 │   ├── Online.tsx   # Match lobby + free-for-all arena
-│   ├── Game.tsx     # In-game HUD, pause, game over
-│   ├── Dashboard.tsx# Signed-in stats page
-│   └── Auth.tsx     # Email OTP / guest sign-in
+│   └── Game.tsx     # In-game HUD, pause, game over
 ├── components/      # shadcn/ui + app components
-└── convex/          # Convex backend (auth, users)
+└── convex/          # Legacy Convex backend (TURN credentials; unused sign-in tables)
 ```
 
 ## Getting Started
@@ -289,7 +288,7 @@ src/
 # install dependencies
 bun install
 
-# start the dev server (Convex dev runs alongside in the Freebuff sandbox)
+# start the dev server
 bun run dev
 ```
 
@@ -303,15 +302,17 @@ Every pull request runs `.github/workflows/ci.yml`: frontend typecheck, lint and
 build (with an initial-load bundle report), the server's `npm run check` on
 Node 22 and 24, and the Playwright smoke tests.
 
-The app expects `VITE_CONVEX_URL` and a Convex deployment (see [Environment](#environment)).
+No environment variables are needed to start the game. Online play over PeerJS
+across networks needs the TURN relay settings below; the Colyseus lobby needs
+`VITE_NET_TRANSPORT` and `VITE_COLYSEUS_URL`.
 
 ## Environment
 
 | Variable | Where | Purpose |
 | --- | --- | --- |
-| `VITE_CONVEX_URL` | Client | Convex backend URL used by the React client |
-| `CONVEX_DEPLOYMENT` | Client env | Ties the client to a specific Convex deployment |
-| `VITE_CONVEX_SITE_URL` | Client | Convex HTTP-actions origin (`https://<deployment>.convex.site`), where `/turn` mints relay credentials. Derived from `VITE_CONVEX_URL` if omitted; set it explicitly in Vercel |
+| `VITE_CONVEX_SITE_URL` | Client | Convex HTTP-actions origin (`https://<deployment>.convex.site`), where `/turn` mints relay credentials for PeerJS. Set it explicitly in Vercel |
+| `VITE_CONVEX_URL` | Client | Only read to derive `VITE_CONVEX_SITE_URL` when that is unset. Nothing else in the client uses Convex |
+| `CONVEX_DEPLOYMENT` | Local env | Ties `npx convex` commands to a deployment |
 | `VITE_PEER_HOST`, `VITE_PEER_PORT`, `VITE_PEER_PATH`, `VITE_PEER_KEY`, `VITE_PEER_SECURE` | Client | Optional self-hosted signaling broker. Unset means the public PeerJS cloud broker |
 | `TURN_URLS` | Convex dashboard | Relay URLs, comma separated. Include a `turns:` entry on port 443 |
 | `TURN_SECRET` | Convex dashboard | Relay shared secret used to mint ephemeral credentials. Server-side only |
@@ -322,7 +323,7 @@ The app expects `VITE_CONVEX_URL` and a Convex deployment (see [Environment](#en
 | `VITE_TURN_CREDENTIALS_URL` | Client | Optional third-party ICE-service endpoint, checked before the built-in one |
 | `VITE_TURN_URLS` | Client | Static fallback: comma-separated `turn:` / `turns:` relay URLs |
 | `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` | Client | Credentials for `VITE_TURN_URLS` (visible to clients — prefer the server-side setup) |
-| `JWKS`, `JWT_PRIVATE_KEY`, `SITE_URL` | Convex dashboard | Convex Auth signing material |
+| `JWKS`, `JWT_PRIVATE_KEY`, `SITE_URL` | Convex dashboard | Convex Auth signing material (the sign-in pages were removed; the backend still defines the provider) |
 
 Never commit `.env` files — set client env in your host's dashboard, and backend env in the Convex dashboard (`npx convex env set`).
 
@@ -339,7 +340,7 @@ This is a single-page app — client-side routing needs a rewrite rule so deep l
 1. Push the repo to GitHub (already connected).
 2. In Vercel: **Add New → Project → Import** the repo.
 3. Framework preset **Vite**. Build command `bun run build` (or `npm run build`), output dir `dist`.
-4. Add the Environment Variables from the table above (`VITE_CONVEX_URL` is required, `VITE_CONVEX_SITE_URL` is strongly recommended so online play can reach the relay endpoint).
+4. Add the Environment Variables from the table above. None is required for the game to start; `VITE_CONVEX_SITE_URL` (or `VITE_CONVEX_URL`) lets PeerJS online play reach the relay endpoint.
 5. **Deploy.** Every push to `main` now ships a new build automatically.
 
 ### Backend (Convex production)
