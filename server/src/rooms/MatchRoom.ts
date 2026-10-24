@@ -12,6 +12,7 @@ import {
 } from "../rules.js";
 import { isOriginAllowed, originPolicy } from "../origins.js";
 import { isCreateRequest, REFUSAL_TEXT, RoomCreationLimiter, roomLimitsFromEnv } from "../limits.js";
+import { metrics } from "../metrics.js";
 import { Combat, type EliminatedEvent, type HitEvent } from "./Combat.js";
 import {
   clampPitch,
@@ -102,6 +103,16 @@ const TOO_MANY_REQUESTS = 429;
  */
 export const roomLimiter = new RoomCreationLimiter(roomLimitsFromEnv.limits);
 
+/** Rooms alive in this process, for the metrics line. */
+const liveRooms = new Set<MatchRoom>();
+
+/** How many rooms and players this process holds right now. */
+export function roomStats(): { rooms: number; players: number } {
+  let players = 0;
+  for (const room of liveRooms) players += room.state.players.size;
+  return { rooms: liveRooms.size, players };
+}
+
 /**
  * One Doodle Shooter match.
  *
@@ -141,6 +152,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       const refusal = roomLimiter.tryCreate(context.ip, liveCodes.size);
       if (refusal) {
         // no address in the log: the reason and the room count are enough to see an abuse pattern
+        metrics.createRefused();
         console.warn(JSON.stringify({ event: "create-refused", reason: refusal, liveRooms: liveCodes.size }));
         throw new ServerError(TOO_MANY_REQUESTS, REFUSAL_TEXT[refusal]);
       }
@@ -255,8 +267,14 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     this.state.grapple = opts.grapple;
     this.state.maxPlayers = opts.maxPlayers;
     this.setPatchRate(PATCH_INTERVAL_MS);
-    // regen, grenade fuses and late respawns
-    this.setSimulationInterval(() => this.combat.tick(), PATCH_INTERVAL_MS);
+    // regen, grenade fuses and late respawns, timed for the metrics line
+    this.setSimulationInterval(() => {
+      const started = performance.now();
+      this.combat.tick();
+      metrics.tick(performance.now() - started);
+    }, PATCH_INTERVAL_MS);
+    liveRooms.add(this);
+    metrics.roomCreated();
   }
 
   onJoin(client: Client, options: unknown) {
@@ -322,5 +340,6 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
   onDispose() {
     liveCodes.delete(this.roomId);
+    if (liveRooms.delete(this)) metrics.roomDisposed();
   }
 }
