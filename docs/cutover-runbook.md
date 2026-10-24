@@ -142,13 +142,15 @@ Every line must say PASS. A run against the live server on 2026-10-24
     - On Render: 4000 in 88–145 ms.
     - The other player's roster updated immediately.
     - No reconnection 25 s later.
-  - **Still affected** (server-initiated, not fixable from the client alone):
-    - A kicked client sees a late 1006.
-    - A server restart or deploy reaches players as a late 1006, so the
-      "match server restarted" screen will not appear on Render. Players see
-      "lost the connection" after the SDK's retries instead.
-  - `check:hosted` still reports its two LEAVE checks as FAIL against Render.
-    They use the SDK's plain `leave()`, which waits for the server's close.
+  - **Restarts and deploys (PR #11).** Before closing every room, the server
+    now broadcasts a `server-closing` message, which does get through. Clients
+    show "The match server restarted…" at once and close from their side.
+    Without this, a restart reached hosted players as a late 1006 followed by
+    about a minute of reconnecting.
+  - **Still affected:** a validation kick reaches a hosted client as a late
+    1006. Only a broken or hostile client is ever kicked.
+  - `check:hosted` leaves the way the game does (all leave checks pass on
+    Render) and reports, as INFO, that server-initiated closes are still lost.
 - **Matchmaking error bodies are replaced on Render.**
   - Colyseus answers matchmaking errors with HTTP 520–524, the codes Cloudflare
     uses for its own errors, so Cloudflare swaps the JSON body for its error

@@ -26,7 +26,7 @@ import { normalizeMatchConfig, type MatchConfig } from "./maps";
 import type { NetPlayer, SignalState } from "./net";
 import type { NetCombatIntent, NetPlayerState, NetShotOrigin } from "./types";
 import { readColyseusUrl, viteEnv, type MatchHandlers, type MatchSession } from "./transport";
-import { MOVE_RATE_HZ, NAME_MAX, RECONNECT_SECONDS } from "../../server/src/shared/rules.js";
+import { MOVE_RATE_HZ, NAME_MAX, RECONNECT_SECONDS, SERVER_CLOSING_MESSAGE } from "../../server/src/shared/rules.js";
 
 /** sessionStorage key for this tab's seat; separate from the PeerJS lease. */
 export const SEAT_KEY = "dd_colyseus_seat";
@@ -51,6 +51,9 @@ export const WAKE_HINT = "WAKING THE MATCH SERVER — A SLEEPING SERVER CAN TAKE
  */
 export const JOIN_TIMEOUT_MS = 90_000;
 export const JOIN_TIMEOUT_TEXT = "The match server did not answer in time. It may still be waking up — press TRY AGAIN.";
+/** What the arena says when the match server restarted (or redeployed) under a match. */
+const RESTARTED_TEXT = "The match server restarted, so this match has ended. Create or join a match again.";
+
 /** @colyseus/shared-types CloseCode.SERVER_SHUTDOWN (not imported: the SDK loads on demand) */
 const SERVER_SHUTDOWN = 4001;
 /**
@@ -517,12 +520,23 @@ export class ColyseusSession implements MatchSession {
       if (code === SERVER_SHUTDOWN) {
         // a redeploy or restart: every room on the server has gone with it
         clearSeat(this.storage);
-        this.fail("The match server restarted, so this match has ended. Create or join a match again.");
+        this.fail(RESTARTED_TEXT);
         return;
       }
       // The seat is kept: the server may still be holding it, and joining
       // again from this tab tries the token first (a dead one is then cleared).
       this.fail("Lost the connection to the match server and could not get back in. Join again.");
+    });
+    // The server says it is shutting down. Its close (SERVER_SHUTDOWN) may never
+    // arrive (the Render deployment loses closes the server starts), so treat
+    // the notice as the close: end the match here and close from this side.
+    room.onMessage(SERVER_CLOSING_MESSAGE, () => {
+      if (this.phase === "closed") return;
+      this.logConnection(room, "server shutting down (told by message)");
+      clearSeat(this.storage);
+      this.room = null;
+      this.fail(RESTARTED_TEXT);
+      void leaveRoom(room).catch(() => {});
     });
     room.onError((code, message) => this.logConnection(room, "error", code, message));
     room.onMessage("hit", (e: HitEvent) => this.onHitEvent(e));
