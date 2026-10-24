@@ -27,6 +27,7 @@ Open PRs (each targets the one before it, so it shows only its own change):
 | #7 | `feat/server-metrics` → #6 | one JSON metrics line a minute |
 | #8 | `fix/teleport-destinations` → #7 | **security**: teleports only to arrival points |
 | #9 | `feat/perf-benchmark` → #8 | frame-time benchmark and baseline |
+| #10 | `fix/hosted-leave` → #9 | leaving a hosted room (includes #4) |
 
 **The live Render server (`dc14d7a`) has both security holes that #6 and #8
 fix.**
@@ -34,8 +35,17 @@ fix.**
   /matchmake/join/match`).
 - A modified client can teleport anywhere.
 
-Deploy a branch that contains them, `feat/perf-benchmark` (the top of the
-stack) or anything above #8, rather than `feat/multiplayer-gameplay-polish`.
+Deploy `fix/hosted-leave` (#10, the top of the stack), not
+`feat/multiplayer-gameplay-polish`. It has both security fixes and the client's
+leave fix, and includes this runbook and the current `check:hosted`.
+Confirmed on 2026-10-24: the live server still runs pre-S4d code (a new host
+starts with 120 HP), so neither fix is deployed yet.
+
+The Preview origin for that branch, from Vercel's comment on PR #10, is
+`https://doodle-shooter-git-fix-hos-09d23f-shashank-us-projects-ca6e75e5.vercel.app`.
+It stays the same across pushes. It is behind Vercel Authentication: testers
+need access to the Vercel project, or a share link from the deployment's
+**Share** button.
 
 ## 1. Align the Preview server with the client (manual, Render dashboard)
 
@@ -44,9 +54,9 @@ The `4109ee0` client expects 100 HP and the PvP damage table (S4d). Render runs
 any Preview match is a mismatched pair.
 
 1. Render → `doodle-shooter-match` → **Settings → Build & Deploy → Branch**:
-   `feat/perf-benchmark` (the top of the stack: the migration plus both
-   security fixes). The Vercel Preview the testers use must be a build of the
-   same branch, so client and server match.
+   `fix/hosted-leave` (the top of the stack: the migration, both security
+   fixes and the leave fix). The Vercel Preview the testers use must be a build
+   of the same branch, so client and server match.
    - Optional server variables: `MAX_ROOMS`, `ROOM_CREATES_PER_MINUTE`,
      `ROOM_CREATES_PER_IP_PER_MINUTE` and `METRICS_INTERVAL_S` (see
      `server/README.md`). The defaults suit a playtest.
