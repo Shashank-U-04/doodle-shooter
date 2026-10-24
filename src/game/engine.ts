@@ -33,6 +33,7 @@ import type { MapId } from "./maps";
 import { makeBlobRig, makeMummyRig, makeRig, makeWaspRig, type Rig } from "./rig";
 import type { NetCombatIntent, NetShotLanded } from "./types";
 import { KATANA_MELEE, PVP, WEAPONS } from "./arsenal";
+import { PerfProbe, perfRequested } from "./perf";
 import { ED, PR, QR, VR, XN, XN_AIR, CI, JN, BASE_FOV, type EnemyKind, type EnemyDef } from "./enemies-data";
 import type { EngineCallbacks, GameHandle, HudState, NetPlayerState, NetRemotePlayer, NetShotOrigin } from "./types";
 
@@ -3802,12 +3803,17 @@ export function createGame(
   let raf = 0;
   let last = performance.now();
   let stepFaulted = false;
+  // ?perf=1 only (src/game/perf.ts): frame timing for scripts/bench.mjs
+  const perf = perfRequested(window.location.search) ? new PerfProbe(renderer, opts.map ?? "district") : null;
   const loop = () => {
     // scheduled first, so the picture keeps coming even if a frame throws
     raf = requestAnimationFrame(loop);
     const now = performance.now();
     const dt = Math.min(0.033, (now - last) / 1000);
     last = now;
+    const began = perf ? perf.begin() : 0;
+    // a benchmark turns the view at a fixed rate, so every run samples the same angles
+    if (perf && state !== "playing") player.yaw += perf.spin * dt;
     try {
       district.update(now * 0.001);
       step(dt);
@@ -3819,6 +3825,7 @@ export function createGame(
         console.error("[doodle district] frame error", err);
       }
     }
+    perf?.end(began);
   };
 
   const onResize = () => {
