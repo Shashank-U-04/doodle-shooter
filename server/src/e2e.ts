@@ -11,7 +11,7 @@
 // app.config.ts. Never set E2E_FIXTURES on a deployed server.
 
 import express, { type Application } from "express";
-import { CloseCode, matchMaker } from "colyseus";
+import { matchMaker } from "colyseus";
 import { KILLS_TO_WIN } from "./combat.js";
 import type { MatchRoom } from "./rooms/MatchRoom.js";
 import type { Player } from "./rooms/schema/MatchState.js";
@@ -54,13 +54,15 @@ export function mountE2eFixtures(app: Application) {
 
   /**
    * POST /__e2e/rooms/:code/shutdown — what a host's SIGTERM does to each room
-   * (matchMaker.gracefullyShutdown → disconnect with SERVER_SHUTDOWN), for one
-   * room, so a browser test can watch the players' side of a server restart.
+   * (matchMaker.gracefullyShutdown → room.onBeforeShutdown: the restart notice,
+   * then the close with SERVER_SHUTDOWN), for one room, so a browser test can
+   * watch the players' side of a server restart.
    */
-  app.post("/__e2e/rooms/:code/shutdown", async (req, res) => {
+  app.post("/__e2e/rooms/:code/shutdown", (req, res) => {
     const room = matchMaker.getLocalRoomById(String(req.params.code).toUpperCase());
     if (!room) return void res.status(404).json({ error: "no such room" });
-    await room.disconnect(CloseCode.SERVER_SHUTDOWN);
+    // the room's own shutdown hook, exactly what SIGTERM calls: the notice, then the close
+    room.onBeforeShutdown();
     res.json({ ok: true });
   });
 }

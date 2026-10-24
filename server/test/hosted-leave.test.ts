@@ -218,4 +218,24 @@ describe("leaving through a hosting path that loses server-initiated closes", ()
     await pause(DROP_AFTER_MS + 500);
     assert.strictEqual(proxy.reconnectRequests, 0);
   });
+
+  it("a server restart reaches every player at once, with the reason, and nobody reconnects", async () => {
+    const host = open("", "Ada", true);
+    await eventually(() => host.joined && host.code.length === 4, "host room open");
+    const guest = open(host.code, "Grace", false);
+    await eventually(() => guest.joined && host.getPlayers().length === 2, "both in the room");
+    const lost: Record<string, string[]> = { host: [], guest: [] };
+    host.setHandlers({ onLost: (t) => lost.host.push(t) });
+    guest.setHandlers({ onLost: (t) => lost.guest.push(t) });
+
+    // what a SIGTERM does to each room (matchMaker.gracefullyShutdown)
+    colyseus.getRoomById<MatchRoom>(host.code).onBeforeShutdown();
+
+    await eventually(() => lost.host.length > 0 && lost.guest.length > 0, "both players told", 1000);
+    for (const who of ["host", "guest"] as const) assert.match(lost[who][0], /match server restarted/, who);
+    // past the moment the path would have dropped the sockets: no retries against a server that is going away
+    await pause(DROP_AFTER_MS + 1000);
+    assert.strictEqual(proxy.reconnectRequests, 0, "no reconnection attempts");
+    for (const s of [host, guest]) assert.strictEqual(roomOf(s), null, "the session let its room go");
+  });
 });

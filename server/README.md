@@ -361,8 +361,14 @@ is `""` for no credit).
   sends LEAVE (the server handles it first, as a consented leave), then closes
   the socket itself with 4000, and never reconnects.
   `test/hosted-leave.test.ts` and `e2e/hosted-leave.spec.ts` reproduce the
-  path and fail without this. Kicks and shutdowns still reach hosted clients
-  as a late 1006 (see `docs/cutover-runbook.md`).
+  path and fail without this.
+- **Restarts** (SIGTERM on a deploy or restart) use the same workaround the
+  other way round: `MatchRoom.onBeforeShutdown` broadcasts `server-closing`
+  (`SERVER_CLOSING_MESSAGE` in `src/shared/rules.ts`) before the default close
+  with SERVER_SHUTDOWN. Messages do reach hosted clients, so they show "The
+  match server restarted…" at once and close from their side, instead of a
+  late 1006 and a minute of reconnecting. A validation kick still reaches a
+  hosted client as a late 1006; only a broken or hostile client gets one.
 - **Dropping** (reload, closed tab, lost network) holds the seat for
   `RECONNECT_SECONDS` (30, in `src/rules.ts`); the roster shows it with
   `connected: false`. Only `client.reconnect(room.reconnectionToken)` can take it

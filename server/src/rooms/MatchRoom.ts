@@ -11,6 +11,7 @@ import {
   type MapId,
 } from "../rules.js";
 import { isOriginAllowed, originPolicy } from "../origins.js";
+import { SERVER_CLOSING_MESSAGE } from "../shared/rules.js";
 import { isCreateRequest, REFUSAL_TEXT, RoomCreationLimiter, roomLimitsFromEnv } from "../limits.js";
 import { metrics } from "../metrics.js";
 import { Combat, type EliminatedEvent, type HitEvent } from "./Combat.js";
@@ -350,6 +351,16 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       next.isHost = true;
       next.ready = true;
     }
+  }
+
+  /**
+   * The process is shutting down (SIGTERM on a deploy or restart). Tell every
+   * player first: the default then closes them all with SERVER_SHUTDOWN, but
+   * on Render that close never reaches them and the message does.
+   */
+  onBeforeShutdown() {
+    this.broadcast(SERVER_CLOSING_MESSAGE, {});
+    super.onBeforeShutdown();
   }
 
   onDispose() {
