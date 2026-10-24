@@ -13,7 +13,7 @@
     "forceConsistentCasingInFileNames": true,
     "useDefineForClassFields": false
   },
-  "exclude": ["test/frontend-adapter.test.ts", "test/geometry.test.ts", "test/combat-parity.test.ts", "test/shared-parity.test.ts"],
+  "exclude": ["test/frontend-adapter.test.ts", "test/geometry.test.ts", "test/combat-parity.test.ts", "test/shared-parity.test.ts", "test/hosted-leave.test.ts"],
   "include": [
     "src",
     "test",

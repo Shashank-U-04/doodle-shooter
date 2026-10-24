@@ -99,19 +99,63 @@ check(
   (await fetch(`${server}/__e2e/rooms/TEST/win`, { method: "POST" })).status === 404,
 );
 
-// 5. a real room: create, join by code, both see two players
+// 5. a real room: create, join by code, both see two players, both leave cleanly
+const LEAVE_TIMEOUT_MS = 5000;
+const CONSENTED = 4000;
+type CheckRoom = {
+  roomId: string;
+  state: unknown;
+  reconnection: { enabled: boolean };
+  connection: { close(code?: number, reason?: string): void };
+  leave(consented?: boolean): Promise<number>;
+  onLeave(cb: (code: number) => void): void;
+  send(type: string, message: unknown): void;
+};
+const within = <T>(p: Promise<T>, ms: number) =>
+  Promise.race([p, new Promise<"timeout">((r) => setTimeout(() => r("timeout"), ms))]);
+/**
+ * Leave as the game does (leaveRoom in src/game/colyseus.ts): announce the
+ * leave, then close from this side. Render loses closes the server starts, so
+ * the SDK's plain leave() would wait for a close that never comes.
+ */
+const leaveAsTheGame = (room: CheckRoom) => {
+  room.reconnection.enabled = false;
+  const left = room.leave(true);
+  room.connection.close(CONSENTED, "consented");
+  return within(left, LEAVE_TIMEOUT_MS);
+};
 try {
   const client = new Client(server);
-  const host = await client.create("match", { name: "CHECK" });
-  const guest = await client.joinById(host.roomId, { name: "CHECK2" });
+  const host = (await client.create("match", { name: "CHECK" })) as unknown as CheckRoom;
+  const guest = (await client.joinById(host.roomId, { name: "CHECK2" })) as unknown as CheckRoom;
   const seen = () => (host.state as { players?: { size: number } }).players?.size;
-  const deadline = Date.now() + 5000;
+  let deadline = Date.now() + 5000;
   while (seen() !== 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
   check("a room can be created and joined by code", seen() === 2, `room ${host.roomId}`);
-  await guest.leave();
-  await host.leave();
+  const guestLeft = await leaveAsTheGame(guest);
+  check("a guest's LEAVE completes (close code 4000)", guestLeft === CONSENTED, `got ${guestLeft}`);
+  deadline = Date.now() + 5000;
+  while (seen() !== 1 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  check("the host sees the guest gone at once (seat released, not held)", seen() === 1, `players ${seen()}`);
+  const hostLeft = await leaveAsTheGame(host);
+  check("the last player's LEAVE completes (close code 4000)", hostLeft === CONSENTED, `got ${hostLeft}`);
 } catch (e) {
   check("a room can be created and joined by code", false, String(e));
+}
+
+// 6. information, not a pass/fail: does a close the *server* starts reach the
+// client? (Render lost them on 2026-10-24; kicks and shutdowns then arrive as a
+// late 1006.) A malformed message makes the server close this probe's own room.
+try {
+  const probe = (await new Client(server).create("match", { name: "CHECK3" })) as unknown as CheckRoom;
+  probe.reconnection.enabled = false;
+  const closed = new Promise<number>((r) => probe.onLeave(r));
+  probe.send("move", { x: "not a number" });
+  const code = await within(closed, LEAVE_TIMEOUT_MS);
+  console.log(`INFO  a server-initiated close reaches the client — ${code === "timeout" ? `no: nothing within ${LEAVE_TIMEOUT_MS / 1000} s (the hosting path loses it)` : `yes: code ${code}`}`);
+  if (code === "timeout") probe.connection.close(CONSENTED);
+} catch (e) {
+  console.log(`INFO  a server-initiated close reaches the client — could not tell (${String(e)})`);
 }
 
 console.log(`\n${failures === 0 ? "ALL PASSED" : `${failures} FAILED`}`);

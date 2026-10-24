@@ -237,7 +237,7 @@ export default function Online() {
   // once. The timer keeps React StrictMode's mount → cleanup → mount cycle from
   // opening a room that the cleanup has already torn down.
   // A guest's room code is read once and then taken off the URL, so a reload
-  // behaves as it always has (old ?code= links lose theirs to Convex Auth; see
+  // behaves as it always has (old ?code= links are still read; see
   // ROOM_PARAM). With the Colyseus transport a reload resumes the held seat
   // on its own instead (see colyseus.ts).
   useEffect(() => {
