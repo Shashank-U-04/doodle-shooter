@@ -99,7 +99,12 @@ check(
   (await fetch(`${server}/__e2e/rooms/TEST/win`, { method: "POST" })).status === 404,
 );
 
-// 5. a real room: create, join by code, both see two players
+// 5. a real room: create, join by code, both see two players, both leave cleanly
+/** A consented leave: the server closes the socket with CONSENTED (4000). Bounded, so a lost close frame fails instead of hanging. */
+const LEAVE_TIMEOUT_MS = 5000;
+const CONSENTED = 4000;
+const leaveWithin = (room: { leave(consented?: boolean): Promise<number> }) =>
+  Promise.race([room.leave(true), new Promise<"timeout">((r) => setTimeout(() => r("timeout"), LEAVE_TIMEOUT_MS))]);
 try {
   const client = new Client(server);
   const host = await client.create("match", { name: "CHECK" });
@@ -108,8 +113,12 @@ try {
   const deadline = Date.now() + 5000;
   while (seen() !== 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
   check("a room can be created and joined by code", seen() === 2, `room ${host.roomId}`);
-  await guest.leave();
-  await host.leave();
+  // If the close frame never arrives (seen through Render's proxy on 2026-10-24,
+  // never locally), the SDK treats the leave as a drop and keeps reconnecting.
+  const guestLeft = await leaveWithin(guest);
+  check("a guest's LEAVE completes (close code 4000)", guestLeft === CONSENTED, `got ${guestLeft}`);
+  const hostLeft = await leaveWithin(host);
+  check("the last player's LEAVE completes (close code 4000)", hostLeft === CONSENTED, `got ${hostLeft}`);
 } catch (e) {
   check("a room can be created and joined by code", false, String(e));
 }
