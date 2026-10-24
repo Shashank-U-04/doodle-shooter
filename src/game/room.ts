@@ -24,10 +24,10 @@ export const ROOM_LEASE_KEY = "dd_room";
 /**
  * The query parameter that carries a room code to /online (`/online?room=K7QM`).
  *
- * Not `code`: Convex Auth treats `?code=` on any page as its sign-in callback.
- * It strips the parameter, sends the value to the Convex deployment as a
- * sign-in code and, when that fails (a room code always does), clears the
- * player's session, signing them out. `code` is still read for old links.
+ * Not `code`: when the app ran Convex Auth, it treated `?code=` on any page as
+ * its sign-in callback, stripped it, and signed the player out when the room
+ * code failed as a sign-in code. That provider is gone; `code` is still read
+ * for old links.
  */
 export const ROOM_PARAM = "room";
 export const LEGACY_ROOM_PARAM = "code";

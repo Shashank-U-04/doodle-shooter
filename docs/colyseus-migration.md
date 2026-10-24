@@ -61,7 +61,7 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
 | `rematch` host-only: scores cleared, engine reset | `rematch`, `beginRematch` | `rematch` message, host-only; server resets and bumps `round`; the button follows the current host, so a promoted guest can rematch | S3C ✓ |
 | `ping`/`pong` every 2 s → half-RTT feeds aim lead/rewind | `startPinging`, `noteRtt` | SDK `room.ping` every 2 s; sent as each attack's `lag` for server-side rewind (the engine no longer leads targets) | S3B ✓ |
 | TURN credentials, ICE plan, signaling diagnostics | `net.ts`, `signaling.ts`, `convex/turn.ts` | Not needed over WebSockets; retired with PeerJS | S5 |
-| Convex auth (`@convex-dev/auth`) | `src/convex/auth*`, `use-auth.ts` | Out of scope; keep until a persistence/auth decision (Supabase deferred) | later |
+| Convex auth (`@convex-dev/auth`) | `src/convex/auth*` | Client side removed 2026-10-24 (no provider, no `/auth` or `/dashboard`; nothing in the game used them). The backend stays until PeerJS's `/turn` is retired | client ✓ |
 
 ## What cannot move to the server yet
 
