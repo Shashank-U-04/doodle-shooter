@@ -114,16 +114,38 @@ Every line must say PASS. A run against the live server on 2026-10-24
 
 - **CORS and WebSocket refused the per-deployment Preview origins.** Fix with
   step 2.
-- **Consented LEAVE never completes.**
-  - Through Render, both players' `room.leave()` timed out after 5 s with no
-    close event. The SDK then treats it as a drop and retries reconnection for
-    about a minute.
-  - Against a local server, with the same code, it completes in about 0.5 s
-    with close code 4000.
-  - Not yet diagnosed. Suspected: the close frame is lost between Render's
-    proxy and the client. Re-test after step 1. If it persists, a player who
-    leaves a hosted match keeps reconnecting in the background, which matters
-    before Production.
+- **Consented LEAVE never completed: diagnosed and fixed in the client (PR #10).**
+  - **Cause.** Through Render, any WebSocket close the server starts is lost on
+    the way to the client:
+    - a consented leave's 4000;
+    - a validation kick's 4002.
+    The client gets nothing, then an abnormal 1006 about 20 s later. The SDK
+    took that for a drop and retried reconnection for about a minute.
+  - **Evidence (socket traces, 2026-10-24):**
+    - Client-initiated closes complete through Render in about 90 ms.
+    - Ping round trips work.
+    - The server *did* process the leave: the room was gone 3 s later.
+    - The deployed revision `dc14d7a`, built and started the way Render does
+      under Node 24, closes cleanly locally.
+  - **Fix.** `leaveRoom()` sends LEAVE and then closes from the client with
+    4000, with reconnection off.
+    - On Render: 4000 in 88–145 ms.
+    - The other player's roster updated immediately.
+    - No reconnection 25 s later.
+  - **Still affected** (server-initiated, not fixable from the client alone):
+    - A kicked client sees a late 1006.
+    - A server restart or deploy reaches players as a late 1006, so the
+      "match server restarted" screen will not appear on Render. Players see
+      "lost the connection" after the SDK's retries instead.
+  - `check:hosted` still reports its two LEAVE checks as FAIL against Render.
+    They use the SDK's plain `leave()`, which waits for the server's close.
+- **Matchmaking error bodies are replaced on Render.**
+  - Colyseus answers matchmaking errors with HTTP 520–524, the codes Cloudflare
+    uses for its own errors, so Cloudflare swaps the JSON body for its error
+    page.
+  - The status code survives (an unknown code still shows "No match with code
+    X"), but the message does not. A *full* room is reported as an unknown
+    code on Render.
 - Passed: health, refusal of foreign origins (CORS, matchmaking and WebSocket),
   production mode (`/monitor` and test fixtures absent), and creating and
   joining a room by code.

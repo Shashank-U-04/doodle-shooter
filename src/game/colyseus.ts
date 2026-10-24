@@ -213,6 +213,32 @@ export function describeJoinError(err: unknown, code: string, url: string): stri
   return `Could not reach the match server at ${url}. Check that it is running and that this site is in its ALLOWED_ORIGINS.`;
 }
 
+/** Colyseus' close code for leaving on purpose. */
+const CONSENTED = 4000;
+
+/**
+ * Leave a room on purpose.
+ *
+ * The SDK's consented leave tells the server (LEAVE_ROOM) and waits for the
+ * server to close the socket with CONSENTED. Through the Render deployment that
+ * server-initiated close never arrives: socket traces on 2026-10-24 showed every
+ * close the server starts reaching the client as an abnormal 1006 about 20 s
+ * later, while a close the client starts completes in one round trip (the same
+ * build, run locally, closes cleanly every time). The SDK read that 1006 as a
+ * dropped connection and spent a minute reconnecting to a seat the server had
+ * already removed.
+ *
+ * So: announce the leave (the server handles it first, in order, as a consented
+ * leave), close the socket from this side with the same code, and never
+ * reconnect. Resolves with the close code, CONSENTED when all went well.
+ */
+export function leaveRoom(room: Room): Promise<number> {
+  room.reconnection.enabled = false;
+  const left = room.leave(true);
+  room.connection?.close(CONSENTED, "consented");
+  return left;
+}
+
 // The SDK chunk, loaded once per page, on demand: a PeerJS build never downloads it.
 let sdkLoad: Promise<typeof import("@colyseus/sdk")> | null = null;
 function loadSdk() {
@@ -384,7 +410,7 @@ export class ColyseusSession implements MatchSession {
     if (!room) return;
     if (this.phase === "closed") {
       // LEAVE was pressed, or we gave up waiting, while still connecting.
-      void room.leave(true).catch(() => {});
+      void leaveRoom(room).catch(() => {});
       return;
     }
     this.attach(room);
@@ -400,7 +426,7 @@ export class ColyseusSession implements MatchSession {
     if (room) {
       this.room = null;
       clearSeat(this.storage);
-      void room.leave(true).catch(() => {});
+      void leaveRoom(room).catch(() => {});
     }
   }
 
@@ -530,7 +556,7 @@ export class ColyseusSession implements MatchSession {
     clearSeat(this.storage);
     const room = this.room;
     this.room = null;
-    if (room) void room.leave(true).catch(() => {});
+    if (room) void leaveRoom(room).catch(() => {});
     this.setSignal("closed");
   }
 

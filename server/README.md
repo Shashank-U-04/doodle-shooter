@@ -350,6 +350,19 @@ is `""` for no credit).
 ## Leaving and reconnecting
 
 - **Leaving on purpose** (`room.leave()`) frees the seat at once.
+- **Server-initiated closes are lost on Render.** Traces on 2026-10-24 showed
+  that any close the *server* starts never reaches the client through the
+  Render deployment (its edge is fronted by Cloudflare). This covers the close
+  after a consented leave (4000), a validation kick (4002) and, by the same
+  path, a shutdown close. The client sees nothing, then an abnormal 1006 about
+  20 s later. A close the *client* starts completes in one round trip. The same
+  build, run locally under the same Node version, closes cleanly every time.
+  So the game client leaves with `leaveRoom()` (`src/game/colyseus.ts`): it
+  sends LEAVE (the server handles it first, as a consented leave), then closes
+  the socket itself with 4000, and never reconnects.
+  `test/hosted-leave.test.ts` and `e2e/hosted-leave.spec.ts` reproduce the
+  path and fail without this. Kicks and shutdowns still reach hosted clients
+  as a late 1006 (see `docs/cutover-runbook.md`).
 - **Dropping** (reload, closed tab, lost network) holds the seat for
   `RECONNECT_SECONDS` (30, in `src/rules.ts`); the roster shows it with
   `connected: false`. Only `client.reconnect(room.reconnectionToken)` can take it
