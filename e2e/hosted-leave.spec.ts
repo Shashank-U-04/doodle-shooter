@@ -9,7 +9,7 @@
 // opens no new socket, asks for no reconnection, and the host sees one player.
 import { expect, test } from "./fixtures";
 import { E2E_SERVER_PORT } from "./env";
-import { intoArena, player } from "./helpers";
+import { intoArena, overlay, player } from "./helpers";
 
 type SocketLog = { opened: number; closes: { code: number; clean: boolean; at: number }[]; leaveClickedAt: number };
 
@@ -25,10 +25,11 @@ type SocketLog = { opened: number; closes: { code: number; clean: boolean; at: n
 // up with (routeWebSocket installs its stand-in after this script runs).
 const RECORD_SOCKETS = `
   window.__ws = { opened: 0, closes: [], leaveClickedAt: 0 };
-  // when the page itself handles the LEAVE click (Playwright's click() first
-  // waits for the button to be actionable, which is not the game's time)
+  // when the page itself handles a LEAVE MATCH click (Playwright's click()
+  // first waits for the button to be actionable, which is not the game's time)
   document.addEventListener("click", (e) => {
-    if (e.target instanceof Element && e.target.closest(".dd-exit")) window.__ws.leaveClickedAt = performance.now();
+    const button = e.target instanceof Element ? e.target.closest("button") : null;
+    if (button && button.textContent.includes("LEAVE MATCH")) window.__ws.leaveClickedAt = performance.now();
   }, true);
   const wrap = (Impl) => new Proxy(Impl, {
     construct(target, args) {
@@ -89,7 +90,14 @@ test("leaving a match closes at once and never reconnects, even when the server'
   await expect(host.locator(".dd-hud-tr .wave")).toHaveText("FREE FOR ALL 2");
   const before = (await sockets()).opened;
 
-  await guest.locator(".dd-exit").click();
+  // Leave the way a player does. The engine may hold pointer lock (granted
+  // when the match starts right after the guest's I'M READY click), and while
+  // the mouse is captured every click goes to the canvas, so the top LEAVE
+  // button cannot be clicked (CI traces, 2026-10-24). Escape releases the
+  // mouse and pauses; the PAUSED panel has its own LEAVE MATCH.
+  await guest.keyboard.press("Escape");
+  await expect(overlay(guest).locator("h1")).toHaveText("PAUSED");
+  await overlay(guest).getByRole("button", { name: /LEAVE MATCH/ }).click();
 
   await expect
     .poll(async () => (await sockets()).closes.map((c) => c.code), { message: "the room socket closed", timeout: 2000 })
