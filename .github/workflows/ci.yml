@@ -57,11 +57,20 @@ jobs:
         working-directory: server
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: server/package-lock.json
+      # The parity and geometry tests import the frontend's own map builders
+      # and weapon tables (three.js included) to check the server against
+      # them, so the frontend's dependencies must be installed too.
+      - name: Install frontend (for the parity tests)
+        run: bun install --frozen-lockfile
+        working-directory: .
       - name: Install
         run: npm ci
       # typecheck, lint, unit/integration tests and the production build
