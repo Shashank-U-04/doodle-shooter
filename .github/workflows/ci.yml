@@ -108,4 +108,7 @@ jobs:
         with:
           name: e2e-results
           path: e2e/.results
+          # the folder starts with a dot, and upload-artifact v4 skips hidden
+          # files unless told otherwise: without this nothing was ever uploaded
+          include-hidden-files: true
           retention-days: 7
