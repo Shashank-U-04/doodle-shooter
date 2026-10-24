@@ -66,6 +66,7 @@ server settings; the root `tsc -b` type-checks that code.
 | `MAX_ROOMS` | `100` | Live rooms this process holds; a create beyond it is refused (HTTP 429) |
 | `ROOM_CREATES_PER_MINUTE` | `60` | Room creates per minute for the whole process (burst: one minute's worth) |
 | `ROOM_CREATES_PER_IP_PER_MINUTE` | `6` | Room creates per minute per client address. Defence in depth only: the address comes from the first `X-Real-IP`/`X-Forwarded-For` entry, which a client can forge unless the host's proxy overwrites it |
+| `METRICS_INTERVAL_S` | `60` | Seconds per metrics line (see [Metrics](#metrics)); `0` turns it off |
 | `E2E_FIXTURES` | — | `1` mounts the browser smoke tests' fixture route (`src/e2e.ts`). Ignored when `NODE_ENV=production`. **Never set it on a deployed server** |
 
 Do **not** set `E2E_FIXTURES`, `COLYSEUS_CLOUD`, `NODE_APP_INSTANCE`,
@@ -359,3 +360,21 @@ ceiling, a per-process budget and a per-address budget (see the variables
 above). Refusals answer HTTP 429 with a reason the lobby shows, and are logged
 as `{"event":"create-refused","reason":…,"liveRooms":…}` without the address.
 The defaults are provisional until a load test measures one instance.
+
+## Metrics
+
+While anything is happening, the server logs one JSON line per
+`METRICS_INTERVAL_S` (`src/metrics.ts`), for example:
+
+```json
+{"event":"metrics","windowS":60,"rooms":3,"players":9,"ticks":3600,"tickP50Ms":0.08,
+ "tickP95Ms":0.31,"tickP99Ms":0.6,"tickMaxMs":2.4,"createsRefused":0,"roomsCreated":2,
+ "roomsDisposed":1,"rssMb":81,"heapUsedMb":30}
+```
+
+- `tick*Ms` is the room simulation tick (regeneration, grenade fuses, late
+  respawns) per room. The budget is the 50 ms patch interval. State
+  serialisation and message handling are not included.
+- An idle instance writes nothing.
+- Render shows these lines in the service's **Logs**. Search for
+  `"event":"metrics"`.
