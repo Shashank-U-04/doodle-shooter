@@ -1,3 +1,5 @@
 .env.local
 node_modules
 dist
+# Local secrets and dotenvx private keys
+.env.keys
