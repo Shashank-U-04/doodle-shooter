@@ -26,7 +26,7 @@ npm ci
 npm start          # tsx watch on http://localhost:2567
 ```
 
-- `GET /health` returns `{"status":"ok","uptime":<seconds>}`.
+- `GET /health` returns `{"status":"ok","uptime":<seconds>,"instance":"<this process's random id>"}`.
 - `/monitor` shows the Colyseus room monitor in development only. It is not
   mounted when `NODE_ENV=production`.
 
@@ -362,13 +362,28 @@ is `""` for no credit).
   the socket itself with 4000, and never reconnects.
   `test/hosted-leave.test.ts` and `e2e/hosted-leave.spec.ts` reproduce the
   path and fail without this.
-- **Restarts** (SIGTERM on a deploy or restart) use the same workaround the
-  other way round: `MatchRoom.onBeforeShutdown` broadcasts `server-closing`
-  (`SERVER_CLOSING_MESSAGE` in `src/shared/rules.ts`) before the default close
-  with SERVER_SHUTDOWN. Messages do reach hosted clients, so they show "The
-  match server restarted…" at once and close from their side, instead of a
-  late 1006 and a minute of reconnecting. A validation kick still reaches a
-  hosted client as a late 1006; only a broken or hostile client gets one.
+- **Restarts** (SIGTERM on a deploy or restart) reach players two ways, because
+  on 2026-11-02 two real restarts of the Render service delivered neither the
+  notice nor the close: both players saw a late 1006, then 90–127 s of
+  reconnecting.
+  - **The notice.** `MatchRoom.onBeforeShutdown` broadcasts `server-closing`
+    (`SERVER_CLOSING_MESSAGE` in `src/shared/rules.ts`), waits `NOTICE_GRACE_MS`
+    (`src/lifecycle.ts`), then closes with SERVER_SHUTDOWN. A client that gets the
+    notice shows "The match server restarted…" and closes from its side.
+  - **The fallback, for when no notice can arrive.** `/health` and every room's
+    state name the server process (`instance`). While reconnecting, the client
+    asks `/health` (`src/game/serverRestart.ts`): only a clear answer naming a
+    different process ends the match with the restart message. No answer, a
+    malformed one, or the same process means the SDK carries on reconnecting, so
+    a network problem is never reported as a restart.
+  - **Diagnostics.** Each step logs one `{"event":"lifecycle",…}` JSON line:
+    `boot`, `signal-received`, `shutdown-started`, `client-dropped`,
+    `room-notice-sent`, `room-closing-sockets`, `room-disposed`,
+    `shutdown-finished`, `process-exit`. A shutdown still running after
+    `SHUTDOWN_BACKSTOP_MS` logs `shutdown-backstop` and exits.
+
+  A validation kick still reaches a hosted client as a late 1006; only a broken
+  or hostile client gets one.
 - **Dropping** (reload, closed tab, lost network) holds the seat for
   `RECONNECT_SECONDS` (30, in `src/rules.ts`); the roster shows it with
   `connected: false`. Only `client.reconnect(room.reconnectionToken)` can take it
