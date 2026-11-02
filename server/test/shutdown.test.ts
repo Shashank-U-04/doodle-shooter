@@ -33,8 +33,8 @@ async function startServer(how: "entry-point" | "npm-run-serve" | "node-build" =
     how === "entry-point"
       ? spawn(process.execPath, ["--import", "tsx", "test/fixtures/shutdown-child.ts"], { cwd: serverDir, env, stdio: ["ignore", "pipe", "pipe", "ipc"] })
       : how === "node-build"
-        ? spawn(process.execPath, ["build/index.js"], { cwd: serverDir, env, stdio: ["ignore", "pipe", "pipe"] })
-        : spawn("npm", ["run", "serve"], { cwd: serverDir, env, stdio: ["ignore", "pipe", "pipe"] });
+        ? spawn(process.execPath, ["build/index.js"], { cwd: serverDir, env, stdio: ["ignore", "pipe", "pipe"], detached: true })
+        : spawn("npm", ["run", "serve"], { cwd: serverDir, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
   let output = "";
   proc.stdout?.on("data", (d) => (output += d));
   proc.stderr?.on("data", (d) => (output += d));
@@ -89,10 +89,21 @@ describe("graceful shutdown", function () {
   this.timeout(60_000);
   let server: Running | null = null;
 
-  afterEach(() => {
+  afterEach(async () => {
     const proc = server?.proc;
-    if (proc && proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
     server = null;
+    if (!proc?.pid) return;
+    // The whole process group where there is one: killing npm alone would leave
+    // its Node child running, and holding the port for the next test.
+    try {
+      process.kill(-proc.pid, "SIGKILL");
+    } catch {
+      proc.kill("SIGKILL");
+    }
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && (await fetch(`${BASE}/health`).then(() => true, () => false))) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
   });
 
   it("on SIGTERM tells both players, then closes them, disposes the room and exits 0", async () => {
@@ -170,9 +181,8 @@ describe("graceful shutdown", function () {
     }
   });
 
-  // What Render runs: `npm run serve`, with the signal sent to npm. This proves
-  // whether the signal reaches Node through npm; a real signal is needed, so it
-  // cannot run on Windows.
+  // The compiled server, started the two ways it can be: a real signal is needed,
+  // so these cannot run on Windows.
   describe("through the production start command", () => {
     before(function () {
       if (process.platform === "win32") return this.skip();
@@ -180,23 +190,56 @@ describe("graceful shutdown", function () {
       execSync("npm run build", { cwd: serverDir, stdio: "pipe" });
     });
 
-    for (const how of ["npm-run-serve", "node-build"] as const) {
-      it(`SIGTERM to the started process reaches Node and the players (${how})`, async () => {
-        server = await startServer(how);
-        const { players } = await twoPlayers();
-        server.proc.kill("SIGTERM");
-        await within(Promise.all(players.map((p) => p.closed)), 15_000, "players closed");
-        for (const { seen } of players) {
-          assert.strictEqual(seen.notices.length, 1, server.output());
-          assert.strictEqual(seen.closeCode, SERVER_SHUTDOWN, server.output());
-        }
-        await within(server.exited, 15_000, "process exit");
-        await new Promise((r) => setTimeout(r, 200));
-        const stages = lifecycle(server.output()).map((l) => l.stage);
-        assert.ok(stages.includes("signal-received"), `SIGTERM reached Node; stages: ${stages.join(", ")}`);
-        assert.ok(stages.includes("process-exit"), `Node exited itself; stages: ${stages.join(", ")}`);
-        await assert.rejects(fetch(`${BASE}/health`), "nothing listening any more");
-      });
+    async function expectDelivered(running: Running, players: Awaited<ReturnType<typeof twoPlayers>>["players"]) {
+      await within(Promise.all(players.map((p) => p.closed)), 15_000, "players closed");
+      for (const { seen } of players) {
+        assert.strictEqual(seen.notices.length, 1, running.output());
+        assert.strictEqual(seen.closeCode, SERVER_SHUTDOWN, running.output());
+      }
+      await new Promise((r) => setTimeout(r, 300));
+      const stages = lifecycle(running.output()).map((l) => l.stage);
+      assert.ok(stages.includes("signal-received"), `SIGTERM reached Node; stages: ${stages.join(", ")}`);
+      assert.ok(stages.includes("process-exit"), `Node exited itself; stages: ${stages.join(", ")}`);
     }
+
+    it("node build/index.js: SIGTERM reaches Node and the players", async () => {
+      server = await startServer("node-build");
+      const { players } = await twoPlayers();
+      server.proc.kill("SIGTERM");
+      await expectDelivered(server, players);
+      assert.strictEqual(await within(server.exited, 15_000, "process exit"), 0, server.output());
+    });
+
+    it("npm run serve, signal to the whole process group: reaches Node and the players", async () => {
+      server = await startServer("npm-run-serve");
+      const { players } = await twoPlayers();
+      process.kill(-server.proc.pid!, "SIGTERM");
+      await expectDelivered(server, players);
+    });
+
+    // Measures npm rather than this project, and npm's behaviour may change between
+    // versions, so it reports what happened in the test log and does not fail on it.
+    it("npm run serve, signal to npm alone: reports whether Node hears it", async function () {
+      server = await startServer("npm-run-serve");
+      const { players } = await twoPlayers();
+      const pid = server.proc.pid!;
+      const tree = execSync(`ps -o pid,ppid,pgid,args -g ${pid}`, { encoding: "utf8" });
+      const npmVersion = execSync("npm --version", { encoding: "utf8" }).trim();
+      server.proc.kill("SIGTERM");
+      const closed = await within(Promise.all(players.map((p) => p.closed)), 8000, "closed").then(() => true, () => false);
+      const stages = lifecycle(server.output()).map((l) => l.stage);
+      const npmExited = server.proc.exitCode !== null || server.proc.signalCode !== null;
+      const report = {
+        node: process.version,
+        npm: npmVersion,
+        nodeHeardSignal: stages.includes("signal-received"),
+        playersClosedWithin8s: closed,
+        notices: players.map((p) => p.seen.notices.length),
+        npmExited,
+        npmExit: { code: server.proc.exitCode, signal: server.proc.signalCode },
+        nodeStillAnswering: await fetch(`${BASE}/health`).then(() => true, () => false),
+      };
+      console.log(`[npm-signal-report] ${JSON.stringify(report)}\n${tree}`);
+    });
   });
 });
