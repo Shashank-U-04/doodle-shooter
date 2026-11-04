@@ -1,4 +1,4 @@
-// Leaving a match in a real browser, through a path that loses the server's
+// Leaving a match, and a server restart, in a real browser, through a path that loses the server's
 // WebSocket close (what the Render deployment does: see
 // server/test/hosted-leave.test.ts for the traces and the Node version).
 //
@@ -7,8 +7,9 @@
 // never told; closes the page starts are still forwarded. Leaving must not
 // depend on the server's close: the page closes with CONSENTED (4000) at once,
 // opens no new socket, asks for no reconnection, and the host sees one player.
+import type { BrowserContext, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { E2E_SERVER_PORT } from "./env";
+import { E2E_SERVER, E2E_SERVER_PORT } from "./env";
 import { intoArena, overlay, player } from "./helpers";
 
 type SocketLog = { opened: number; closes: { code: number; clean: boolean; at: number }[]; leaveClickedAt: number };
@@ -51,20 +52,16 @@ const RECORD_SOCKETS = `
   });
 `;
 
-test("leaving a match closes at once and never reconnects, even when the server's close is lost", async ({ browser }) => {
-  const offHost: string[] = [];
-  const hostContext = await browser.newContext();
-  const guestContext = await browser.newContext();
-  const host = await player(hostContext, "ADA", offHost);
-  const guest = await player(guestContext, "GRACE", offHost);
-
-  await guestContext.addInitScript(RECORD_SOCKETS);
-  // The guest's room socket is bridged by this test process (Node's WebSocket),
-  // not by Playwright's own forwarding, which passes the server's close on
-  // regardless. Messages go both ways; a close from the page is passed to the
-  // server and acknowledged; a close from the server is never passed on.
-  let lostServerCloses = 0;
-  await guestContext.routeWebSocket(new RegExp(`:${E2E_SERVER_PORT}/`), (ws) => {
+/**
+ * Put a context's room sockets through the Render deployment's fault. The
+ * socket is bridged by this test process (Node's WebSocket), not by
+ * Playwright's own forwarding, which passes the server's close on regardless.
+ * Messages go both ways; a close from the page is passed to the server and
+ * acknowledged; a close from the server is never passed on.
+ */
+async function loseServerCloses(context: BrowserContext) {
+  await context.addInitScript(RECORD_SOCKETS);
+  await context.routeWebSocket(new RegExp(`:${E2E_SERVER_PORT}/`), (ws) => {
     const upstream = new WebSocket(ws.url());
     upstream.binaryType = "arraybuffer";
     const pending: (string | Buffer)[] = [];
@@ -72,18 +69,33 @@ test("leaving a match closes at once and never reconnects, even when the server'
       for (const m of pending.splice(0)) upstream.send(m);
     });
     upstream.addEventListener("message", (e) => ws.send(typeof e.data === "string" ? e.data : Buffer.from(e.data as ArrayBuffer)));
-    // the hosting path's fault: the server's close never reaches the page
-    upstream.addEventListener("close", () => void lostServerCloses++);
+    // the hosting path's fault: the server's close never reaches the page (no listener for it)
     ws.onMessage((m) => (upstream.readyState === WebSocket.OPEN ? upstream.send(m) : pending.push(m)));
     ws.onClose((code, reason) => {
       if (upstream.readyState <= WebSocket.OPEN) upstream.close(code ?? 1000, reason);
       ws.close({ code, reason });
     });
   });
-  const reconnects: string[] = [];
-  guest.on("request", (r) => {
-    if (r.url().includes("/matchmake/reconnect")) reconnects.push(r.url());
+}
+
+/** Reconnection requests the page makes from now on. */
+function watchReconnects(page: Page): string[] {
+  const seen: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/matchmake/reconnect")) seen.push(r.url());
   });
+  return seen;
+}
+
+test("leaving a match closes at once and never reconnects, even when the server's close is lost", async ({ browser }) => {
+  const offHost: string[] = [];
+  const hostContext = await browser.newContext();
+  const guestContext = await browser.newContext();
+  const host = await player(hostContext, "ADA", offHost);
+  const guest = await player(guestContext, "GRACE", offHost);
+
+  await loseServerCloses(guestContext);
+  const reconnects = watchReconnects(guest);
   const sockets = () => guest.evaluate("window.__ws") as Promise<SocketLog>;
 
   await intoArena(host, guest);
@@ -117,6 +129,32 @@ test("leaving a match closes at once and never reconnects, even when the server'
   await guest.waitForTimeout(4000);
   expect((await sockets()).opened - before, "new sockets after leaving").toBe(0);
   expect(reconnects, "reconnection requests after leaving").toEqual([]);
+
+  await hostContext.close();
+  await guestContext.close();
+});
+
+test("a server restart reaches a player even when the server's close is lost", async ({ browser, request }) => {
+  const offHost: string[] = [];
+  const hostContext = await browser.newContext();
+  const guestContext = await browser.newContext();
+  const host = await player(hostContext, "ADA", offHost);
+  const guest = await player(guestContext, "GRACE", offHost);
+  await loseServerCloses(guestContext);
+  const reconnects = watchReconnects(guest);
+  const code = await intoArena(host, guest);
+
+  // what SIGTERM does to every room on the server: a notice, then the close
+  expect((await request.post(`${E2E_SERVER}/__e2e/rooms/${code}/shutdown`)).status()).toBe(200);
+  // the guest never gets the server's close; it must still learn why, at once
+  for (const page of [guest, host]) {
+    await expect(overlay(page).locator("h1")).toHaveText("CONNECTION LOST", { timeout: 2000 });
+    await expect(overlay(page).locator("h2")).toContainText("The match server restarted, so this match has ended.");
+  }
+  // and it does not spend the next minute reconnecting to a server that went away
+  await guest.waitForTimeout(4000);
+  expect(reconnects, "reconnection requests after the restart").toEqual([]);
+  await expect(overlay(guest).locator("h1")).toHaveText("CONNECTION LOST");
 
   await hostContext.close();
   await guestContext.close();

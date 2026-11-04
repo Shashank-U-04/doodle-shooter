@@ -5,6 +5,7 @@ import { roomLimitsFromEnv } from "./limits.js";
 import { metrics } from "./metrics.js";
 import { roomStats } from "./rooms/MatchRoom.js";
 import { e2eFixturesEnabled, mountE2eFixtures } from "./e2e.js";
+import { INSTANCE_ID } from "./lifecycle.js";
 
 const startedAt = Date.now();
 
@@ -65,9 +66,14 @@ const server = defineServer({
   }),
 
   express: (app) => {
-    /** Liveness probe for the host platform. Reveals nothing about rooms or players. */
+    /**
+     * Liveness probe for the host platform. Reveals nothing about rooms or
+     * players. `instance` lets a client that lost its socket tell a restarted
+     * server from a network problem (src/game/serverRestart.ts).
+     */
     app.get("/health", (_req, res) => {
-      res.json({ status: "ok", uptime: Math.round((Date.now() - startedAt) / 1000) });
+      res.set("Cache-Control", "no-store");
+      res.json({ status: "ok", uptime: Math.round((Date.now() - startedAt) / 1000), instance: INSTANCE_ID });
     });
 
     // The room monitor shows every room's state; it stays out of production

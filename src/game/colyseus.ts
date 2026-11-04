@@ -26,7 +26,8 @@ import { normalizeMatchConfig, type MatchConfig } from "./maps";
 import type { NetPlayer, SignalState } from "./net";
 import type { NetCombatIntent, NetPlayerState, NetShotOrigin } from "./types";
 import { readColyseusUrl, viteEnv, type MatchHandlers, type MatchSession } from "./transport";
-import { MOVE_RATE_HZ, NAME_MAX, RECONNECT_SECONDS } from "../../server/src/shared/rules.js";
+import { probeServerInstance, RESTART_PROBE_EVERY_MS, RestartWatch, type InstanceProbe } from "./serverRestart";
+import { MOVE_RATE_HZ, NAME_MAX, RECONNECT_SECONDS, SERVER_CLOSING_MESSAGE } from "../../server/src/shared/rules.js";
 
 /** sessionStorage key for this tab's seat; separate from the PeerJS lease. */
 export const SEAT_KEY = "dd_colyseus_seat";
@@ -51,6 +52,9 @@ export const WAKE_HINT = "WAKING THE MATCH SERVER — A SLEEPING SERVER CAN TAKE
  */
 export const JOIN_TIMEOUT_MS = 90_000;
 export const JOIN_TIMEOUT_TEXT = "The match server did not answer in time. It may still be waking up — press TRY AGAIN.";
+/** What the arena says when the match server restarted (or redeployed) under a match. */
+const RESTARTED_TEXT = "The match server restarted, so this match has ended. Create or join a match again.";
+
 /** @colyseus/shared-types CloseCode.SERVER_SHUTDOWN (not imported: the SDK loads on demand) */
 const SERVER_SHUTDOWN = 4001;
 /**
@@ -89,6 +93,8 @@ type StartResult = { ok: true } | { ok: false; reason: string };
 /** The synced room state, as `state.toJSON()` returns it. */
 type RoomJSON = {
   code?: string;
+  /** the server process holding this room; absent from servers older than the restart check */
+  serverInstance?: string;
   phase?: string;
   map?: string;
   grapple?: boolean;
@@ -280,6 +286,8 @@ export type ColyseusSessionDeps = {
   resumeOnly?: boolean;
   /** how long connecting may take before giving up; JOIN_TIMEOUT_MS by default */
   joinTimeoutMs?: number;
+  /** pause between restart checks while reconnecting; RESTART_PROBE_EVERY_MS by default */
+  restartProbeMs?: number;
 };
 
 export class ColyseusSession implements MatchSession {
@@ -297,6 +305,11 @@ export class ColyseusSession implements MatchSession {
   private readonly resumeOnly: boolean;
   private readonly joinTimeoutMs: number;
   private joinTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly restartProbeMs: number;
+  /** the server process holding our room, as the room's state says ("" from an older server) */
+  private serverInstance = "";
+  /** asks the server, while reconnecting, whether our room's process is still there */
+  private restartWatch: RestartWatch | null = null;
   /** connection diagnostics (logConnection) */
   private attachedAt = 0;
   private drops = 0;
@@ -341,6 +354,7 @@ export class ColyseusSession implements MatchSession {
     this.storage = deps.storage !== undefined ? deps.storage : defaultStorage();
     this.resumeOnly = deps.resumeOnly ?? false;
     this.joinTimeoutMs = deps.joinTimeoutMs ?? JOIN_TIMEOUT_MS;
+    this.restartProbeMs = deps.restartProbeMs ?? RESTART_PROBE_EVERY_MS;
   }
 
   setHandlers(patch: MatchHandlers) {
@@ -502,11 +516,15 @@ export class ColyseusSession implements MatchSession {
       this.lastDropAt = Date.now();
       // the SDK calls this as it starts its own reconnection attempts
       this.logConnection(room, "dropped; SDK reconnecting", code, reason);
+      // a last attempt already under way when the match ended
+      if (this.phase === "closed") return;
       this.setSignal("retrying", "connection dropped — reconnecting");
       this.handlers.onStatus?.("CONNECTION DROPPED — RECONNECTING…");
+      this.watchForRestart(room);
     });
     room.onReconnect(() => {
       this.logConnection(room, "reconnected");
+      this.stopRestartWatch();
       this.rememberSeat();
       this.setSignal("open");
       this.handlers.onStatus?.("RECONNECTED");
@@ -517,12 +535,23 @@ export class ColyseusSession implements MatchSession {
       if (code === SERVER_SHUTDOWN) {
         // a redeploy or restart: every room on the server has gone with it
         clearSeat(this.storage);
-        this.fail("The match server restarted, so this match has ended. Create or join a match again.");
+        this.fail(RESTARTED_TEXT);
         return;
       }
       // The seat is kept: the server may still be holding it, and joining
       // again from this tab tries the token first (a dead one is then cleared).
       this.fail("Lost the connection to the match server and could not get back in. Join again.");
+    });
+    // The server says it is shutting down. Its close (SERVER_SHUTDOWN) may never
+    // arrive (the Render deployment loses closes the server starts), so treat
+    // the notice as the close: end the match here and close from this side.
+    room.onMessage(SERVER_CLOSING_MESSAGE, () => {
+      if (this.phase === "closed") return;
+      this.logConnection(room, "server shutting down (told by message)");
+      clearSeat(this.storage);
+      this.room = null;
+      this.fail(RESTARTED_TEXT);
+      void leaveRoom(room).catch(() => {});
     });
     room.onError((code, message) => this.logConnection(room, "error", code, message));
     room.onMessage("hit", (e: HitEvent) => this.onHitEvent(e));
@@ -534,6 +563,39 @@ export class ColyseusSession implements MatchSession {
     this.setSignal("open");
     this.handlers.onStatus?.(this.isHost ? "ROOM OPEN — SEND THE CODE" : "IN THE ROOM — READY WHEN YOU ARE");
     this.sync();
+  }
+
+  /**
+   * The socket is gone and the SDK is reconnecting. Meanwhile keep asking the
+   * server which process is answering: if it is no longer the one holding our
+   * room, that room is gone with it and no reconnection can succeed, so say so
+   * now instead of after every attempt has failed. Anything short of that answer
+   * (src/game/serverRestart.ts) leaves the SDK to carry on.
+   */
+  private watchForRestart(room: Room) {
+    const url = this.url;
+    const known = this.serverInstance;
+    if (this.restartWatch || !url || !known) return;
+    const probe = (): Promise<InstanceProbe> => probeServerInstance(url, known);
+    this.restartWatch = new RestartWatch(probe, () => this.onServerReplaced(room), this.restartProbeMs);
+    this.restartWatch.start();
+  }
+
+  private stopRestartWatch() {
+    this.restartWatch?.stop();
+    this.restartWatch = null;
+  }
+
+  /** A different server process answers /health: our room no longer exists. */
+  private onServerReplaced(room: Room) {
+    this.restartWatch = null;
+    if (this.phase === "closed") return;
+    this.logConnection(room, "server restarted (a new process answers /health)");
+    clearSeat(this.storage);
+    this.room = null;
+    // Stops the SDK's retries. The socket is already dead, so there is nothing to close.
+    room.reconnection.enabled = false;
+    this.fail(RESTARTED_TEXT);
   }
 
   private rememberSeat() {
@@ -548,6 +610,7 @@ export class ColyseusSession implements MatchSession {
 
   close() {
     this.clearJoinTimer();
+    this.stopRestartWatch();
     if (this.phase === "closed") return;
     this.phase = "closed";
     this.stopTicking();
@@ -580,8 +643,11 @@ export class ColyseusSession implements MatchSession {
     this.pingTimer = null;
   }
 
+  /** Every way a match can be lost ends here, and only the first one is reported. */
   private fail(text: string) {
     this.clearJoinTimer();
+    this.stopRestartWatch();
+    if (this.phase === "closed") return;
     this.phase = "closed";
     this.stopTicking();
     this.stopPinging();
@@ -602,6 +668,7 @@ export class ColyseusSession implements MatchSession {
     const room = this.room;
     if (!room?.state) return;
     const s = (room.state as { toJSON(): RoomJSON }).toJSON();
+    if (s.serverInstance) this.serverInstance = s.serverInstance;
 
     const config = normalizeMatchConfig({ map: s.map, grapple: s.grapple });
     if (config.map !== this.config.map || config.grapple !== this.config.grapple) {
