@@ -15,7 +15,8 @@ frontend build, lint and Vercel deployment do not touch this folder.
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 24, the version Render runs (`.node-version`). Node 22 is still
+  supported and tested in CI; `engines` allows `>=22.0.0 <25`.
 - npm
 
 ## Setup
@@ -87,7 +88,7 @@ WebSockets open); the frontend stays on Vercel and points at it with
 
 **What the host must provide**
 
-- Node.js 22+ (or a container runtime for the `Dockerfile`).
+- Node.js 24, or 22 at minimum (or a container runtime for the `Dockerfile`).
 - Long-lived WebSocket connections (HTTP Upgrade passed through), with TLS
   terminated in front of the server so the browser connects with `https`/`wss`
   — an `https` page cannot use a plain `http` server.
@@ -116,7 +117,8 @@ needs only the runtime dependencies. Validated on Node 22.15 and 24.22 (the
 whole test suite, and the compiled server in production mode).
 
 `render.yaml` in the repository root describes this as a Render Blueprint
-(free plan, `rootDir: server`, health check `/health`).
+(free plan, `rootDir: server`, health check `/health`). Render's Node.js 24 comes
+from `.node-version`, not from the Blueprint.
 
 **Check a deployment** from any machine:
 
