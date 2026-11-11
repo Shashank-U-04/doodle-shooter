@@ -11,9 +11,38 @@ State on 2026-11-11:
 | | Commit | Transport |
 |---|---|---|
 | Vercel Production | `7f0e6fd` (`main`, deployed 2026-10-25) | PeerJS. Production has **not** switched to Colyseus. |
-| Vercel Preview of `fix/hosted-restart-notice` (#11) | `17e5385` | the client build that matches the Render server below. It runs Colyseus when the Preview variables (step 3) cover this branch; the `/online` lobby note says which. |
-| Render `doodle-shooter-match` | `17e5385` (tip of `fix/hosted-restart-notice`, #11), Node.js v24.22.2 | — |
+| Vercel Preview of `fix/hosted-restart-notice` (#11) | `c427816` (the branch's latest commit) | the client build to test against the Render server below. It runs Colyseus when the Preview variables (step 3) cover this branch; the `/online` lobby note says which. |
+| Render `doodle-shooter-match` | `17e5385` (deployed by hand from `fix/hosted-restart-notice`), Node.js v24.22.2 | — |
 
+The deployed Render commit and the latest PR commits are different things:
+
+| | Commit |
+|---|---|
+| PR #11 `fix/hosted-restart-notice`, latest | `c427816` |
+| PR #12 `ci/e2e-artifacts`, merge of #11 | `aaaae17` (this runbook update is the commit after it) |
+| Render, deployed | `17e5385` |
+| Vercel Production, deployed | `7f0e6fd` |
+
+- **Render does not need `c427816`.** That commit changes the client's restart
+  detection and its tests only. Between `17e5385` and `c427816`, nothing in
+  `server/src`, the server's package files, `tsconfig`, `.node-version` or
+  `render.yaml` changed. The `17e5385` server already provides what the new
+  client needs: `/health` with `instance`, `serverInstance` in the room state,
+  and the `server-closing` notice. Do not deploy or restart Render only to
+  install it. Render's **Deploy latest commit** on this branch would now deploy
+  `c427816`, with the same server code.
+- **Allowed origin, checked on 2026-11-11:** `GET /health` with an `Origin`
+  header. The server uses the same allow-list (`isOriginAllowed`) for CORS,
+  matchmaking and the WebSocket upgrade. Render answered #11's branch alias
+  with `Access-Control-Allow-Origin`, so the alias is allowed. #11's
+  per-deployment URL (`doodle-shooter-r1d6hggym-…`, `c427816`) got no such
+  header, so it is not allowed. Testers must open the branch alias below.
+- **A sleeping free instance wakes as a new process.** The same check woke
+  it: `/health` showed `"uptime":17` and a new `instance`
+  (`e095d322a1524a80`), with nobody connected. A changed `instance` is
+  therefore no proof that a restart hit a running match. Compare `uptime`, and
+  the time of the restart in Render → Events, with the time the room was
+  created.
 - **Verified by hand:** Windows ↔ macOS multiplayer connectivity against the
   deployed Render server (`17e5385`, Node.js v24.22.2). The full acceptance
   checklist (`acceptance-checklist.md`) is not recorded as passed here. In
@@ -25,9 +54,14 @@ State on 2026-11-11:
   deployed by hand. To confirm what Render runs, read the server's startup line
   in the Render logs. It has the form `{"event":"lifecycle",…,"node":…,"commit":…}`,
   and `commit` comes from `RENDER_GIT_COMMIT`.
-- **CI:** all 12 PRs are open, and every check is green on each PR's current
-  head. #1 has only the Vercel checks, because the Actions workflow arrives in
-  #2.
+- **CI:** all 12 PRs are open and unmerged, and every check is green on each
+  PR's current head. #1 has only the Vercel checks, because the Actions
+  workflow arrives in #2.
+  - #11 at `c427816`: Playwright passed 16/16 on the third attempt of run
+    43057787037. The first two attempts failed in **Install Chromium**: the
+    runner could not resolve `archive.ubuntu.com` or `security.ubuntu.com`, and
+    no test ran.
+  - #12 at `aaaae17`: all checks green, Playwright 16/16.
 
 Open PRs. Each targets the one before it, so it shows only its own change:
 
@@ -43,8 +77,8 @@ Open PRs. Each targets the one before it, so it shows only its own change:
 | #8 | `fix/teleport-destinations` → `feat/server-metrics` | #7 | **security**: teleports only to arrival points |
 | #9 | `feat/perf-benchmark` → `fix/teleport-destinations` | #8 | frame-time benchmark and baseline |
 | #10 | `fix/hosted-leave` → `feat/perf-benchmark` | #9 **and #4** (merged in by `23b591a`) | leaving a hosted room |
-| #11 | `fix/hosted-restart-notice` → `fix/hosted-leave` | #10 | server-restart notice and detection; Render runtime pinned to Node.js 24 (`17e5385`) |
-| #12 | `ci/e2e-artifacts` → `fix/hosted-restart-notice` | #11 (includes `17e5385`) | CI uploads Playwright traces and server logs; this runbook update |
+| #11 | `fix/hosted-restart-notice` → `fix/hosted-leave` | #10 | server-restart notice and detection; Render runtime pinned to Node.js 24 (`17e5385`); restart detected when a reconnect is refused first or the socket goes silent, Safari-safe `/health` timeout (`c427816`, latest) |
+| #12 | `ci/e2e-artifacts` → `fix/hosted-restart-notice` | #11 (up to `c427816`, merged in by `aaaae17`) | CI uploads Playwright traces and server logs; this runbook |
 
 ```
 main ← #1 ← #2 ← #3 ← #5 ← #6 ← #7 ← #8 ← #9 ← #10 ← #11 ← #12
@@ -73,7 +107,8 @@ from the deployment's **Share** button.
 ## 1. Align the Preview server with the client (manual, Render dashboard)
 
 Done for `17e5385` (see the state above). Repeat these steps only if Render
-must deploy a different branch or commit.
+must deploy a different branch or commit. `c427816` is not a reason to: it
+changes no server runtime code.
 
 1. Render → `doodle-shooter-match` → **Settings → Build & Deploy → Branch**:
    `fix/hosted-restart-notice` (#11: the migration, both security fixes, the
@@ -194,7 +229,26 @@ Every line must say PASS. A run against the live server on 2026-10-24
 Use `acceptance-checklist.md` with three or more players on Windows and macOS.
 Windows ↔ macOS connectivity against `17e5385` has been verified by hand. The
 remaining rows, including the S4d rebalance (100 HP) and row 27 (server
-restart on Render), still need results. Record:
+restart on Render), still need results.
+
+Row 27 is the remaining technical acceptance test before the cutover. Run it
+with #11's branch alias (client `c427816`) against the deployed server
+(`17e5385`); no Render deploy is needed first.
+1. Open the alias on Windows and on macOS. Keep DevTools open with **Preserve
+   log**, filtered on `colyseus`.
+2. Create a match on one device and join it from the other. Play for at least
+   10 s: the SDK only reconnects a room that has been up for 5 s.
+3. Note the time, and the `instance` and `uptime` from `/health`. Then make one
+   restart in Render → **Manual Deploy → Restart service** while both are
+   playing.
+4. Pass: both show CONNECTION LOST with "The match server restarted, so this
+   match has ended. Create or join a match again." Then LEAVE MATCH returns to
+   the menu, and a new match can be created and joined.
+5. Keep the console lines either way: `server shutting down (told by message)`,
+   `no answer to pings…`, `dropped; SDK reconnecting`, `server restarted…` or
+   `left; match lost`.
+
+For every playtest, record:
 
 - browsers and operating systems;
 - join, rejoin and host migration;
@@ -247,9 +301,10 @@ Each item below is an approval gate.
      rollback target.
    - Production deploys `main`. It stays on PeerJS until step 4, because
      nothing in Production sets `VITE_NET_TRANSPORT`.
-   - The server code that reaches `main` is the same as `17e5385`'s `server/`.
-     #12 changes only CI and docs, and `7f0e6fd` changes only `.gitignore` and
-     `.env.keys`. Moving Render's branch to `main` after the merge therefore
+   - The server runtime code that reaches `main` is the same as `17e5385`'s.
+     `c427816` changes only `server/test` and `server/README.md` under
+     `server/`, #12 changes only CI and docs, and `7f0e6fd` changes only
+     `.gitignore` and `.env.keys`. Moving Render's branch to `main` after the merge therefore
      changes no server code. It is still a deploy, which ends running matches.
 4. **Switch.** Set `VITE_NET_TRANSPORT=colyseus` and `VITE_COLYSEUS_URL` for
    **Production** and redeploy.
@@ -275,7 +330,7 @@ Each item below is an approval gate.
 | Situation | Action |
 |---|---|
 | A server deploy is bad | Render → Events → the previous deploy → **Rollback**. On Hobby, the last 5 builds are kept. |
-| Back to the verified pair | Server `17e5385` on branch `fix/hosted-restart-notice`, Node.js 24, with that branch's Vercel Preview. Redeploy that commit. |
+| Back to the verified pair | Server `17e5385` (Node.js 24) with the Vercel Preview of `fix/hosted-restart-notice`. Use Render → Events → the `17e5385` deploy → **Rollback**, or deploy the branch tip `c427816`, which has the same server runtime code. |
 | Last resort | Branch `feat/colyseus-hosted-preview` (`dc14d7a`). It is pre-S4d (120 HP), lacks the #6/#8 security fixes and does not match the current clients. Use it only if nothing newer starts. Keep that branch until the cutover is complete. |
 | Matches during a deploy | A deploy replaces the instance, and players must re-create the match. With #11 they should see "The match server restarted…", but that is verified locally only until checklist row 27 passes on Render. Deploy between sessions until match draining exists. |
 
