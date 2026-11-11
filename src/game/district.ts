@@ -21,6 +21,12 @@ import { INK, type InkId, makeInkMaterial, type Collider } from "./world";
 export type District = {
   colliders: Collider[];
   spawnPoints: THREE.Vector3[];
+  /**
+   * The pads in the boundary-wall gates, where the solo waves walk in (also in
+   * spawnPoints). An online match leaves them out: they sit in the arches at the
+   * map's rim, ~100 m apart, which is not where anyone plays the district.
+   */
+  gateSpawns: THREE.Vector3[];
   sniperSpots: THREE.Vector3[];
   pickupSpots: THREE.Vector3[];
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
@@ -56,6 +62,7 @@ type StepOpts = Opts & { rise?: number; run?: number };
 export function buildDistrict(scene: THREE.Object3D): District {
   const colliders: Collider[] = [];
   const spawnPoints: THREE.Vector3[] = [];
+  const gateSpawns: THREE.Vector3[] = [];
   const sniperSpots: THREE.Vector3[] = [];
   const pickupSpots: THREE.Vector3[] = [];
   const B = 55; // half-size of the playfield
@@ -253,6 +260,7 @@ export function buildDistrict(scene: THREE.Object3D): District {
   ]) {
     gate(x, z, false);
     spawn(x + (x < 0 ? 1.2 : -1.2), 0, z);
+    gateSpawns.push(spawnPoints[spawnPoints.length - 1]);
   }
   for (const [x, z] of [
     [0, -P],
@@ -262,6 +270,7 @@ export function buildDistrict(scene: THREE.Object3D): District {
   ]) {
     gate(x, z, true);
     spawn(x, 0, z + (z < 0 ? 1.2 : -1.2));
+    gateSpawns.push(spawnPoints[spawnPoints.length - 1]);
   }
 
   /* ---------------- central tower: floors, pillars, rails, fire escape ---------------- */
@@ -712,6 +721,7 @@ export function buildDistrict(scene: THREE.Object3D): District {
   return {
     colliders,
     spawnPoints,
+    gateSpawns,
     sniperSpots,
     pickupSpots,
     bounds: { minX: -B, maxX: B, minZ: -B, maxZ: B },

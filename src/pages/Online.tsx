@@ -27,16 +27,26 @@ import {
   type MatchConfig,
 } from "@/game/maps";
 import { NetSession, type NetPlayer, type SignalState } from "@/game/net";
-import { clearRoomLease, codeForCreate, isValidRoomCode, normalizeRoomCode, writeRoomLease } from "@/game/room";
+import { ColyseusSession, resumableSeat, warmColyseus } from "@/game/colyseus";
+import { matchWinner, NET_TRANSPORT, type MatchSession } from "@/game/transport";
+import {
+  clearRoomLease,
+  codeForCreate,
+  isValidRoomCode,
+  LEGACY_ROOM_PARAM,
+  normalizeRoomCode,
+  ROOM_PARAM,
+  writeRoomLease,
+} from "@/game/room";
 
 const KILLS_TO_WIN = 15;
 const INK_LIST = Object.values(INK_HEX).filter((v): v is string => typeof v === "string");
 
 export default function Online() {
   const navigate = useNavigate();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const setup = useMemo(() => readSetup(), []);
-  const [session, setSession] = useState<NetSession | null>(null);
+  const [session, setSession] = useState<MatchSession | null>(null);
   const [mode, setMode] = useState<"menu" | "host" | "join">("menu");
   const [name, setName] = useState(() => setup.name || localStorage.getItem("dd_name") || "");
   const [codeInput, setCodeInput] = useState("");
@@ -53,14 +63,14 @@ export default function Online() {
       grapple: params.get("grapple") === null ? setup.grapple : params.get("grapple") === "1",
     }),
   );
-  const ref = useRef<NetSession | null>(null);
+  const ref = useRef<MatchSession | null>(null);
 
   const remember = useCallback((v: string) => {
     setName(v);
     localStorage.setItem("dd_name", v);
   }, []);
 
-  const wire = useCallback((s: NetSession) => {
+  const wire = useCallback((s: MatchSession) => {
     s.setHandlers({
       onStatus: (t) => setStatus(t),
       onError: (t) => {
@@ -82,29 +92,41 @@ export default function Online() {
   }, []);
 
   const create = useCallback(() => {
+    // One room per click: a second CREATE (a double click, a held Enter) while
+    // a session is live would open a second room and orphan the first.
+    if (ref.current) return;
     const who = name.trim().slice(0, 16);
     if (!who) {
       setError("type a name first — your friends have to know who to blame");
       return;
     }
     localStorage.setItem("dd_name", who);
-    // Reuse this tab's live room instead of drawing a new code on every
-    // mount/reload. A new code comes only after LEAVE (which clears the lease)
-    // or after the lease expires.
-    const lease = codeForCreate(sessionStorage, Date.now());
-    const s = new NetSession(lease.code, who, true, match);
-    writeRoomLease(sessionStorage, { code: s.code, isHost: true, createdAt: Date.now() });
+    let s: MatchSession;
+    let resumed = false;
+    if (NET_TRANSPORT === "colyseus") {
+      // The server draws the code; the session keeps its own reconnection seat.
+      s = new ColyseusSession("", who, true, match);
+    } else {
+      // Reuse this tab's live room instead of drawing a new code on every
+      // mount/reload. A new code comes only after LEAVE (which clears the lease)
+      // or after the lease expires.
+      const lease = codeForCreate(sessionStorage, Date.now());
+      resumed = lease.resumed;
+      s = new NetSession(lease.code, who, true, match);
+      writeRoomLease(sessionStorage, { code: s.code, isHost: true, createdAt: Date.now() });
+    }
     wire(s);
     s.connect();
     ref.current = s;
     setSession(s);
     setMode("host");
     setError(null);
-    setStatus(lease.resumed ? `REOPENING ROOM ${s.code}…` : "OPENING YOUR ROOM…");
+    setStatus(resumed ? `REOPENING ROOM ${s.code}…` : "OPENING YOUR ROOM…");
   }, [match, name, wire]);
 
   const join = useCallback(
     (codeArg?: string) => {
+      if (ref.current) return; // already joining (see create)
       const code = normalizeRoomCode(codeArg ?? codeInput);
       if (!isValidRoomCode(code)) {
         setError("Enter the 4-letter code your friend sent you.");
@@ -116,16 +138,41 @@ export default function Online() {
         return;
       }
       localStorage.setItem("dd_name", who);
-      const s = new NetSession(code, who, false, match);
-      writeRoomLease(sessionStorage, { code: s.code, isHost: false, createdAt: Date.now() });
+      let s: MatchSession;
+      if (NET_TRANSPORT === "colyseus") {
+        s = new ColyseusSession(code, who, false, match);
+      } else {
+        s = new NetSession(code, who, false, match);
+        writeRoomLease(sessionStorage, { code: s.code, isHost: false, createdAt: Date.now() });
+      }
       wire(s);
       s.connect();
       ref.current = s;
       setSession(s);
       setMode("join");
       setError(null);
+      setStatus(`JOINING MATCH ${code}…`);
     },
     [codeInput, match, name, wire],
+  );
+
+  /**
+   * Colyseus only: take back the seat this tab held before a reload. Never
+   * creates or joins anything new; if the hold ran out, the lobby says so.
+   */
+  const resume = useCallback(
+    (seat: { code: string; isHost: boolean }) => {
+      const who = name.trim().slice(0, 16) || (seat.isHost ? "HOST" : "GUEST");
+      const s = new ColyseusSession(seat.code, who, seat.isHost, match, { resumeOnly: true });
+      wire(s);
+      s.connect();
+      ref.current = s;
+      setSession(s);
+      setMode(seat.isHost ? "host" : "join");
+      setError(null);
+      setStatus(`REJOINING MATCH ${seat.code}…`);
+    },
+    [match, name, wire],
   );
 
   const leave = useCallback(() => {
@@ -143,8 +190,24 @@ export default function Online() {
     setMode("menu");
   }, []);
 
+  /** After a failure: drop the dead session and ask again, for the same code when joining. */
+  const retry = useCallback(() => {
+    const s = ref.current;
+    if (!s) return;
+    s.close();
+    ref.current = null;
+    if (s.isHost) create();
+    else join(s.code);
+  }, [create, join]);
+
   // a session must never outlive the page that owns it
   useEffect(() => () => ref.current?.close(), []);
+
+  // Start fetching the multiplayer code and waking the match server while the
+  // player is still on the menu, rather than after they press CREATE / CONNECT.
+  useEffect(() => {
+    if (NET_TRANSPORT === "colyseus") warmColyseus();
+  }, []);
 
   // Tab visibility and the page lifecycle are not room lifecycles. Switching
   // tabs must not create a new room or destroy a working peer; coming back
@@ -170,16 +233,31 @@ export default function Online() {
     };
   }, []);
 
-  // Arriving from /setup with ?create=1 or ?code=XXXX: open or join the room
+  // Arriving from /setup with ?create=1 or ?room=XXXX: open or join the room
   // once. The timer keeps React StrictMode's mount → cleanup → mount cycle from
   // opening a room that the cleanup has already torn down.
+  // A guest's room code is read once and then taken off the URL, so a reload
+  // behaves as it always has (old ?code= links lose theirs to Convex Auth; see
+  // ROOM_PARAM). With the Colyseus transport a reload resumes the held seat
+  // on its own instead (see colyseus.ts).
   useEffect(() => {
     const wantsCreate = params.get("create") === "1";
-    const wantsCode = params.get("code");
-    if (!wantsCreate && !wantsCode) return;
+    const wantsCode = params.get(ROOM_PARAM) ?? params.get(LEGACY_ROOM_PARAM);
+    const held =
+      NET_TRANSPORT === "colyseus" && !wantsCreate && !wantsCode ? resumableSeat(sessionStorage, Date.now()) : null;
+    if (!wantsCreate && !wantsCode && !held) return;
     const t = window.setTimeout(() => {
       if (wantsCreate) create();
-      else if (wantsCode) join(wantsCode);
+      else if (wantsCode) {
+        join(wantsCode);
+        setParams(
+          (p) => {
+            p.delete(ROOM_PARAM);
+            return p;
+          },
+          { replace: true },
+        );
+      } else if (held) resume(held);
     }, 0);
     return () => window.clearTimeout(t);
     // mount-only: these are the initial URL choices
@@ -224,6 +302,9 @@ export default function Online() {
   const readyGuests = guests.filter((p) => p.ready).length;
   const allReady = guests.every((p) => p.ready);
   const me = players.find((p) => p.isMe);
+  // The match server can hand the room to a guest when the host leaves for
+  // good; PeerJS never marks a guest as host, so this is `mode === "host"` there.
+  const hosting = mode === "host" || Boolean(me?.isHost);
   const info = mapInfo(match.map);
 
   return (
@@ -297,7 +378,10 @@ export default function Online() {
                     <b>{KILLS_TO_WIN}</b> kills
                   </div>
                   <div>
-                    <b>note</b> play is peer-to-peer, straight between your browsers
+                    <b>note</b>{" "}
+                    {NET_TRANSPORT === "colyseus"
+                      ? "the lobby runs on the match server"
+                      : "play is peer-to-peer, straight between your browsers"}
                   </div>
                 </div>
               </div>
@@ -350,11 +434,11 @@ export default function Online() {
 
           {session && (mode === "host" || mode === "join") && (
             <>
-              <h1>{mode === "host" ? "MATCH CODE" : `CODE ${session.code}`}</h1>
+              <h1>{hosting ? "MATCH CODE" : `CODE ${session.code}`}</h1>
               <h2>
                 {info.name.toLowerCase()} · grappling hook {match.grapple ? "on" : "off"}
               </h2>
-              {mode === "host" && (
+              {hosting && (
                 <>
                   <div className="dd-netcode">{session.code}</div>
                   <div className="mainbtns">
@@ -372,10 +456,18 @@ export default function Online() {
                   <h2>send it to your friend, then start</h2>
                 </>
               )}
-              {mode === "join" && <h2>connecting to the host…</h2>}
+              {!hosting && (
+                <h2>
+                  {session.joined
+                    ? "you're in the room"
+                    : NET_TRANSPORT === "colyseus"
+                      ? "connecting to the match server…"
+                      : "connecting to the host…"}
+                </h2>
+              )}
 
               {/* the host sets the battlefield and the rule; guests read them */}
-              {mode === "host" ? (
+              {hosting ? (
                 <>
                   <div className="mapgrid small">
                     {MAPS.map((m) => (
@@ -437,7 +529,7 @@ export default function Online() {
               {error && <div className="dd-neterr">{error}</div>}
 
               <div className="mainbtns">
-                {mode === "host" ? (
+                {hosting ? (
                   <button
                     type="button"
                     className="start"
@@ -471,6 +563,12 @@ export default function Online() {
                     </button>
                   </>
                 )}
+                {signal === "lost" && (
+                  <button type="button" className="start" onClick={retry}>
+                    TRY AGAIN
+                    <i>{hosting ? "open a new room" : `join ${session.code} again`}</i>
+                  </button>
+                )}
                 <button type="button" className="alt" onClick={leave}>
                   LEAVE ROOM
                 </button>
@@ -487,7 +585,7 @@ export default function Online() {
  * the arena
  * ======================================================================== */
 
-function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => void }) {
+function PvpMatch({ session, onLeave }: { session: MatchSession; onLeave: () => void }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<GameHandle | null>(null);
   const remotes = useRef(new Map<string, NetPlayerState>());
@@ -505,6 +603,9 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
   const [ads, setAds] = useState(false);
   const [paused, setPaused] = useState(false);
   const [down, setDown] = useState(false);
+  // The match server is gone for good (restart, unreachable, seat expired).
+  // Only the Colyseus session reports this; the arena stops and says why.
+  const [lost, setLost] = useState<string | null>(null);
   // The host's rules, straight off the session: the map is fixed for the whole
   // match and the grapple rule is the one every client received.
   const config = session.getConfig();
@@ -570,6 +671,8 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
         onAim: setAds,
         // our rounds landed on someone: they are the authority on their own body
         onNetHit: (hit) => session.reportHit(hit.victim, hit.dmg, hit.epoch, hit.origin),
+        // Colyseus: our attacks go to the server, which decides what they did
+        onNetCombat: (intent) => session.reportCombat?.(intent),
         onNetDeath: (killerId) => {
           session.reportDeath(killerId ?? session.me);
           // A client never applies its own death envelope, so the victim's page
@@ -616,6 +719,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
     };
 
     handle.setPvp(true);
+    handle.setServerCombat(session.serverCombat === true);
     handle.setSensitivity(Number(localStorage.getItem("dd_sens") || 100));
     handle.setInvert(localStorage.getItem("dd_invert") === "1");
     handle.setMusic(localStorage.getItem("dd_music") !== "0");
@@ -650,10 +754,18 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
         handle.takeNetHit(dmg, killer, session.rewindMs, origin);
       },
       onLatency: (ms) => handle.setNetLatency(ms),
+      // Colyseus: the server's verdicts (PeerJS never calls these)
+      onShotLanded: (hit) => handle.showNetHit(hit),
+      onHurt: (dmg, killer) => handle.netDamage(dmg, killer),
+      onHealth: (hp, alive, killer) => handle.syncNetHealth(hp, alive, killer),
       // a rematch (or the very first start) rebuilds the arena from scratch
       onStart: () => resetRound(),
       onRematch: () => resetRound(),
       onError: (t) => pushFeed(t.toUpperCase(), true),
+      onLost: (t) => {
+        setLost(t);
+        handle.pause();
+      },
     });
     pushRemotes();
 
@@ -673,20 +785,26 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, pushFeed, resetRound]);
 
-  // First to fifteen takes it. Every client builds the same scoreboard from the
-  // same death messages, so nobody has to be told who won — the result is read
-  // straight off the roster. The effect only freezes our own view behind it.
-  const winner = players.find((p) => p.kills >= KILLS_TO_WIN) ?? null;
+  // First to fifteen takes it. Over PeerJS every client builds the same
+  // scoreboard from the same death messages and reads the result straight off
+  // the roster; the match server declares it instead. The effect only freezes
+  // our own view behind it.
+  const winner = matchWinner(players, session.winnerId, KILLS_TO_WIN);
+  // a fresh object every render; the effect only cares whether the match is decided
+  const decided = winner !== null;
   useEffect(() => {
-    winnerRef.current = Boolean(winner);
-    if (winner) gameRef.current?.pause();
-  }, [winner]);
+    winnerRef.current = decided;
+    if (decided) gameRef.current?.pause();
+  }, [decided]);
 
   const resume = useCallback(() => gameRef.current?.resume(), []);
-  const live = !paused && !down && !winner;
+  const live = !paused && !down && !winner && !lost;
   const hpFrac = Math.max(0, hud.hp / hud.maxHp);
   const me = players.find((p) => p.isMe);
   const iWon = winner?.isMe ?? false;
+  // The match server hands the room to a guest when the host leaves for good,
+  // and only the current host's rematch counts; PeerJS never changes hosts.
+  const canRematch = session.serverCombat ? Boolean(me?.isHost) : session.isHost;
 
   return (
     <div className={`dd-root ${live ? "dd-live" : ""} ${hud.dark ? "dd-dark" : ""}`}>
@@ -812,7 +930,21 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
         ← LEAVE MATCH (room {session.code})
       </button>
 
-      {down && !winner && (
+      {lost && (
+        <div className="dd-screen">
+          <div className="panel">
+            <h1>CONNECTION LOST</h1>
+            <h2>{lost}</h2>
+            <div className="mainbtns">
+              <button type="button" className="start" onClick={onLeave}>
+                LEAVE MATCH<i>back to the lobby menu</i>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {down && !winner && !lost && (
         <div className="dd-screen">
           <div className="panel">
             <h1>ERASED</h1>
@@ -824,7 +956,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
         </div>
       )}
 
-      {paused && !winner && (
+      {paused && !winner && !lost && (
         <div className="dd-screen">
           <div className="panel">
             <h1>PAUSED</h1>
@@ -841,7 +973,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
         </div>
       )}
 
-      {winner && (
+      {winner && !lost && (
         <div className="dd-screen">
           <div className="panel">
             <h1>{iWon ? "YOU WIN" : "MATCH OVER"}</h1>
@@ -859,7 +991,7 @@ function PvpMatch({ session, onLeave }: { session: NetSession; onLeave: () => vo
               ))}
             </div>
             <div className="mainbtns">
-              {session.isHost ? (
+              {canRematch ? (
                 <button type="button" className="start" onClick={() => session.rematch()}>
                   REMATCH<i>everyone back to a fresh corner</i>
                 </button>

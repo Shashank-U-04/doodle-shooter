@@ -276,6 +276,32 @@ export function pickSafeSpawn(candidates: THREE.Vector3[], opts: SpawnScoring): 
   return best;
 }
 
+/**
+ * `pads` reordered so that consecutive entries are as far apart as possible:
+ * first the pad nearest `from`, then each time the pad farthest from all those
+ * already taken. Deterministic, so every client hands pad n to the same player,
+ * and the first few players of a match start spread across the map rather than
+ * in whichever neighbouring pads were placed next to each other in the list.
+ */
+export function spreadSpawns(pads: THREE.Vector3[], from: THREE.Vector3): THREE.Vector3[] {
+  const left = pads.slice();
+  const out: THREE.Vector3[] = [];
+  const flat = (a: THREE.Vector3, b: THREE.Vector3) => Math.hypot(a.x - b.x, a.z - b.z);
+  while (left.length > 0) {
+    let bestI = 0;
+    let bestD = out.length === 0 ? Infinity : -Infinity;
+    for (let i = 0; i < left.length; i++) {
+      const d = out.length === 0 ? flat(left[i], from) : Math.min(...out.map((o) => flat(left[i], o)));
+      if (out.length === 0 ? d < bestD : d > bestD) {
+        bestD = d;
+        bestI = i;
+      }
+    }
+    out.push(left.splice(bestI, 1)[0]);
+  }
+  return out;
+}
+
 /* ============================== combat geometry ============================== */
 
 /**
