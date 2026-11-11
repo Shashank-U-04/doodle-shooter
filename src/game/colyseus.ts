@@ -26,6 +26,7 @@ import { normalizeMatchConfig, type MatchConfig } from "./maps";
 import type { NetPlayer, SignalState } from "./net";
 import type { NetCombatIntent, NetPlayerState, NetShotOrigin } from "./types";
 import { readColyseusUrl, viteEnv, type MatchHandlers, type MatchSession } from "./transport";
+import { probeServerInstance, RESTART_PROBE_EVERY_MS, RestartWatch, type InstanceProbe } from "./serverRestart";
 import { MOVE_RATE_HZ, NAME_MAX, RECONNECT_SECONDS, SERVER_CLOSING_MESSAGE } from "../../server/src/shared/rules.js";
 
 /** sessionStorage key for this tab's seat; separate from the PeerJS lease. */
@@ -92,6 +93,8 @@ type StartResult = { ok: true } | { ok: false; reason: string };
 /** The synced room state, as `state.toJSON()` returns it. */
 type RoomJSON = {
   code?: string;
+  /** the server process holding this room; absent from servers older than the restart check */
+  serverInstance?: string;
   phase?: string;
   map?: string;
   grapple?: boolean;
@@ -283,6 +286,8 @@ export type ColyseusSessionDeps = {
   resumeOnly?: boolean;
   /** how long connecting may take before giving up; JOIN_TIMEOUT_MS by default */
   joinTimeoutMs?: number;
+  /** pause between restart checks while reconnecting; RESTART_PROBE_EVERY_MS by default */
+  restartProbeMs?: number;
 };
 
 export class ColyseusSession implements MatchSession {
@@ -300,6 +305,11 @@ export class ColyseusSession implements MatchSession {
   private readonly resumeOnly: boolean;
   private readonly joinTimeoutMs: number;
   private joinTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly restartProbeMs: number;
+  /** the server process holding our room, as the room's state says ("" from an older server) */
+  private serverInstance = "";
+  /** asks the server, while reconnecting, whether our room's process is still there */
+  private restartWatch: RestartWatch | null = null;
   /** connection diagnostics (logConnection) */
   private attachedAt = 0;
   private drops = 0;
@@ -344,6 +354,7 @@ export class ColyseusSession implements MatchSession {
     this.storage = deps.storage !== undefined ? deps.storage : defaultStorage();
     this.resumeOnly = deps.resumeOnly ?? false;
     this.joinTimeoutMs = deps.joinTimeoutMs ?? JOIN_TIMEOUT_MS;
+    this.restartProbeMs = deps.restartProbeMs ?? RESTART_PROBE_EVERY_MS;
   }
 
   setHandlers(patch: MatchHandlers) {
@@ -505,11 +516,15 @@ export class ColyseusSession implements MatchSession {
       this.lastDropAt = Date.now();
       // the SDK calls this as it starts its own reconnection attempts
       this.logConnection(room, "dropped; SDK reconnecting", code, reason);
+      // a last attempt already under way when the match ended
+      if (this.phase === "closed") return;
       this.setSignal("retrying", "connection dropped — reconnecting");
       this.handlers.onStatus?.("CONNECTION DROPPED — RECONNECTING…");
+      this.watchForRestart(room);
     });
     room.onReconnect(() => {
       this.logConnection(room, "reconnected");
+      this.stopRestartWatch();
       this.rememberSeat();
       this.setSignal("open");
       this.handlers.onStatus?.("RECONNECTED");
@@ -550,6 +565,39 @@ export class ColyseusSession implements MatchSession {
     this.sync();
   }
 
+  /**
+   * The socket is gone and the SDK is reconnecting. Meanwhile keep asking the
+   * server which process is answering: if it is no longer the one holding our
+   * room, that room is gone with it and no reconnection can succeed, so say so
+   * now instead of after every attempt has failed. Anything short of that answer
+   * (src/game/serverRestart.ts) leaves the SDK to carry on.
+   */
+  private watchForRestart(room: Room) {
+    const url = this.url;
+    const known = this.serverInstance;
+    if (this.restartWatch || !url || !known) return;
+    const probe = (): Promise<InstanceProbe> => probeServerInstance(url, known);
+    this.restartWatch = new RestartWatch(probe, () => this.onServerReplaced(room), this.restartProbeMs);
+    this.restartWatch.start();
+  }
+
+  private stopRestartWatch() {
+    this.restartWatch?.stop();
+    this.restartWatch = null;
+  }
+
+  /** A different server process answers /health: our room no longer exists. */
+  private onServerReplaced(room: Room) {
+    this.restartWatch = null;
+    if (this.phase === "closed") return;
+    this.logConnection(room, "server restarted (a new process answers /health)");
+    clearSeat(this.storage);
+    this.room = null;
+    // Stops the SDK's retries. The socket is already dead, so there is nothing to close.
+    room.reconnection.enabled = false;
+    this.fail(RESTARTED_TEXT);
+  }
+
   private rememberSeat() {
     if (!this.room) return;
     writeSeat(this.storage, {
@@ -562,6 +610,7 @@ export class ColyseusSession implements MatchSession {
 
   close() {
     this.clearJoinTimer();
+    this.stopRestartWatch();
     if (this.phase === "closed") return;
     this.phase = "closed";
     this.stopTicking();
@@ -594,8 +643,11 @@ export class ColyseusSession implements MatchSession {
     this.pingTimer = null;
   }
 
+  /** Every way a match can be lost ends here, and only the first one is reported. */
   private fail(text: string) {
     this.clearJoinTimer();
+    this.stopRestartWatch();
+    if (this.phase === "closed") return;
     this.phase = "closed";
     this.stopTicking();
     this.stopPinging();
@@ -616,6 +668,7 @@ export class ColyseusSession implements MatchSession {
     const room = this.room;
     if (!room?.state) return;
     const s = (room.state as { toJSON(): RoomJSON }).toJSON();
+    if (s.serverInstance) this.serverInstance = s.serverInstance;
 
     const config = normalizeMatchConfig({ map: s.map, grapple: s.grapple });
     if (config.map !== this.config.map || config.grapple !== this.config.grapple) {

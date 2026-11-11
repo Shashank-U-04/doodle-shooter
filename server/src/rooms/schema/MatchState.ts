@@ -42,6 +42,8 @@ export type Player = SchemaType<typeof Player>;
 export const MatchState = schema({
   /** the room code players type to join; equal to the Colyseus roomId */
   code: t.string(),
+  /** which server process holds this room (src/lifecycle.ts); /health names the current one */
+  serverInstance: t.string().default(""),
   /** "lobby" until the host starts, then "playing" */
   phase: t.string().default("lobby"),
   map: t.string(),

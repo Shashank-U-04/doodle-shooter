@@ -143,10 +143,13 @@ Every line must say PASS. A run against the live server on 2026-10-24
     - The other player's roster updated immediately.
     - No reconnection 25 s later.
   - **Restarts and deploys (PR #11).** Before closing every room, the server
-    now broadcasts a `server-closing` message, which does get through. Clients
-    show "The match server restarted…" at once and close from their side.
-    Without this, a restart reached hosted players as a late 1006 followed by
-    about a minute of reconnecting.
+    broadcasts a `server-closing` message and waits a second. In two real
+    restarts on 2026-11-02 (build `b93f31b`, no wait yet) that message did **not**
+    reach either player: they saw a late 1006 and 90–127 s of reconnecting. So
+    clients now also ask `/health` while reconnecting, and show "The match server
+    restarted…" as soon as a different server process answers. This has been
+    tested locally only until row 27 of the acceptance checklist passes on Render.
+    The `{"event":"lifecycle",…}` log lines show what happens during the restart.
   - **Still affected:** a validation kick reaches a hosted client as a late
     1006. Only a broken or hostile client is ever kicked.
   - `check:hosted` leaves the way the game does (all leave checks pass on
