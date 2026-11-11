@@ -64,8 +64,9 @@ console.log(`server ${server}\nallowed origin ${origin}\n`);
 const started = Date.now();
 try {
   const res = await fetch(`${server}/health`, { signal: AbortSignal.timeout(120_000) });
-  const body = (await res.json().catch(() => ({}))) as { status?: string };
+  const body = (await res.json().catch(() => ({}))) as { status?: string; instance?: string };
   check("/health answers 200 {status: ok}", res.status === 200 && body.status === "ok", `${res.status} in ${Date.now() - started} ms`);
+  check("/health names the server process (clients detect a restart with it)", typeof body.instance === "string" && body.instance.length > 0);
 } catch (e) {
   check("/health answers 200 {status: ok}", false, String(e));
   console.log("\nThe server is unreachable; nothing else can be checked.");

@@ -32,7 +32,7 @@ Placeholders, to fill in with your own values:
 
 ## 1. Choose a host for the match server
 
-The server is one always-on Node.js 22 process with WebSockets
+The server is one always-on Node.js 24 process with WebSockets
 ([`server/README.md` → Deploying](../server/README.md#deploying)). It cannot run
 on Vercel. Measured locally (production build): ~77 MB RSS idle and ~67 MB with
 10 full rooms (40 players moving at 20 Hz) — a 256 MB instance is enough.
@@ -83,9 +83,14 @@ Check `region` (fixed after creation) before applying it.
 > locally, and the fixed command verified, including the start on Render's
 > default `PORT` 10000.
 
-Render's default Node for new services is 24; the server suite and the
-compiled server were also run on Node 24.22, so no `NODE_VERSION` is needed.
-Container hosts: build `server/Dockerfile` with `server/` as the context.
+Render runs Node.js 24, pinned in the repository rather than left to Render's
+default, which depends on when the service was created. `.node-version` (`24`)
+is in the repository root, where Render's Node docs look, and in `server/`,
+because the service's root directory is `server` and files outside it are not
+available to the service. `engines` in `server/package.json` allows `>=22.0.0 <25`,
+which also resolves to Node 24 on Render. So no `NODE_VERSION` is needed; one set
+on the service would take precedence over all of these. Each deploy's build log
+shows the version in use. Container hosts: build `server/Dockerfile` with `server/` as the context.
 
 Check it:
 

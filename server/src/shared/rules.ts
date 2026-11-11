@@ -33,6 +33,14 @@ export function isMapId(value: unknown): value is MapId {
   return typeof value === "string" && (MAP_IDS as readonly string[]).includes(value);
 }
 
+/**
+ * Room message the server broadcasts just before it closes every room for a
+ * restart or deploy. The close itself says the same (SERVER_SHUTDOWN), but a
+ * close the server starts never reaches clients through the Render deployment;
+ * a message does, so clients learn why and close from their side.
+ */
+export const SERVER_CLOSING_MESSAGE = "server-closing";
+
 /** Unambiguous alphabet for room codes: no O/0, no I/1. */
 export const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const CODE_LENGTH = 4;

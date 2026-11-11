@@ -11,8 +11,10 @@ import {
   type MapId,
 } from "../rules.js";
 import { isOriginAllowed, originPolicy } from "../origins.js";
+import { SERVER_CLOSING_MESSAGE } from "../shared/rules.js";
 import { isCreateRequest, REFUSAL_TEXT, RoomCreationLimiter, roomLimitsFromEnv } from "../limits.js";
 import { metrics } from "../metrics.js";
+import { INSTANCE_ID, logLifecycle, NOTICE_GRACE_MS } from "../lifecycle.js";
 import { Combat, type EliminatedEvent, type HitEvent } from "./Combat.js";
 import {
   ARRIVALS,
@@ -134,6 +136,10 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   maxMessagesPerSecond = 60;
   /** how long a dropped player's seat is held; tests shorten it */
   reconnectSeconds = RECONNECT_SECONDS;
+  /** set once the shutdown notice has gone out; a second shutdown call does nothing */
+  private shutdownStarted = false;
+  /** the wait between the shutdown notice and closing the sockets */
+  private closeTimer: ReturnType<typeof setTimeout> | null = null;
   /** per-player movement limiter; server-only, keyed by session id */
   private motion = new Map<string, Motion>();
   /** teleports refused because they were not to a place the game puts bodies (tests, the e2e fixture) */
@@ -277,6 +283,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     void this.setPrivate(true);
     this.maxClients = opts.maxPlayers;
     this.state.code = this.roomId;
+    this.state.serverInstance = INSTANCE_ID;
     this.state.map = opts.map;
     this.state.grapple = opts.grapple;
     this.state.maxPlayers = opts.maxPlayers;
@@ -315,7 +322,8 @@ export class MatchRoom extends Room<{ state: MatchState }> {
    * the new one in. A client kicked for a malformed message is held the same
    * way; only its own token can bring it back, and the hold expires.
    */
-  onDrop(client: Client) {
+  onDrop(client: Client, code?: number) {
+    logLifecycle("client-dropped", { room: this.roomId, session: client.sessionId, code: code ?? null, shuttingDown: this.shutdownStarted });
     const player = this.state.players.get(client.sessionId);
     if (player) player.connected = false;
     this.allowReconnection(client, this.reconnectSeconds).catch(() => {
@@ -352,7 +360,37 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     }
   }
 
+  /** What each socket looked like at this moment, for the shutdown log. */
+  private socketStates() {
+    return this.clients.map((c) => {
+      const ws = c.ref as unknown as { readyState?: number; bufferedAmount?: number } | undefined;
+      return { session: c.sessionId, readyState: ws?.readyState ?? null, bufferedBytes: ws?.bufferedAmount ?? null };
+    });
+  }
+
+  /**
+   * The process is shutting down (SIGTERM on a deploy or restart). Tell every
+   * player first, then wait a moment before closing their sockets: Colyseus
+   * waits for every room to be disposed, so the wait is safe, and the notice is
+   * not racing the close through the hosting path. Players who get the notice
+   * close from their side, which can dispose the room before the wait is over.
+   */
+  onBeforeShutdown() {
+    if (this.shutdownStarted) return;
+    this.shutdownStarted = true;
+    this.broadcast(SERVER_CLOSING_MESSAGE, {});
+    logLifecycle("room-notice-sent", { room: this.roomId, seats: this.state.players.size, sockets: this.socketStates() });
+    this.closeTimer = setTimeout(() => {
+      this.closeTimer = null;
+      logLifecycle("room-closing-sockets", { room: this.roomId, sockets: this.socketStates() });
+      super.onBeforeShutdown();
+    }, NOTICE_GRACE_MS);
+  }
+
   onDispose() {
+    if (this.closeTimer) clearTimeout(this.closeTimer);
+    this.closeTimer = null;
+    if (this.shutdownStarted) logLifecycle("room-disposed", { room: this.roomId });
     liveCodes.delete(this.roomId);
     if (liveRooms.delete(this)) metrics.roomDisposed();
   }
