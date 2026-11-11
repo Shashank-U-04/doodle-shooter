@@ -26,7 +26,14 @@ import { normalizeMatchConfig, type MatchConfig } from "./maps";
 import type { NetPlayer, SignalState } from "./net";
 import type { NetCombatIntent, NetPlayerState, NetShotOrigin } from "./types";
 import { readColyseusUrl, viteEnv, type MatchHandlers, type MatchSession } from "./transport";
-import { probeServerInstance, RESTART_PROBE_EVERY_MS, RestartWatch, type InstanceProbe } from "./serverRestart";
+import {
+  awaitInstanceVerdict,
+  probeServerInstance,
+  RESTART_PROBE_EVERY_MS,
+  RESTART_VERDICT_WAIT_MS,
+  RestartWatch,
+  type InstanceProbe,
+} from "./serverRestart";
 import { MOVE_RATE_HZ, NAME_MAX, RECONNECT_SECONDS, SERVER_CLOSING_MESSAGE } from "../../server/src/shared/rules.js";
 
 /** sessionStorage key for this tab's seat; separate from the PeerJS lease. */
@@ -76,6 +83,13 @@ const CLOSE_CODES: Record<number, string> = {
 
 /** How often the round trip is measured, ms. */
 const PING_EVERY_MS = 2000;
+/**
+ * A ping unanswered this long, on a socket that still looks open, means nothing
+ * is getting through: ask /health whether our room's process is still there.
+ * Through Render, a dead server's socket can stay "open" for 20 s or more.
+ */
+const SILENT_SOCKET_MS = 6000;
+const LOST_TEXT = "Lost the connection to the match server and could not get back in. Join again.";
 /**
  * How far behind the server our view of other bodies is, beyond the round
  * trip: up to one patch (50 ms) plus the engine's easing toward each new
@@ -288,6 +302,10 @@ export type ColyseusSessionDeps = {
   joinTimeoutMs?: number;
   /** pause between restart checks while reconnecting; RESTART_PROBE_EVERY_MS by default */
   restartProbeMs?: number;
+  /** how long a ping may go unanswered before /health is asked; SILENT_SOCKET_MS by default */
+  silentSocketMs?: number;
+  /** how long a lost match waits for /health's answer; RESTART_VERDICT_WAIT_MS by default */
+  restartVerdictMs?: number;
 };
 
 export class ColyseusSession implements MatchSession {
@@ -306,10 +324,16 @@ export class ColyseusSession implements MatchSession {
   private readonly joinTimeoutMs: number;
   private joinTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly restartProbeMs: number;
+  private readonly silentSocketMs: number;
+  private readonly restartVerdictMs: number;
   /** the server process holding our room, as the room's state says ("" from an older server) */
   private serverInstance = "";
   /** asks the server, while reconnecting, whether our room's process is still there */
   private restartWatch: RestartWatch | null = null;
+  /** when the oldest still-unanswered ping went out; null when every ping has been answered */
+  private pingUnansweredSince: number | null = null;
+  /** the match is lost and /health is being asked which message to show */
+  private judgingLoss = false;
   /** connection diagnostics (logConnection) */
   private attachedAt = 0;
   private drops = 0;
@@ -355,6 +379,8 @@ export class ColyseusSession implements MatchSession {
     this.resumeOnly = deps.resumeOnly ?? false;
     this.joinTimeoutMs = deps.joinTimeoutMs ?? JOIN_TIMEOUT_MS;
     this.restartProbeMs = deps.restartProbeMs ?? RESTART_PROBE_EVERY_MS;
+    this.silentSocketMs = deps.silentSocketMs ?? SILENT_SOCKET_MS;
+    this.restartVerdictMs = deps.restartVerdictMs ?? RESTART_VERDICT_WAIT_MS;
   }
 
   setHandlers(patch: MatchHandlers) {
@@ -525,6 +551,7 @@ export class ColyseusSession implements MatchSession {
     room.onReconnect(() => {
       this.logConnection(room, "reconnected");
       this.stopRestartWatch();
+      this.pingUnansweredSince = null; // pings sent on the old socket will never be answered
       this.rememberSeat();
       this.setSignal("open");
       this.handlers.onStatus?.("RECONNECTED");
@@ -538,9 +565,7 @@ export class ColyseusSession implements MatchSession {
         this.fail(RESTARTED_TEXT);
         return;
       }
-      // The seat is kept: the server may still be holding it, and joining
-      // again from this tab tries the token first (a dead one is then cleared).
-      this.fail("Lost the connection to the match server and could not get back in. Join again.");
+      void this.loseMatch(room);
     });
     // The server says it is shutting down. Its close (SERVER_SHUTDOWN) may never
     // arrive (the Render deployment loses closes the server starts), so treat
@@ -556,7 +581,29 @@ export class ColyseusSession implements MatchSession {
     room.onError((code, message) => this.logConnection(room, "error", code, message));
     room.onMessage("hit", (e: HitEvent) => this.onHitEvent(e));
     room.onMessage("eliminated", (e: EliminatedEvent) => this.onEliminated(e));
-    const ping = () => room.ping((ms) => (this.rtt = ms));
+    const ping = () => {
+      const now = Date.now();
+      if (this.pingUnansweredSince === null) {
+        this.pingUnansweredSince = now;
+      } else if (
+        now - this.pingUnansweredSince >= this.silentSocketMs &&
+        room.connection?.isOpen &&
+        this.serverInstance &&
+        !this.restartWatch
+      ) {
+        // The socket still looks open, but nothing has come back: the server's
+        // close may be lost on the way (see leaveRoom). Ask /health meanwhile;
+        // only a clear answer naming another process ends the match.
+        this.logConnection(room, `no answer to pings for ${Math.round((now - this.pingUnansweredSince) / 1000)} s; asking the server`);
+        this.watchForRestart(room);
+      }
+      room.ping((ms) => {
+        this.rtt = ms;
+        this.pingUnansweredSince = null;
+        // Answered again: the connection is alive, so a check started for silence can stop.
+        if (!room.reconnection.isReconnecting) this.stopRestartWatch();
+      });
+    };
     ping();
     this.pingTimer = setInterval(ping, PING_EVERY_MS);
 
@@ -593,9 +640,38 @@ export class ColyseusSession implements MatchSession {
     this.logConnection(room, "server restarted (a new process answers /health)");
     clearSeat(this.storage);
     this.room = null;
-    // Stops the SDK's retries. The socket is already dead, so there is nothing to close.
+    // Stops the SDK's retries.
     room.reconnection.enabled = false;
     this.fail(RESTARTED_TEXT);
+    // A silent socket (no pongs) still looks open: close it from this side.
+    if (room.connection?.isOpen) void leaveRoom(room).catch(() => {});
+  }
+
+  /**
+   * The SDK has given up on the room, or the server refused it back. Before
+   * saying the connection was lost, ask /health which process is answering: a
+   * reconnect can reach a restarted server, and be refused (4003), before
+   * /health has said the server was replaced.
+   */
+  private async loseMatch(room: Room) {
+    if (this.judgingLoss) return;
+    const url = this.url;
+    const known = this.serverInstance;
+    if (url && known) {
+      this.judgingLoss = true;
+      this.stopRestartWatch(); // this check takes over from the watch
+      const verdict = await awaitInstanceVerdict(() => probeServerInstance(url, known), {
+        waitMs: this.restartVerdictMs,
+        everyMs: this.restartProbeMs,
+        cancelled: () => this.phase === "closed",
+      });
+      this.judgingLoss = false;
+      if (this.phase === "closed") return; // LEAVE, or a notice, decided meanwhile
+      if (verdict === "changed") return this.onServerReplaced(room);
+    }
+    // The seat is kept: the server may still be holding it, and joining
+    // again from this tab tries the token first (a dead one is then cleared).
+    this.fail(LOST_TEXT);
   }
 
   private rememberSeat() {
