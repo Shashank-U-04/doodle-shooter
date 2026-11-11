@@ -111,6 +111,9 @@ Status: **S1** = server foundation (`server/`); **S2** = lobby over Colyseus beh
   *S4b:* a clean clone installs with `bun install --frozen-lockfile` and
   builds; `npm ci` against `package-lock.json` fails (out of sync). Vercel's
   build log still has to confirm which one it runs (`preview-deployment.md`).
+  *Resolved (2026-10-24):* the stale root `package-lock.json` is deleted, so
+  `bun.lock` is the only root lockfile and Vercel's lockfile detection can only
+  pick Bun. CI installs with `bun install --frozen-lockfile` (Bun 1.3.14).
 - **`?code=` collides with Convex Auth (all transports).** `ConvexAuthProvider`
   treats a `code` query parameter as its OAuth/magic-link callback: on every page
   load it deletes it from the URL and calls `signIn` with it. A guest's

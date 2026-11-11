@@ -293,6 +293,19 @@ bun install
 bun run dev
 ```
 
+Two package managers, one lockfile each: the frontend (repo root) uses **Bun**
+with `bun.lock` (`bun install --frozen-lockfile` reproduces it; Vercel picks Bun
+from that lockfile), and the match server uses **npm** with
+`server/package-lock.json` (`npm ci`, as Render runs it). Don't add a root
+`package-lock.json`: an npm install at the root would ignore `bun.lock`.
+The server's test suite also needs the frontend installed (`bun install` at the
+root first): its parity tests import the game's own map builders and weapon
+tables. The server's production build does not.
+
+Every pull request runs `.github/workflows/ci.yml`: frontend typecheck, lint and
+build (with an initial-load bundle report), the server's `npm run check` on
+Node 22 and 24, and the Playwright smoke tests.
+
 The app expects `VITE_CONVEX_URL` and a Convex deployment (see [Environment](#environment)).
 
 ## Environment
