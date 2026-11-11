@@ -377,7 +377,11 @@ is `""` for no credit).
     asks `/health` (`src/game/serverRestart.ts`): only a clear answer naming a
     different process ends the match with the restart message. No answer, a
     malformed one, or the same process means the SDK carries on reconnecting, so
-    a network problem is never reported as a restart.
+    a network problem is never reported as a restart. The client also asks when
+    pings go unanswered for 6 s on a socket that still looks open (a close lost
+    on the way), and once more, for up to 5 s, before it reports a lost
+    connection: a reconnect can reach the new process, and be refused (4003),
+    before `/health` has said so.
   - **Diagnostics.** Each step logs one `{"event":"lifecycle",…}` JSON line:
     `boot`, `signal-received`, `shutdown-started`, `client-dropped`,
     `room-notice-sent`, `room-closing-sockets`, `room-disposed`,
