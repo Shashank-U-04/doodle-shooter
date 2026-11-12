@@ -19,7 +19,7 @@ The deployed Render commit and the latest PR commits are different things:
 | | Commit |
 |---|---|
 | PR #11 `fix/hosted-restart-notice`, latest | `c427816` |
-| PR #12 `ci/e2e-artifacts`, merge of #11 | `aaaae17` (this runbook update is the commit after it) |
+| PR #12 `ci/e2e-artifacts`, merge of #11 | `aaaae17` (only runbook updates follow it: `f0495c4`, then the row 27 result) |
 | Render, deployed | `17e5385` |
 | Vercel Production, deployed | `7f0e6fd` |
 
@@ -45,8 +45,22 @@ The deployed Render commit and the latest PR commits are different things:
   created.
 - **Verified by hand:** Windows ↔ macOS multiplayer connectivity against the
   deployed Render server (`17e5385`, Node.js v24.22.2). The full acceptance
-  checklist (`acceptance-checklist.md`) is not recorded as passed here. In
-  particular, row 27 (server restart) has only been tested locally.
+  checklist (`acceptance-checklist.md`) is not recorded as passed here. Row 27
+  (server restart) was tested locally only until 2026-11-11; it has since
+  passed on Render (next bullet).
+- **Row 27 (server restart on Render): PASS**, recorded 2026-11-12. Run as in
+  section 5:
+  - Client: #11's branch alias (`fix/hosted-restart-notice`, `c427816`).
+    Server: the deployed Render build `17e5385`. **`c427816` needed no Render
+    deploy**: none was made before or for this test; the one restart was the
+    test itself.
+  - A Windows player and a macOS player were in an active match when the
+    service was restarted.
+  - Both received the restart notification. The joining player's arrived
+    promptly; the hosting player's arrived with a slight delay.
+  - Both then created/joined a fresh match successfully.
+  - Which detection path fired on each device (the console lines in section 5,
+    step 5) is not recorded here.
 - **GitHub's deployment records do not show this deploy.** The last Render
   record (`gh api …/deployments`, step 1) is `dc14d7a` under the environment
   `feat/colyseus-hosted-preview - doodle-shooter-match`, dated 2026-11-05. The
@@ -102,7 +116,10 @@ from Vercel's comment on PR #11 is
 `https://doodle-shooter-git-fix-hos-b7c67e-shashank-us-projects-ca6e75e5.vercel.app`.
 Branch aliases stay the same across pushes. They are behind Vercel
 Authentication: testers need access to the Vercel project, or a share link
-from the deployment's **Share** button.
+from the deployment's **Share** button. The row 27 testers reached this alias
+on both devices. On 2026-11-12 a request without a Vercel session was still
+redirected to Vercel's SSO login (HTTP 302), so for anyone else the alias is
+not public.
 
 ## 1. Align the Preview server with the client (manual, Render dashboard)
 
@@ -206,8 +223,9 @@ Every line must say PASS. A run against the live server on 2026-10-24
     restarts on 2026-11-02 (build `b93f31b`, no wait yet) that message did **not**
     reach either player: they saw a late 1006 and 90–127 s of reconnecting. So
     clients now also ask `/health` while reconnecting, and show "The match server
-    restarted…" as soon as a different server process answers. This has been
-    tested locally only until row 27 of the acceptance checklist passes on Render.
+    restarted…" as soon as a different server process answers. This was
+    tested locally only until row 27 of the acceptance checklist passed on
+    Render (2026-11-12, see the state at the top).
     The `{"event":"lifecycle",…}` log lines show what happens during the restart.
   - **Still affected:** a validation kick reaches a hosted client as a late
     1006. Only a broken or hostile client is ever kicked.
@@ -227,13 +245,14 @@ Every line must say PASS. A run against the live server on 2026-10-24
 ## 5. Playtest the aligned Preview
 
 Use `acceptance-checklist.md` with three or more players on Windows and macOS.
-Windows ↔ macOS connectivity against `17e5385` has been verified by hand. The
-remaining rows, including the S4d rebalance (100 HP) and row 27 (server
-restart on Render), still need results.
+Windows ↔ macOS connectivity against `17e5385` has been verified by hand, and
+row 27 (server restart on Render) **passed** (recorded 2026-11-12; results at
+the top). The remaining rows, including the S4d rebalance (100 HP), still need
+recorded results.
 
-Row 27 is the remaining technical acceptance test before the cutover. Run it
-with #11's branch alias (client `c427816`) against the deployed server
-(`17e5385`); no Render deploy is needed first.
+Row 27 was the remaining technical acceptance test before the cutover. It was
+run with #11's branch alias (client `c427816`) against the deployed server
+(`17e5385`), with no Render deploy first. To repeat it:
 1. Open the alias on Windows and on macOS. Keep DevTools open with **Preserve
    log**, filtered on `colyseus`.
 2. Create a match on one device and join it from the other. Play for at least
@@ -332,7 +351,7 @@ Each item below is an approval gate.
 | A server deploy is bad | Render → Events → the previous deploy → **Rollback**. On Hobby, the last 5 builds are kept. |
 | Back to the verified pair | Server `17e5385` (Node.js 24) with the Vercel Preview of `fix/hosted-restart-notice`. Use Render → Events → the `17e5385` deploy → **Rollback**, or deploy the branch tip `c427816`, which has the same server runtime code. |
 | Last resort | Branch `feat/colyseus-hosted-preview` (`dc14d7a`). It is pre-S4d (120 HP), lacks the #6/#8 security fixes and does not match the current clients. Use it only if nothing newer starts. Keep that branch until the cutover is complete. |
-| Matches during a deploy | A deploy replaces the instance, and players must re-create the match. With #11 they should see "The match server restarted…", but that is verified locally only until checklist row 27 passes on Render. Deploy between sessions until match draining exists. |
+| Matches during a deploy | A deploy replaces the instance, and players must re-create the match. With #11 they see "The match server restarted…": checklist row 27 passed on Render (2026-11-12; the host's notice came slightly later than the joiner's). Deploy between sessions until match draining exists. |
 
 ### Verifying a rollback
 
